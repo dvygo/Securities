@@ -1,0 +1,14 @@
+# Premarket — install: python -m venv .venv && .venv\Scripts\pip install -r req.txt
+# Python 3.11+ (project uses 3.13)
+
+# __________v3 — Databento Live symbology, strip, Postgres push
+databento
+python-dotenv
+exchange-calendars
+pandas
+psycopg[binary]
+
+# __________v3_EquityAlgoV20260519-0 — histwithvt matrices, db1 ingestion
+numpy
+pyarrow
+asyncpg
