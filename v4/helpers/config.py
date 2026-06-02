@@ -1,4 +1,4 @@
-"""Databento API keys and Postgres URL — read ``conf/config.ini`` under v4."""
+"""Databento API keys and Postgres URL — read ``../secrets/secrets.ini``."""
 
 from __future__ import annotations
 

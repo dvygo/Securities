@@ -1,0 +1,11 @@
+# Day folders (generated symbology + contracts)
+[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
+constituents/contracts/
+
+# Binaries
+/premarket
+/premarket.exe
+*.exe
+
+# Go
+/vendor/

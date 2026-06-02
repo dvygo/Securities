@@ -15,4 +15,4 @@ cd v4
 python runner.py --exclude databento --date-dir YYYYMMDD
 ```
 
-Copy `v4/conf/config.example.ini` to `v4/conf/config.ini` and add API keys before running Databento steps.
+Copy `secrets/secrets.example.ini` to `secrets/secrets.ini` and add API keys before running Databento steps.

@@ -36,7 +36,8 @@ XCBO_SCRIPT = "XCBO-DATABENTO.py"
 XNAS_SCRIPT = "XNAS-DATABENTO.py"
 
 UNDERLYINGS_CSV = "XNAS-XCBOE-underlyings.csv"
-CONFIG_INI = "config.ini"
+SECRETS_INI = "secrets.ini"
+SECRETS_DIRNAME = "secrets"
 
 FYERS_BASE_URL = "https://public.fyers.in/sym_details"
 FYERS_VENDOR = "FYERS"
@@ -123,8 +124,13 @@ def helpers_dir() -> Path:
     return _HELPERS_DIR
 
 
+def secrets_dir() -> Path:
+    return _V4_DIR.parent / SECRETS_DIRNAME
+
+
 def config_ini() -> Path:
-    return _V4_DIR / CONF_SUBDIR / CONFIG_INI
+    """Live credentials and Postgres URL — ``../secrets/secrets.ini``."""
+    return secrets_dir() / SECRETS_INI
 
 
 def day_dir(*, as_of: date | None = None, root: Path | None = None) -> Path:

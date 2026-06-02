@@ -53,6 +53,18 @@ def _append_symbol_mapping_csv(
     csv_fields: tuple[str, ...],
 ) -> None:
     """Append rows; write header only if the file is missing or empty."""
+    expected = list(csv_fields)
+    if csv_p.exists() and csv_p.stat().st_size > 0:
+        with csv_p.open(encoding="utf-8-sig", newline="") as rf:
+            first = next(csv.reader(rf), None)
+        if first != expected:
+            print(
+                f"error: {csv_p} has incompatible header (got {len(first or [])} cols, "
+                f"expected {len(expected)}). Delete the file or run on a fresh day folder "
+                f"before appending Live symbology.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
     has_body = csv_p.exists() and csv_p.stat().st_size > 0
     with csv_p.open("a", encoding="utf-8-sig", newline="") as cf:
         w = csv.DictWriter(cf, fieldnames=csv_fields, extrasaction="ignore")

@@ -5,7 +5,9 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# Secrets (use *.example.ini templates)
+# Secrets
+secrets/secrets.ini
+secrets/
 v4/conf/config.ini
 __________v3_EquityAlgoV20260519-0/config.ini
 
@@ -20,6 +22,11 @@ __________v3_EquityAlgoV20260519-0/*.zip
 
 # Generated daily contract CSVs (basket templates under constituents/baskets/ are tracked)
 v4/constituents/contracts/
+
+# v4-golang generated data
+v4-golang/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
+v4-golang/constituents/contracts/
+v4-golang/premarket.exe
 
 # Equity algo output matrices
 __________v3_EquityAlgoV20260519-0/output_matrix/

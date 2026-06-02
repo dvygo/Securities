@@ -8,7 +8,7 @@ Source files have no header row (21 columns as of 2026; legacy 17-column files p
   python fyers_download.py --all
   python fyers_download.py --segment xbse --input path/to/NSE_FO.csv
 
-Uses ``[fyers]`` in ``conf/config.ini`` (base URL, user-agent, timeout, retries).
+Uses ``[fyers]`` in ``../secrets/secrets.ini`` (base URL, user-agent, timeout, retries).
 """
 
 from __future__ import annotations
