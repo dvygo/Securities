@@ -15,7 +15,14 @@ import (
 	"github.com/dvygo/premarket/v4g/internal/paths"
 )
 
-func DownloadSegment(segKey string, asOf time.Time, inputPath string, dryRun bool) (string, error) {
+type DownloadOpts struct {
+	AsOf             time.Time
+	InputPath        string
+	DryRun           bool
+	IncludeCSVHeader bool
+}
+
+func DownloadSegment(segKey string, opts DownloadOpts) (string, error) {
 	seg, err := paths.FyersSegmentByKey(segKey)
 	if err != nil {
 		return "", err
@@ -24,20 +31,24 @@ func DownloadSegment(segKey string, asOf time.Time, inputPath string, dryRun boo
 	if err != nil {
 		return "", err
 	}
-	out := paths.RawCSV(asOf, seg.OutputCSV)
+	out := paths.FyersRawCSV(opts.AsOf, seg.SourceFile)
 
-	if dryRun {
-		if inputPath != "" {
-			fmt.Fprintf(os.Stderr, "dry-run: %s <- %s -> %s\n", seg.Key, inputPath, out)
+	if opts.DryRun {
+		mode := "headerless"
+		if opts.IncludeCSVHeader {
+			mode = "with CSV header"
+		}
+		if opts.InputPath != "" {
+			fmt.Fprintf(os.Stderr, "dry-run: %s <- %s -> %s (%s)\n", seg.Key, opts.InputPath, out, mode)
 		} else {
-			fmt.Fprintf(os.Stderr, "dry-run: %s <- %s/%s -> %s\n", seg.Key, strings.TrimRight(cfg.BaseURL, "/"), seg.SourceFile, out)
+			fmt.Fprintf(os.Stderr, "dry-run: %s <- %s/%s -> %s (%s)\n", seg.Key, strings.TrimRight(cfg.BaseURL, "/"), seg.SourceFile, out, mode)
 		}
 		return out, nil
 	}
 
 	var data []byte
-	if inputPath != "" {
-		src := inputPath
+	if opts.InputPath != "" {
+		src := opts.InputPath
 		if !filepath.IsAbs(src) {
 			src = filepath.Join(paths.RepoRoot(), src)
 		}
@@ -54,20 +65,20 @@ func DownloadSegment(segKey string, asOf time.Time, inputPath string, dryRun boo
 		}
 	}
 
-	rows, err := parseHeaderlessCSV(data)
+	rows, err := parseFyersCSV(data)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", seg.Key, err)
 	}
-	if err := writeHeaderedCSV(out, rows); err != nil {
+	if err := writeRawCSV(out, rows, opts.IncludeCSVHeader); err != nil {
 		return "", err
 	}
 	fmt.Fprintf(os.Stderr, "wrote %d rows -> %s\n", len(rows), out)
 	return out, nil
 }
 
-func DownloadAll(asOf time.Time, inputPath string, dryRun bool) error {
+func DownloadAll(opts DownloadOpts) error {
 	for _, seg := range paths.FyersSegments {
-		if _, err := DownloadSegment(seg.Key, asOf, inputPath, dryRun); err != nil {
+		if _, err := DownloadSegment(seg.Key, opts); err != nil {
 			return fmt.Errorf("%s: %w", seg.Key, err)
 		}
 	}
@@ -75,14 +86,23 @@ func DownloadAll(asOf time.Time, inputPath string, dryRun bool) error {
 }
 
 func fetchWithRetry(url string, cfg config.Fyers) ([]byte, error) {
-	client := &http.Client{Timeout: time.Duration(cfg.TimeoutSec * float64(time.Second))}
+	// Match curl defaults: HTTP/1.1, User-Agent + Accept only (no Accept-Encoding: gzip).
+	transport := &http.Transport{
+		ForceAttemptHTTP2: false,
+		DisableCompression: true,
+	}
+	client := &http.Client{
+		Timeout:   time.Duration(cfg.TimeoutSec * float64(time.Second)),
+		Transport: transport,
+	}
 	var lastErr error
 	for attempt := 1; attempt <= cfg.Retries; attempt++ {
 		req, err := http.NewRequest(http.MethodGet, url, nil)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("User-Agent", cfg.UserAgent)
+		setCurlHeaders(req, cfg.UserAgent)
+
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -105,14 +125,22 @@ func fetchWithRetry(url string, cfg config.Fyers) ([]byte, error) {
 	return nil, fmt.Errorf("download failed for %s: %w", url, lastErr)
 }
 
-func parseHeaderlessCSV(data []byte) ([][]string, error) {
+// setCurlHeaders mirrors curl's default request headers (see curl -v).
+func setCurlHeaders(req *http.Request, userAgent string) {
+	req.Header = http.Header{}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "*/*")
+}
+
+func parseFyersCSV(data []byte) ([][]string, error) {
 	text := strings.TrimPrefix(string(data), "\ufeff")
-	ncols := len(paths.FyersRawColumns)
-	legacy := ncols - 4
+	ncols := columnCount()
+	legacy := legacyColumnCount()
 	var rows [][]string
 	r := csv.NewReader(strings.NewReader(text))
 	r.FieldsPerRecord = -1
 	r.LazyQuotes = true
+	first := true
 	for {
 		row, err := r.Read()
 		if err == io.EOF {
@@ -124,9 +152,13 @@ func parseHeaderlessCSV(data []byte) ([][]string, error) {
 		if len(row) == 0 || (len(row) == 1 && strings.TrimSpace(row[0]) == "") {
 			continue
 		}
-		if len(row) == legacy {
-			row = append(row, "", "", "", "")
-		} else if len(row) != ncols {
+		if first && isHeaderRow(row) {
+			first = false
+			continue
+		}
+		first = false
+		row = padLegacyRow(row)
+		if len(row) != ncols {
 			preview := row
 			if len(preview) > 5 {
 				preview = preview[:5]
@@ -138,7 +170,7 @@ func parseHeaderlessCSV(data []byte) ([][]string, error) {
 	return rows, nil
 }
 
-func writeHeaderedCSV(path string, rows [][]string) error {
+func writeRawCSV(path string, rows [][]string, includeHeader bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -151,9 +183,11 @@ func writeHeaderedCSV(path string, rows [][]string) error {
 	defer os.Remove(tmpPath)
 
 	w := csv.NewWriter(tmp)
-	if err := w.Write(paths.FyersRawColumns); err != nil {
-		tmp.Close()
-		return err
+	if includeHeader {
+		if err := w.Write(JSONColumns); err != nil {
+			tmp.Close()
+			return err
+		}
 	}
 	for _, row := range rows {
 		if err := w.Write(row); err != nil {
@@ -172,7 +206,7 @@ func writeHeaderedCSV(path string, rows [][]string) error {
 	return os.Rename(tmpPath, path)
 }
 
-// ReadRawCSV reads a headered Fyers raw CSV into row maps.
+// ReadRawCSV reads a Fyers raw CSV (headerless or headered) into row maps keyed by JSONColumns.
 func ReadRawCSV(path string) ([]map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -184,12 +218,39 @@ func ReadRawCSV(path string) ([]map[string]string, error) {
 		return nil, err
 	}
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+
 	cr := csv.NewReader(bytes.NewReader(data))
-	header, err := cr.Read()
+	cr.FieldsPerRecord = -1
+	cr.LazyQuotes = true
+
+	first, err := cr.Read()
 	if err != nil {
 		return nil, err
 	}
+	if len(first) == 0 || (len(first) == 1 && strings.TrimSpace(first[0]) == "") {
+		return nil, nil
+	}
+
 	var rows []map[string]string
+	if isHeaderRow(first) {
+		header := first
+		for {
+			rec, err := cr.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if len(rec) == 0 || (len(rec) == 1 && strings.TrimSpace(rec[0]) == "") {
+				continue
+			}
+			rows = append(rows, rowFromHeadered(header, padLegacyRow(rec)))
+		}
+		return rows, nil
+	}
+
+	rows = append(rows, rowFromFields(first))
 	for {
 		rec, err := cr.Read()
 		if err == io.EOF {
@@ -198,13 +259,14 @@ func ReadRawCSV(path string) ([]map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		m := make(map[string]string, len(header))
-		for i, h := range header {
-			if i < len(rec) {
-				m[h] = rec[i]
-			}
+		if len(rec) == 0 || (len(rec) == 1 && strings.TrimSpace(rec[0]) == "") {
+			continue
 		}
-		rows = append(rows, m)
+		rec = padLegacyRow(rec)
+		if len(rec) != columnCount() {
+			return nil, fmt.Errorf("expected %d fields, got %d", columnCount(), len(rec))
+		}
+		rows = append(rows, rowFromFields(rec))
 	}
 	return rows, nil
 }

@@ -17,11 +17,11 @@ import (
 )
 
 var schemaRE = regexp.MustCompile(`^v2-\d{8}$`)
-var dateRowRE = regexp.MustCompile(`^\d{8}$`)
 
 var colNames = paths.NormalizedColumns
-var nullableBigint = map[string]struct{}{
-	"strike": {}, "expiration": {}, "multiplier": {},
+
+var nullableCols = map[string]struct{}{
+	"lotSize": {}, "ISIN": {}, "expiration": {}, "strike": {}, "optionType": {},
 }
 
 type tableJob struct {
@@ -157,15 +157,19 @@ func loadTable(ctx context.Context, tx pgx.Tx, schema, table, csvPath string) (i
 
 func buildCreateDDL(schema, table string) string {
 	cols := strings.Join([]string{
-		`"date" INTEGER NOT NULL`,
-		`"exchange" TEXT`,
-		`"underlying_root" TEXT`,
-		`"underlying" TEXT`,
-		`"strike" BIGINT`,
+		`"scriptDetails" TEXT NOT NULL`,
+		`"scriptInstrumentType" TEXT NOT NULL`,
+		`"lotSize" BIGINT`,
+		`"tickSize" BIGINT NOT NULL`,
+		`"ISIN" TEXT`,
+		`"tradingSessionUTC" TEXT NOT NULL`,
 		`"expiration" BIGINT`,
-		`"multiplier" BIGINT`,
-		`"token" BIGINT NOT NULL`,
-		`"symbol" TEXT`,
+		`"script" TEXT NOT NULL`,
+		`"scriptToken" BIGINT NOT NULL`,
+		`"underlying_root" TEXT NOT NULL`,
+		`"underlying" TEXT NOT NULL`,
+		`"strike" BIGINT`,
+		`"optionType" TEXT`,
 	}, ",\n    ")
 	return fmt.Sprintf(`DROP TABLE IF EXISTS "%s"."%s" CASCADE;
 CREATE TABLE "%s"."%s" (
@@ -177,48 +181,64 @@ func buildIndexDDL(schema, table string) []string {
 	p := table
 	sch, tbl := schema, table
 	return []string{
-		fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS %s_token_symbol_uq ON "%s"."%s" (token, symbol)`, p, sch, tbl),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_underlying_expiration_idx ON "%s"."%s" (underlying, expiration)`, p, sch, tbl),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_exchange_underlying_idx ON "%s"."%s" (exchange, underlying)`, p, sch, tbl),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_strike_idx ON "%s"."%s" (strike)`, p, sch, tbl),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_symbol_idx ON "%s"."%s" (symbol)`, p, sch, tbl),
+		fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS %s_script_token_uq ON "%s"."%s" ("scriptToken", "script")`, p, sch, tbl),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_underlying_root_expiration_idx ON "%s"."%s" ("underlying_root", "expiration")`, p, sch, tbl),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_underlying_expiration_idx ON "%s"."%s" ("underlying", "expiration")`, p, sch, tbl),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_strike_idx ON "%s"."%s" ("strike")`, p, sch, tbl),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_script_idx ON "%s"."%s" ("script")`, p, sch, tbl),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_instrument_type_idx ON "%s"."%s" ("scriptInstrumentType")`, p, sch, tbl),
 	}
 }
 
 func buildCopySQL(schema, table string) string {
-	nulls := make([]string, 0, len(nullableBigint))
-	for c := range nullableBigint {
-		nulls = append(nulls, c)
-	}
-	// sorted for stable output
-	for i := 0; i < len(nulls); i++ {
-		for j := i + 1; j < len(nulls); j++ {
-			if nulls[j] < nulls[i] {
-				nulls[i], nulls[j] = nulls[j], nulls[i]
-			}
-		}
+	nulls := sortedKeys(nullableCols)
+	quotedCols := make([]string, len(colNames))
+	for i, c := range colNames {
+		quotedCols[i] = `"` + c + `"`
 	}
 	return fmt.Sprintf(
 		`COPY "%s"."%s" (%s) FROM STDIN WITH (FORMAT csv, HEADER true, ENCODING 'UTF8', FORCE_NULL (%s))`,
-		schema, table, strings.Join(colNames, ", "), strings.Join(nulls, ", "),
+		schema, table, strings.Join(quotedCols, ", "), strings.Join(nulls, ", "),
 	)
 }
 
+func sortedKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, `"`+k+`"`)
+	}
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j] < out[i] {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
+}
+
 func rowOK(row map[string]string) bool {
-	day := strings.TrimSpace(row["date"])
-	if !dateRowRE.MatchString(day) {
+	if strings.TrimSpace(row["scriptDetails"]) == "" {
 		return false
 	}
-	tok := strings.TrimSpace(row["token"])
-	sym := strings.TrimSpace(row["symbol"])
+	if strings.TrimSpace(row["scriptInstrumentType"]) == "" {
+		return false
+	}
+	if strings.TrimSpace(row["tickSize"]) == "" {
+		return false
+	}
+	if strings.TrimSpace(row["tradingSessionUTC"]) == "" {
+		return false
+	}
+	tok := strings.TrimSpace(row["scriptToken"])
+	sym := strings.TrimSpace(row["script"])
 	if tok == "" || sym == "" {
 		return false
 	}
-	v, err := parseInt(tok)
-	if err != nil || v <= 0 {
+	if _, err := parseInt(tok); err != nil {
 		return false
 	}
-	return true
+	return strings.TrimSpace(row["underlying"]) != "" && strings.TrimSpace(row["underlying_root"]) != ""
 }
 
 func parseInt(s string) (int64, error) {
@@ -266,7 +286,7 @@ func csvBytesForCopy(path string) ([]byte, int, int, int, error) {
 			nSkip++
 			continue
 		}
-		key := strings.TrimSpace(row["token"]) + "\x00" + strings.TrimSpace(row["symbol"])
+		key := strings.TrimSpace(row["scriptToken"]) + "\x00" + strings.TrimSpace(row["script"])
 		if _, ok := seen[key]; ok {
 			continue
 		}

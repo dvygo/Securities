@@ -17,34 +17,33 @@ func main() {
 
 func run() int {
 	var (
-		onlyStr      string
-		dateDir      string
-		dryRun       bool
-		postgresPush bool
-		inputPath    string
-		databaseURL  string
-		basket       string
+		onlyStr          string
+		dateDir          string
+		dryRun           bool
+		inputPath        string
+		includeCSVHeader bool
 	)
 
-	flag.StringVar(&onlyStr, "only", "", "steps: comma-separated (xnse,xnfo,...,normalize,baskets,postgres,fyers)")
+	flag.StringVar(&onlyStr, "only", "", "segments: comma-separated (fyers,xnse,xnfo,xncd,xbse,xbfo,xmcx)")
 	flag.StringVar(&dateDir, "date-dir", "", "YYYYMMDD day folder (default: today)")
 	flag.BoolVar(&dryRun, "dry-run", false, "print actions only")
-	flag.BoolVar(&postgresPush, "postgres-push", false, "load India symbology to Postgres after normalize")
-	flag.StringVar(&inputPath, "input", "", "local headerless Fyers CSV (download fallback)")
-	flag.StringVar(&databaseURL, "database-url", "", "override postgres URL")
-	flag.StringVar(&basket, "basket", "all", "basket name for --only baskets")
+	flag.StringVar(&inputPath, "input", "", "local Fyers CSV (headerless or headered; download fallback)")
+	flag.BoolVar(&includeCSVHeader, "include-csv-header", false, "write Fyers JSON column names as CSV header on raw files")
+	flag.BoolVar(&includeCSVHeader, "include-csv-headers", false, "alias for -include-csv-header")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `premarket — v4 India symbology pipeline (Go)
+		fmt.Fprintf(os.Stderr, `premarket v2 — Fyers raw sym_details download (Go)
 
-  premarket                          # full Fyers → normalize → baskets
+  premarket                          # download all six Fyers segments (headerless raw)
+  premarket --include-csv-header     # raw files with optional CSV header row (alias: --include-csv-headers)
   premarket --date-dir 20260602
-  premarket --only fyers normalize
-  premarket --only baskets --date-dir 20260602
-  premarket --postgres-push
+  premarket --only fyers             # same as default
+  premarket --only xnse,xnfo         # subset of segments
   premarket --dry-run
 
+Normalize / baskets / Postgres: use normalizer.exe (separate binary).
+
 Secrets: %s
-Data:    %s/YYYYMMDD/
+Data:    %s/YYYYMMDD/raw/FYERS/
 
 `, paths.ConfigINI(), paths.RepoRoot())
 		flag.PrintDefaults()
@@ -63,7 +62,7 @@ Data:    %s/YYYYMMDD/
 	dateDir = asOf.Format("20060102")
 
 	only := parseOnly(onlyStr)
-	steps, err := runner.BuildSteps(only, postgresPush)
+	steps, err := runner.BuildDownloadSteps(only)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 2
@@ -76,12 +75,11 @@ Data:    %s/YYYYMMDD/
 	}
 
 	opts := runner.Opts{
-		AsOf:        asOf,
-		DateDir:     dateDir,
-		DryRun:      dryRun,
-		InputPath:   inputPath,
-		DatabaseURL: databaseURL,
-		Basket:      basket,
+		AsOf:             asOf,
+		DateDir:          dateDir,
+		DryRun:           dryRun,
+		InputPath:        inputPath,
+		IncludeCSVHeader: includeCSVHeader,
 	}
 
 	if err := runner.Run(steps, opts); err != nil {

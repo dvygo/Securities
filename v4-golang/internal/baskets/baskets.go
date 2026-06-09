@@ -23,7 +23,7 @@ var (
 
 var outputColumns = []string{
 	"date", "exchange", "underlying", "instrument", "expiration",
-	"strike", "multiplier", "exToken", "exSymbol", "displaySymbol",
+	"strike", "lotSize", "scriptToken", "script", "displaySymbol",
 }
 
 var allBasketNames = []string{
@@ -43,9 +43,15 @@ type Stats struct {
 }
 
 type SymIndex struct {
+	ExchangeMIC         string
 	BySymbol            map[string]map[string]string
 	FuturesByUnderlying map[string][]map[string]string
 	DisplayBySymbol     map[string]string
+}
+
+func asOfUTCStartNs(t time.Time) int64 {
+	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return d.UnixNano()
 }
 
 func loadBasketSymbols(path string) ([]string, error) {
@@ -80,20 +86,24 @@ func parseFutRoot(ticker string) string {
 	return strings.ToUpper(m[1])
 }
 
-func intField(row map[string]string, key string) int {
+func int64Field(row map[string]string, key string) int64 {
 	raw := strings.TrimSpace(row[key])
 	if raw == "" {
 		return 0
 	}
-	v, err := strconv.ParseFloat(raw, 64)
+	v, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return 0
+		f, err2 := strconv.ParseFloat(raw, 64)
+		if err2 != nil {
+			return 0
+		}
+		return int64(f)
 	}
-	return int(v)
+	return v
 }
 
 func isFutRow(row map[string]string) bool {
-	return strings.HasSuffix(strings.ToUpper(strings.TrimSpace(row["symbol"])), "FUT")
+	return strings.HasSuffix(strings.ToUpper(strings.TrimSpace(row["script"])), "FUT")
 }
 
 func loadDisplayNames(rawPath string) map[string]string {
@@ -103,8 +113,8 @@ func loadDisplayNames(rawPath string) map[string]string {
 		return out
 	}
 	for _, row := range rows {
-		ticker := strings.TrimSpace(row["symbolTicker"])
-		label := strings.TrimSpace(row["symbol"])
+		ticker := strings.TrimSpace(row["symTicker"])
+		label := strings.TrimSpace(row["symDetails"])
 		if ticker != "" && label != "" {
 			out[ticker] = label
 		}
@@ -112,8 +122,9 @@ func loadDisplayNames(rawPath string) map[string]string {
 	return out
 }
 
-func loadSymbology(normPath, rawPath string) (*SymIndex, error) {
+func loadSymbology(normPath, rawPath, exchangeMIC string) (*SymIndex, error) {
 	idx := &SymIndex{
+		ExchangeMIC:         exchangeMIC,
 		BySymbol:            make(map[string]map[string]string),
 		FuturesByUnderlying: make(map[string][]map[string]string),
 		DisplayBySymbol:     loadDisplayNames(rawPath),
@@ -123,7 +134,7 @@ func loadSymbology(normPath, rawPath string) (*SymIndex, error) {
 		return nil, err
 	}
 	for _, row := range rows {
-		sym := strings.TrimSpace(row["symbol"])
+		sym := strings.TrimSpace(row["script"])
 		if sym != "" {
 			idx.BySymbol[sym] = row
 		}
@@ -138,53 +149,47 @@ func loadSymbology(normPath, rawPath string) (*SymIndex, error) {
 }
 
 func inferInstrument(row map[string]string) string {
-	sym := strings.ToUpper(strings.TrimSpace(row["symbol"]))
+	sym := strings.ToUpper(strings.TrimSpace(row["script"]))
 	if strings.HasSuffix(sym, "-EQ") {
 		return "SPOT"
 	}
 	if strings.HasSuffix(sym, "FUT") {
 		return "FUT"
 	}
-	if intField(row, "expiration") == 0 {
+	if int64Field(row, "expiration") == 0 {
 		return "SPOT"
 	}
-	return "FUT"
+	return "OPT"
 }
 
-func toContractRow(row map[string]string, asOf time.Time, display map[string]string) []string {
+func toContractRow(row map[string]string, asOf time.Time, exchangeMIC string, display map[string]string) []string {
 	strikeRaw := strings.TrimSpace(row["strike"])
-	exp := intField(row, "expiration")
-	sym := strings.TrimSpace(row["symbol"])
+	exp := int64Field(row, "expiration")
+	sym := strings.TrimSpace(row["script"])
 	displaySym := ""
 	if display != nil {
 		displaySym = display[sym]
 	}
-	strikeOut := strikeRaw
-	if strikeOut == "" {
-		if exp == 0 {
-			strikeOut = "0"
-		}
-	}
 	return []string{
 		asOf.Format("20060102"),
-		strings.TrimSpace(row["exchange"]),
+		exchangeMIC,
 		strings.TrimSpace(row["underlying"]),
 		inferInstrument(row),
-		strconv.Itoa(exp),
-		strikeOut,
-		strconv.Itoa(intField(row, "multiplier")),
-		strings.TrimSpace(row["token"]),
+		strconv.FormatInt(exp, 10),
+		strikeRaw,
+		strings.TrimSpace(row["lotSize"]),
+		strings.TrimSpace(row["scriptToken"]),
 		sym,
 		displaySym,
 	}
 }
 
-func liveFutures(idx *SymIndex, underlying string, asOfInt int) []map[string]string {
+func liveFutures(idx *SymIndex, underlying string, asOfNs int64) []map[string]string {
 	rows := idx.FuturesByUnderlying[strings.ToUpper(underlying)]
 	var live []map[string]string
 	for _, row := range rows {
-		exp := intField(row, "expiration")
-		if exp >= asOfInt {
+		exp := int64Field(row, "expiration")
+		if exp >= asOfNs {
 			live = append(live, row)
 		}
 	}
@@ -196,9 +201,9 @@ func pickNear(rows []map[string]string) map[string]string {
 		return nil
 	}
 	best := rows[0]
-	bestExp := intField(best, "expiration")
+	bestExp := int64Field(best, "expiration")
 	for _, r := range rows[1:] {
-		e := intField(r, "expiration")
+		e := int64Field(r, "expiration")
 		if e < bestExp {
 			best = r
 			bestExp = e
@@ -234,10 +239,14 @@ func writeContractCSV(path string, rows [][]string, dryRun bool) error {
 	return w.Error()
 }
 
-func normRaw(asOf time.Time, csvName string) (string, string) {
-	day := paths.DayDir(asOf)
-	return filepath.Join(day, paths.NormalizedSubdir, csvName),
-		filepath.Join(day, paths.RawSubdir, csvName)
+func normRaw(asOf time.Time, csvName string) (normPath, rawPath, exchangeMIC string) {
+	seg, err := paths.FyersSegmentForOutputCSV(csvName)
+	if err != nil {
+		day := paths.DayDir(asOf)
+		return filepath.Join(day, paths.NormalizedSubdir, csvName),
+			filepath.Join(day, paths.RawSubdir, csvName), ""
+	}
+	return paths.NormalizedCSV(asOf, csvName), paths.FyersRawCSV(asOf, seg.SourceFile), seg.ExchangeMIC
 }
 
 func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
@@ -247,8 +256,8 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 
 	switch name {
 	case "NIFTY_FNO_EQUITY_SPOTS":
-		norm, raw := normRaw(asOf, paths.XNSECSV)
-		idx, err := loadSymbology(norm, raw)
+		norm, raw, mic := normRaw(asOf, paths.XNSECSV)
+		idx, err := loadSymbology(norm, raw, mic)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -256,8 +265,8 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "NIFTY_FNO_FUTURES_NEAR":
-		norm, raw := normRaw(asOf, paths.XNFOCSV)
-		idx, err := loadSymbology(norm, raw)
+		norm, raw, mic := normRaw(asOf, paths.XNFOCSV)
+		idx, err := loadSymbology(norm, raw, mic)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -265,8 +274,8 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "NIFTY_FNO_FUTURES_ALL":
-		norm, raw := normRaw(asOf, paths.XNFOCSV)
-		idx, err := loadSymbology(norm, raw)
+		norm, raw, mic := normRaw(asOf, paths.XNFOCSV)
+		idx, err := loadSymbology(norm, raw, mic)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -274,8 +283,8 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "NSE_INDEX_FUTURES":
-		norm, raw := normRaw(asOf, paths.XNFOCSV)
-		idx, err := loadSymbology(norm, raw)
+		norm, raw, mic := normRaw(asOf, paths.XNFOCSV)
+		idx, err := loadSymbology(norm, raw, mic)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -283,8 +292,8 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "BSE_INDEX_FUTURES":
-		norm, raw := normRaw(asOf, paths.XBFOCSV)
-		idx, err := loadSymbology(norm, raw)
+		norm, raw, mic := normRaw(asOf, paths.XBFOCSV)
+		idx, err := loadSymbology(norm, raw, mic)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -292,8 +301,8 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "MCX_FUTURES":
-		norm, raw := normRaw(asOf, paths.XMCXCSV)
-		idx, err := loadSymbology(norm, raw)
+		norm, raw, mic := normRaw(asOf, paths.XMCXCSV)
+		idx, err := loadSymbology(norm, raw, mic)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -301,18 +310,18 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "ALL_INDEX_FUTURES":
-		nfoNorm, nfoRaw := normRaw(asOf, paths.XNFOCSV)
-		xbfoNorm, xbfoRaw := normRaw(asOf, paths.XBFOCSV)
-		mcxNorm, mcxRaw := normRaw(asOf, paths.XMCXCSV)
-		nfo, err := loadSymbology(nfoNorm, nfoRaw)
+		nfoNorm, nfoRaw, nfoMIC := normRaw(asOf, paths.XNFOCSV)
+		xbfoNorm, xbfoRaw, xbfoMIC := normRaw(asOf, paths.XBFOCSV)
+		mcxNorm, mcxRaw, mcxMIC := normRaw(asOf, paths.XMCXCSV)
+		nfo, err := loadSymbology(nfoNorm, nfoRaw, nfoMIC)
 		if err != nil {
 			return Stats{}, err
 		}
-		xbfo, err := loadSymbology(xbfoNorm, xbfoRaw)
+		xbfo, err := loadSymbology(xbfoNorm, xbfoRaw, xbfoMIC)
 		if err != nil {
 			return Stats{}, err
 		}
-		mcx, err := loadSymbology(mcxNorm, mcxRaw)
+		mcx, err := loadSymbology(mcxNorm, mcxRaw, mcxMIC)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -342,7 +351,7 @@ func resolveSpots(spotsBasket string, idx *SymIndex, asOf time.Time) ([][]string
 			st.DroppedMissing++
 			continue
 		}
-		out = append(out, toContractRow(row, asOf, idx.DisplayBySymbol))
+		out = append(out, toContractRow(row, asOf, idx.ExchangeMIC, idx.DisplayBySymbol))
 	}
 	st.Written = len(out)
 	return out, st
@@ -351,7 +360,7 @@ func resolveSpots(spotsBasket string, idx *SymIndex, asOf time.Time) ([][]string
 func resolveStockFuts(spotsBasket string, idx *SymIndex, asOf time.Time, near bool) ([][]string, Stats) {
 	var st Stats
 	var out [][]string
-	asOfInt, _ := strconv.Atoi(asOf.Format("20060102"))
+	asOfNs := asOfUTCStartNs(asOf)
 	tickers, err := loadBasketSymbols(spotsBasket)
 	if err != nil {
 		return out, st
@@ -363,21 +372,21 @@ func resolveStockFuts(spotsBasket string, idx *SymIndex, asOf time.Time, near bo
 		}
 	}
 	for _, und := range underlyings {
-		live := liveFutures(idx, und, asOfInt)
+		live := liveFutures(idx, und, asOfNs)
 		if len(live) == 0 {
 			st.SkippedNoFut++
 			continue
 		}
 		if near {
 			if picked := pickNear(live); picked != nil {
-				out = append(out, toContractRow(picked, asOf, idx.DisplayBySymbol))
+				out = append(out, toContractRow(picked, asOf, idx.ExchangeMIC, idx.DisplayBySymbol))
 			}
 		} else {
 			sort.Slice(live, func(i, j int) bool {
-				return intField(live[i], "expiration") < intField(live[j], "expiration")
+				return int64Field(live[i], "expiration") < int64Field(live[j], "expiration")
 			})
 			for _, row := range live {
-				out = append(out, toContractRow(row, asOf, idx.DisplayBySymbol))
+				out = append(out, toContractRow(row, asOf, idx.ExchangeMIC, idx.DisplayBySymbol))
 			}
 		}
 	}
@@ -388,7 +397,7 @@ func resolveStockFuts(spotsBasket string, idx *SymIndex, asOf time.Time, near bo
 func resolveIndexFutsNear(template string, idx *SymIndex, asOf time.Time) ([][]string, Stats) {
 	var st Stats
 	var out [][]string
-	asOfInt, _ := strconv.Atoi(asOf.Format("20060102"))
+	asOfNs := asOfUTCStartNs(asOf)
 	tickers, err := loadBasketSymbols(template)
 	if err != nil {
 		return out, st
@@ -407,13 +416,13 @@ func resolveIndexFutsNear(template string, idx *SymIndex, asOf time.Time) ([][]s
 		roots = append(roots, root)
 	}
 	for _, root := range roots {
-		live := liveFutures(idx, root, asOfInt)
+		live := liveFutures(idx, root, asOfNs)
 		if len(live) == 0 {
 			st.SkippedNoFut++
 			continue
 		}
 		if picked := pickNear(live); picked != nil {
-			out = append(out, toContractRow(picked, asOf, idx.DisplayBySymbol))
+			out = append(out, toContractRow(picked, asOf, idx.ExchangeMIC, idx.DisplayBySymbol))
 		}
 	}
 	st.Written = len(out)
@@ -423,7 +432,7 @@ func resolveIndexFutsNear(template string, idx *SymIndex, asOf time.Time) ([][]s
 func resolveMCXFutsAll(template string, idx *SymIndex, asOf time.Time) ([][]string, Stats) {
 	var st Stats
 	var out [][]string
-	asOfInt, _ := strconv.Atoi(asOf.Format("20060102"))
+	asOfNs := asOfUTCStartNs(asOf)
 	tickers, err := loadBasketSymbols(template)
 	if err != nil {
 		return out, st
@@ -442,16 +451,16 @@ func resolveMCXFutsAll(template string, idx *SymIndex, asOf time.Time) ([][]stri
 		roots = append(roots, root)
 	}
 	for _, root := range roots {
-		live := liveFutures(idx, root, asOfInt)
+		live := liveFutures(idx, root, asOfNs)
 		if len(live) == 0 {
 			st.SkippedNoFut++
 			continue
 		}
 		sort.Slice(live, func(i, j int) bool {
-			return intField(live[i], "expiration") < intField(live[j], "expiration")
+			return int64Field(live[i], "expiration") < int64Field(live[j], "expiration")
 		})
 		for _, row := range live {
-			out = append(out, toContractRow(row, asOf, idx.DisplayBySymbol))
+			out = append(out, toContractRow(row, asOf, idx.ExchangeMIC, idx.DisplayBySymbol))
 		}
 	}
 	st.Written = len(out)

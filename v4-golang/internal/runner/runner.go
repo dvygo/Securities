@@ -19,23 +19,27 @@ type Step struct {
 }
 
 type Opts struct {
-	AsOf        time.Time
-	DateDir     string
-	DryRun      bool
-	InputPath   string
-	DatabaseURL string
-	Basket      string
+	AsOf             time.Time
+	DateDir          string
+	DryRun           bool
+	InputPath        string
+	DatabaseURL      string
+	Basket           string
+	IncludeCSVHeader bool
 }
 
 var fyersKeys = []string{"xnse", "xnfo", "xncd", "xbse", "xbfo", "xmcx"}
 
-var allSteps = []Step{
+var downloadSteps = []Step{
 	{Name: "xnse", Run: runFyers("xnse")},
 	{Name: "xnfo", Run: runFyers("xnfo")},
 	{Name: "xncd", Run: runFyers("xncd")},
 	{Name: "xbse", Run: runFyers("xbse")},
 	{Name: "xbfo", Run: runFyers("xbfo")},
 	{Name: "xmcx", Run: runFyers("xmcx")},
+}
+
+var normalizerSteps = []Step{
 	{Name: "normalize", Run: runNormalize},
 	{Name: "baskets", Run: runBaskets},
 	{Name: "postgres", Run: runPostgres},
@@ -43,14 +47,18 @@ var allSteps = []Step{
 
 func runFyers(key string) func(Opts) error {
 	return func(o Opts) error {
-		_, err := fyers.DownloadSegment(key, o.AsOf, o.InputPath, o.DryRun)
+		_, err := fyers.DownloadSegment(key, fyers.DownloadOpts{
+			AsOf:             o.AsOf,
+			InputPath:        o.InputPath,
+			DryRun:           o.DryRun,
+			IncludeCSVHeader: o.IncludeCSVHeader,
+		})
 		return err
 	}
 }
 
 func runNormalize(o Opts) error {
-	cfg := config.LoadNormalizer()
-	return normalize.RunFyers(o.AsOf, cfg, o.DryRun)
+	return normalize.RunFyers(o.AsOf, o.DryRun)
 }
 
 func runBaskets(o Opts) error {
@@ -73,10 +81,20 @@ func runPostgres(o Opts) error {
 	return postgres.PushDay(paths.DayDir(o.AsOf), schema, url, o.DryRun, true)
 }
 
-func BuildSteps(only []string, postgresPush bool) ([]Step, error) {
-	onlySet := expandOnly(only)
+// BuildDownloadSteps selects Fyers raw download steps (premarket.exe).
+func BuildDownloadSteps(only []string) ([]Step, error) {
+	return buildSteps(downloadSteps, only, false, false)
+}
+
+// BuildNormalizerSteps selects normalize / baskets / postgres (normalizer.exe).
+func BuildNormalizerSteps(only []string, postgresPush bool) ([]Step, error) {
+	return buildSteps(normalizerSteps, only, postgresPush, true)
+}
+
+func buildSteps(pool []Step, only []string, postgresPush bool, isNormalizer bool) ([]Step, error) {
+	onlySet := expandOnly(only, isNormalizer)
 	var steps []Step
-	for _, s := range allSteps {
+	for _, s := range pool {
 		if s.Name == "postgres" {
 			continue
 		}
@@ -105,15 +123,23 @@ func containsOnly(only []string, name string) bool {
 	return false
 }
 
-func expandOnly(only []string) map[string]struct{} {
+func expandOnly(only []string, isNormalizer bool) map[string]struct{} {
 	if len(only) == 0 {
 		return nil
 	}
 	m := make(map[string]struct{}, len(only))
 	for _, name := range only {
-		if name == "fyers" {
+		if name == "fyers" && !isNormalizer {
 			for _, k := range fyersKeys {
 				m[k] = struct{}{}
+			}
+			continue
+		}
+		if name == "all" && isNormalizer {
+			for _, s := range normalizerSteps {
+				if s.Name != "postgres" {
+					m[s.Name] = struct{}{}
+				}
 			}
 			continue
 		}

@@ -8,22 +8,26 @@ import (
 )
 
 const (
-	RawSubdir         = "raw"
-	NormalizedSubdir  = "normalized"
+	RawSubdir            = "raw"
+	FyersSubdir          = "FYERS"
+	NormalizedSubdir     = "normalized"
 	PostgresSchemaPrefix = "v2-"
 )
 
 var NormalizedColumns = []string{
-	"date", "exchange", "underlying_root", "underlying",
-	"strike", "expiration", "multiplier", "token", "symbol",
-}
-
-var FyersRawColumns = []string{
-	"fytoken", "symbol", "instrumentType", "lotSize", "tickSize",
-	"ISIN", "tradingSession", "lastUpdate", "expiryDate", "symbolTicker",
-	"exchange", "segment", "scripCode", "scripName", "scripToken",
-	"strikePrice", "optionType", "underFyToken", "underExSymbol",
-	"fyersExtra1", "fyersExtra2",
+	"scriptDetails",
+	"scriptInstrumentType",
+	"lotSize",
+	"tickSize",
+	"ISIN",
+	"tradingSessionUTC",
+	"expiration",
+	"script",
+	"scriptToken",
+	"underlying_root",
+	"underlying",
+	"strike",
+	"optionType",
 }
 
 const (
@@ -53,12 +57,17 @@ var FyersSegments = []FyersSegment{
 	{"xmcx", "XMCX", "MCX_COM.csv", XMCXCSV, "mcx_com", false},
 }
 
-var fyersByKey map[string]FyersSegment
+var (
+	fyersByKey       map[string]FyersSegment
+	fyersByOutputCSV map[string]FyersSegment
+)
 
 func init() {
 	fyersByKey = make(map[string]FyersSegment, len(FyersSegments))
+	fyersByOutputCSV = make(map[string]FyersSegment, len(FyersSegments))
 	for _, s := range FyersSegments {
 		fyersByKey[s.Key] = s
+		fyersByOutputCSV[s.OutputCSV] = s
 	}
 }
 
@@ -66,6 +75,14 @@ func FyersSegmentByKey(key string) (FyersSegment, error) {
 	s, ok := fyersByKey[key]
 	if !ok {
 		return FyersSegment{}, fmt.Errorf("unknown Fyers segment %q", key)
+	}
+	return s, nil
+}
+
+func FyersSegmentForOutputCSV(csvName string) (FyersSegment, error) {
+	s, ok := fyersByOutputCSV[csvName]
+	if !ok {
+		return FyersSegment{}, fmt.Errorf("unknown Fyers output CSV %q", csvName)
 	}
 	return s, nil
 }
@@ -126,12 +143,17 @@ func RawDir(asOf time.Time) string {
 	return filepath.Join(DayDir(asOf), RawSubdir)
 }
 
+func FyersRawDir(asOf time.Time) string {
+	return filepath.Join(RawDir(asOf), FyersSubdir)
+}
+
 func NormalizedDir(asOf time.Time) string {
 	return filepath.Join(DayDir(asOf), NormalizedSubdir)
 }
 
-func RawCSV(asOf time.Time, name string) string {
-	return filepath.Join(RawDir(asOf), name)
+// FyersRawCSV is the on-disk path for unnormalized Fyers sym_details (source filename).
+func FyersRawCSV(asOf time.Time, sourceFile string) string {
+	return filepath.Join(FyersRawDir(asOf), sourceFile)
 }
 
 func NormalizedCSV(asOf time.Time, name string) string {
