@@ -61,6 +61,7 @@ func mapFyersRow(row map[string]string) ([]string, error) {
 	return []string{
 		details,
 		instType,
+		instrumentType2(instType),
 		strconv.Itoa(IndiaPriceScale),
 		parseLotSize(row["minLotSize"]),
 		strconv.FormatInt(ScalePrice(tickF, IndiaPriceScale), 10),
@@ -126,6 +127,20 @@ func strikeScaled(raw string) string {
 		return ""
 	}
 	return strconv.FormatInt(ScalePrice(v, IndiaPriceScale), 10)
+}
+
+func instrumentType2(instType string) string {
+	switch strings.ToUpper(strings.TrimSpace(instType)) {
+	case "EQ":
+		return "SPOT"
+	case "FUTSTK", "FUTIDX":
+		return "FUTURE"
+	default:
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(instType)), "OPT") {
+			return "OPTION"
+		}
+		return ""
+	}
 }
 
 func optionTypeResolved(raw string) string {

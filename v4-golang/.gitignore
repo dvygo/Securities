@@ -5,7 +5,9 @@ constituents/contracts/
 # Binaries
 /premarket
 /premarket.exe
-*.exe
+/normalizer.exe
+bin/*.exe
+bin/LOGS/
 
 # Go
 /vendor/

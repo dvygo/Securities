@@ -13,12 +13,13 @@ const (
 	NSEExchangeSubdir    = "NSE_EXCHANGE"
 	NSENewFormatSubdir   = "NEW FILE FORMAT"
 	NormalizedSubdir     = "normalized"
-	PostgresSchemaPrefix = "v2-"
+	PostgresSchemaPrefix = "v4_"
 )
 
 var NormalizedColumns = []string{
 	"scriptDetails",
 	"scriptInstrumentType",
+	"scriptInstrumentType2",
 	"multiplier",
 	"lotSize",
 	"tickSize",
@@ -38,68 +39,90 @@ var ContractColumns = append([]string{"date", "exchange"}, NormalizedColumns...)
 
 const (
 	XNSECSV = "XNSE-FYERS.csv"
-	XNFOCSV = "XNFO-FYERS.csv"
-	XNCDCSV = "XNCD-FYERS.csv"
-	XBSECSV = "XBSE-FYERS.csv"
-	XBFOCSV = "XBFO-FYERS.csv"
-	XMCXCSV = "XMCX-FYERS.csv"
+	XBOMCSV = "XBOM-FYERS.csv"
+	XIMCCSV = "XIMC-FYERS.csv"
 
 	XNSENSEEXCHGCSV = "XNSE-NSE_EXCHANGE.csv"
 	XNFOEXCHGCSV    = "XNFO-NSE_EXCHANGE.csv"
 	XNCDEXCHGCSV    = "XNCD-NSE_EXCHANGE.csv"
+
+	FyersTableSuffix       = "_FYERS"
+	NSEExchangeTableSuffix = "_NSE_EXCHANGE"
 )
 
-type FyersSegment struct {
-	Key           string
-	ExchangeMIC   string
-	SourceFile    string
-	OutputCSV     string
-	PostgresTable string
-	CashMarket    bool
+// FyersRawSegment is one headerless Fyers download file (premarket.exe).
+type FyersRawSegment struct {
+	Key        string
+	SourceFile string
 }
 
-var FyersSegments = []FyersSegment{
-	{"xnse", "XNSE", "NSE_CM.csv", XNSECSV, "nse_cm", true},
-	{"xnfo", "XNFO", "NSE_FO.csv", XNFOCSV, "nse_fo", false},
-	{"xncd", "XNCD", "NSE_CD.csv", XNCDCSV, "nse_cd", false},
-	{"xbse", "XBSE", "BSE_CM.csv", XBSECSV, "bse_cm", true},
-	{"xbfo", "XBFO", "BSE_FO.csv", XBFOCSV, "bse_fo", false},
-	{"xmcx", "XMCX", "MCX_COM.csv", XMCXCSV, "mcx_com", false},
+var FyersRawSegments = []FyersRawSegment{
+	{"xnse", "NSE_CM.csv"},
+	{"xnfo", "NSE_FO.csv"},
+	{"xncd", "NSE_CD.csv"},
+	{"xbse", "BSE_CM.csv"},
+	{"xbfo", "BSE_FO.csv"},
+	{"xmcx", "MCX_COM.csv"},
+}
+
+// FyersMICBundle is one normalized output per ISO MIC (normalizer + postgres).
+type FyersMICBundle struct {
+	ExchangeMIC   string
+	OutputCSV     string
+	PostgresTable string
+	SourceFiles   []string
+}
+
+var FyersMICBundles = []FyersMICBundle{
+	{"XNSE", XNSECSV, "XNSE" + FyersTableSuffix, []string{"NSE_CM.csv", "NSE_FO.csv", "NSE_CD.csv"}},
+	{"XBOM", XBOMCSV, "XBOM" + FyersTableSuffix, []string{"BSE_CM.csv", "BSE_FO.csv"}},
+	{"XIMC", XIMCCSV, "XIMC" + FyersTableSuffix, []string{"MCX_COM.csv"}},
 }
 
 var (
-	fyersByKey       map[string]FyersSegment
-	fyersByOutputCSV map[string]FyersSegment
+	fyersRawByKey    map[string]FyersRawSegment
+	fyersMICByOutput map[string]FyersMICBundle
 )
 
 func init() {
-	fyersByKey = make(map[string]FyersSegment, len(FyersSegments))
-	fyersByOutputCSV = make(map[string]FyersSegment, len(FyersSegments))
-	for _, s := range FyersSegments {
-		fyersByKey[s.Key] = s
-		fyersByOutputCSV[s.OutputCSV] = s
+	fyersRawByKey = make(map[string]FyersRawSegment, len(FyersRawSegments))
+	for _, s := range FyersRawSegments {
+		fyersRawByKey[s.Key] = s
+	}
+	fyersMICByOutput = make(map[string]FyersMICBundle, len(FyersMICBundles))
+	for _, b := range FyersMICBundles {
+		fyersMICByOutput[b.OutputCSV] = b
 	}
 }
 
-func FyersSegmentByKey(key string) (FyersSegment, error) {
-	s, ok := fyersByKey[key]
+func FyersRawSegmentByKey(key string) (FyersRawSegment, error) {
+	s, ok := fyersRawByKey[key]
 	if !ok {
-		return FyersSegment{}, fmt.Errorf("unknown Fyers segment %q", key)
+		return FyersRawSegment{}, fmt.Errorf("unknown Fyers segment %q", key)
 	}
 	return s, nil
 }
 
+func FyersMICForOutputCSV(csvName string) (FyersMICBundle, error) {
+	b, ok := fyersMICByOutput[csvName]
+	if !ok {
+		return FyersMICBundle{}, fmt.Errorf("unknown Fyers output CSV %q", csvName)
+	}
+	return b, nil
+}
+
 type NSESegment struct {
 	Key           string
+	ExchangeMIC   string
 	SourceFile    string
 	OutputCSV     string
 	PostgresTable string
 }
 
 var NSESegments = []NSESegment{
-	{"nse_cm", "NSE_CM_security.csv", XNSENSEEXCHGCSV, "nse_cm_exchange"},
-	{"nse_fo", "NSE_FO_contract.csv", XNFOEXCHGCSV, "nse_fo_exchange"},
-	{"nse_cd", "NSE_CD_contract.csv", XNCDEXCHGCSV, "nse_cd_exchange"},
+	{"nse_cm", "XNSE", "NSE_CM_security.csv", XNSENSEEXCHGCSV, "XNSE" + NSEExchangeTableSuffix},
+	{"nse_fo", "XNFO", "NSE_FO_contract.csv", XNFOEXCHGCSV, "XNFO" + NSEExchangeTableSuffix},
+	{"nse_cd", "XNCD", "NSE_CD_contract.csv", XNCDEXCHGCSV, "XNCD" + NSEExchangeTableSuffix},
 }
 
 func NSEExchangeRawDir(asOf time.Time) string {
@@ -110,12 +133,19 @@ func NSEExchangeRawCSV(asOf time.Time, sourceFile string) string {
 	return filepath.Join(NSEExchangeRawDir(asOf), sourceFile)
 }
 
-func FyersSegmentForOutputCSV(csvName string) (FyersSegment, error) {
-	s, ok := fyersByOutputCSV[csvName]
-	if !ok {
-		return FyersSegment{}, fmt.Errorf("unknown Fyers output CSV %q", csvName)
+func BinDir() string {
+	return filepath.Join(RepoRoot(), "bin")
+}
+
+func LogsDir() string {
+	return filepath.Join(BinDir(), "LOGS")
+}
+
+func EnsureBinDirs() error {
+	if err := os.MkdirAll(LogsDir(), 0o755); err != nil {
+		return err
 	}
-	return s, nil
+	return nil
 }
 
 func RepoRoot() string {

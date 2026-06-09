@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dvygo/premarket/v4g/internal/paths"
+	"github.com/dvygo/premarket/v4g/internal/runlog"
 	"github.com/dvygo/premarket/v4g/internal/runner"
 )
 
@@ -60,6 +61,16 @@ Data:    %s/YYYYMMDD/raw/FYERS/
 		asOf = t
 	}
 	dateDir = asOf.Format("20060102")
+
+	cleanup, logPath, err := runlog.Setup("premarket", dateDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: log setup: %v\n", err)
+		return 2
+	}
+	defer cleanup()
+	if !dryRun {
+		fmt.Fprintf(os.Stderr, "log:     %s\n", logPath)
+	}
 
 	only := parseOnly(onlyStr)
 	steps, err := runner.BuildDownloadSteps(only)

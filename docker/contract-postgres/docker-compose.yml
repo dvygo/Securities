@@ -1,0 +1,83 @@
+# PostgreSQL 16 — contract symbology DB (primary + streaming replica).
+#
+# Host ports:
+#   contract-primary  localhost:7730  — writes (normalizer --postgres-push)
+#   contract-replica  localhost:7731  — read-only hot standby
+#
+# From Premarket repo:
+#   docker compose -f docker/contract-postgres/docker-compose.yml up -d
+#
+# Fresh cluster (wipes data):
+#   docker compose -f docker/contract-postgres/docker-compose.yml down -v
+#   docker compose -f docker/contract-postgres/docker-compose.yml up -d --build
+#
+# Primary URL:
+#   postgres://cuser:cpass@127.0.0.1:7730/cdb?sslmode=disable
+
+name: contract-postgres
+
+services:
+  postgres-primary:
+    image: postgres:16-alpine
+    container_name: contract-primary
+    hostname: contract-primary
+    environment:
+      POSTGRES_USER: cuser
+      POSTGRES_PASSWORD: cpass
+      POSTGRES_DB: cdb
+    ports:
+      - "7730:5432"
+    volumes:
+      - contract_postgres_primary_data:/var/lib/postgresql/data
+      - ./primary-init:/docker-entrypoint-initdb.d:ro
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+      -c hot_standby=on
+      -c listen_addresses=*
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cuser -d cdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    shm_size: "256m"
+
+  postgres-replica:
+    image: postgres:16-alpine
+    container_name: contract-replica
+    hostname: contract-replica
+    environment:
+      POSTGRES_USER: cuser
+      POSTGRES_PASSWORD: cpass
+      POSTGRES_DB: cdb
+      PGDATA: /var/lib/postgresql/data
+      PRIMARY_HOST: contract-primary
+      REPLICATOR_USER: replicator
+      REPLICATOR_PASSWORD: replicator_pass
+      REPLICATION_SLOT: contract_replica_1
+    ports:
+      - "7731:5432"
+    volumes:
+      - contract_postgres_replica_data:/var/lib/postgresql/data
+      - ./replica/entrypoint.sh:/replica-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "-eu", "/replica-entrypoint.sh"]
+    command: ["-c", "hot_standby=on", "-c", "listen_addresses=*"]
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cuser -d cdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 120s
+    restart: unless-stopped
+    shm_size: "256m"
+
+volumes:
+  contract_postgres_primary_data:
+  contract_postgres_replica_data:

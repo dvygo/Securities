@@ -23,7 +23,7 @@ type DownloadOpts struct {
 }
 
 func DownloadSegment(segKey string, opts DownloadOpts) (string, error) {
-	seg, err := paths.FyersSegmentByKey(segKey)
+	seg, err := paths.FyersRawSegmentByKey(segKey)
 	if err != nil {
 		return "", err
 	}
@@ -77,7 +77,7 @@ func DownloadSegment(segKey string, opts DownloadOpts) (string, error) {
 }
 
 func DownloadAll(opts DownloadOpts) error {
-	for _, seg := range paths.FyersSegments {
+	for _, seg := range paths.FyersRawSegments {
 		if _, err := DownloadSegment(seg.Key, opts); err != nil {
 			return fmt.Errorf("%s: %w", seg.Key, err)
 		}

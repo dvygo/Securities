@@ -10,8 +10,9 @@ import (
 func TestToContractRow_passesNormalizedColumns(t *testing.T) {
 	row := map[string]string{
 		"scriptDetails":        "IOC 28 Jul 26 110 PE",
-		"scriptInstrumentType": "OPTSTK",
-		"multiplier":           "100000",
+		"scriptInstrumentType":  "OPTSTK",
+		"scriptInstrumentType2": "OPTION",
+		"multiplier":            "100000",
 		"lotSize":              "4875",
 		"tickSize":             "1000",
 		"ISIN":                 "",
@@ -25,12 +26,12 @@ func TestToContractRow_passesNormalizedColumns(t *testing.T) {
 		"optionType":           "PUT",
 	}
 	asOf := time.Date(2026, 6, 9, 0, 0, 0, 0, time.UTC)
-	out := toContractRow(row, asOf, "XNFO")
+	out := toContractRow(row, asOf, "XNSE")
 	if len(out) != len(paths.ContractColumns) {
 		t.Fatalf("got %d cols want %d", len(out), len(paths.ContractColumns))
 	}
-	if out[0] != "20260609" || out[1] != "XNFO" || out[2] != row["scriptDetails"] || out[4] != "100000" {
-		t.Fatalf("metadata/mult: %v", out[:6])
+	if out[0] != "20260609" || out[1] != "XNSE" || out[2] != row["scriptDetails"] || out[4] != "OPTION" || out[5] != "100000" {
+		t.Fatalf("metadata/type2/mult: %v", out[:7])
 	}
 	if out[len(out)-1] != "PUT" {
 		t.Fatalf("optionType: %q", out[len(out)-1])

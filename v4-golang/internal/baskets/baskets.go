@@ -193,11 +193,11 @@ func writeContractCSV(path string, rows [][]string, dryRun bool) error {
 }
 
 func segmentNorm(asOf time.Time, outputCSV string) (normPath, exchangeMIC string, err error) {
-	seg, err := paths.FyersSegmentForOutputCSV(outputCSV)
+	bundle, err := paths.FyersMICForOutputCSV(outputCSV)
 	if err != nil {
 		return "", "", err
 	}
-	return paths.NormalizedCSV(asOf, outputCSV), seg.ExchangeMIC, nil
+	return paths.NormalizedCSV(asOf, outputCSV), bundle.ExchangeMIC, nil
 }
 
 func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
@@ -219,7 +219,7 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "NIFTY_FNO_FUTURES_NEAR":
-		norm, mic, err := segmentNorm(asOf, paths.XNFOCSV)
+		norm, mic, err := segmentNorm(asOf, paths.XNSECSV)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -231,7 +231,7 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "NIFTY_FNO_FUTURES_ALL":
-		norm, mic, err := segmentNorm(asOf, paths.XNFOCSV)
+		norm, mic, err := segmentNorm(asOf, paths.XNSECSV)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -255,7 +255,7 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "NIFTY500_FUTURES":
-		norm, mic, err := segmentNorm(asOf, paths.XNFOCSV)
+		norm, mic, err := segmentNorm(asOf, paths.XNSECSV)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -268,7 +268,7 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "NSE_INDEX_FUTURES":
-		norm, mic, err := segmentNorm(asOf, paths.XNFOCSV)
+		norm, mic, err := segmentNorm(asOf, paths.XNSECSV)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -280,7 +280,7 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "BSE_INDEX_FUTURES":
-		norm, mic, err := segmentNorm(asOf, paths.XBFOCSV)
+		norm, mic, err := segmentNorm(asOf, paths.XBOMCSV)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -292,7 +292,7 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "MCX_FUTURES":
-		norm, mic, err := segmentNorm(asOf, paths.XMCXCSV)
+		norm, mic, err := segmentNorm(asOf, paths.XIMCCSV)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -304,23 +304,23 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "ALL_INDEX_FUTURES":
-		nfoNorm, nfoMIC, err := segmentNorm(asOf, paths.XNFOCSV)
+		xnseNorm, xnseMIC, err := segmentNorm(asOf, paths.XNSECSV)
 		if err != nil {
 			return Stats{}, err
 		}
-		xbfoNorm, xbfoMIC, err := segmentNorm(asOf, paths.XBFOCSV)
+		xbomNorm, xbomMIC, err := segmentNorm(asOf, paths.XBOMCSV)
 		if err != nil {
 			return Stats{}, err
 		}
-		mcxNorm, mcxMIC, err := segmentNorm(asOf, paths.XMCXCSV)
+		mcxNorm, mcxMIC, err := segmentNorm(asOf, paths.XIMCCSV)
 		if err != nil {
 			return Stats{}, err
 		}
-		nfo, err := loadSymIndex(nfoNorm, nfoMIC)
+		xnse, err := loadSymIndex(xnseNorm, xnseMIC)
 		if err != nil {
 			return Stats{}, err
 		}
-		xbfo, err := loadSymIndex(xbfoNorm, xbfoMIC)
+		xbom, err := loadSymIndex(xbomNorm, xbomMIC)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -328,8 +328,8 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 		if err != nil {
 			return Stats{}, err
 		}
-		nseRows, nseSt := resolveIndexFuturesNear(filepath.Join(basketsDir, "NSE_INDEX_FUTURES.csv"), nfo, asOf)
-		bseRows, bseSt := resolveIndexFuturesNear(filepath.Join(basketsDir, "BSE_INDEX_FUTURES.csv"), xbfo, asOf)
+		nseRows, nseSt := resolveIndexFuturesNear(filepath.Join(basketsDir, "NSE_INDEX_FUTURES.csv"), xnse, asOf)
+		bseRows, bseSt := resolveIndexFuturesNear(filepath.Join(basketsDir, "BSE_INDEX_FUTURES.csv"), xbom, asOf)
 		mcxRows, mcxSt := resolveIndexFuturesAll(filepath.Join(basketsDir, "MCX_FUTURES.csv"), mcx, asOf)
 		all := append(append(nseRows, bseRows...), mcxRows...)
 		st := Stats{Written: len(all)}

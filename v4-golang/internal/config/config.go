@@ -73,7 +73,7 @@ func LoadNormalizer() Normalizer {
 		"xncd_exchange": "XNCD",
 		"xbse_exchange": "XBSE",
 		"xbfo_exchange": "XBFO",
-		"xmcx_exchange": "XMCX",
+		"xmcx_exchange": "XIMC",
 	}
 	f, err := loadINI()
 	if err != nil {

@@ -51,14 +51,14 @@ func TestMapFyersRow_CM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out[0] != "20 MICRONS LTD" || out[1] != "EQ" || out[2] != "100000" || out[3] != "1" || out[4] != "1000" {
-		t.Fatalf("details/type/mult/lot/tick: %v", out[:5])
+	if out[0] != "20 MICRONS LTD" || out[1] != "EQ" || out[2] != "SPOT" || out[3] != "100000" || out[4] != "1" || out[5] != "1000" {
+		t.Fatalf("details/type/type2/mult/lot/tick: %v", out[:6])
 	}
-	if out[7] != "" || out[12] != "" || out[13] != "" {
-		t.Fatalf("expiration/strike/optionType should be empty: %v", out[7:])
+	if out[8] != "" || out[13] != "" || out[14] != "" {
+		t.Fatalf("expiration/strike/optionType should be empty: %v", out[8:])
 	}
-	if out[8] != "NSE:20MICRONS-EQ" || out[10] != "20MICRONS" || out[11] != "20MICRONS" {
-		t.Fatalf("script/underlying_root/underlying: %v", out[8:])
+	if out[9] != "NSE:20MICRONS-EQ" || out[11] != "20MICRONS" || out[12] != "20MICRONS" {
+		t.Fatalf("script/underlying_root/underlying: %v", out[9:])
 	}
 }
 
@@ -80,12 +80,12 @@ func TestMapFyersRow_FOOption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out[1] != "OPTSTK" || out[2] != "100000" || out[10] != "IOC" || out[11] != "IOC" || out[12] != "11000000" || out[13] != "PUT" {
+	if out[1] != "OPTSTK" || out[2] != "OPTION" || out[3] != "100000" || out[11] != "IOC" || out[12] != "IOC" || out[13] != "11000000" || out[14] != "PUT" {
 		t.Fatalf("got %v", out)
 	}
 	wantExp := "1785232800000000000"
-	if out[7] != wantExp {
-		t.Fatalf("expiration: got %q want %q", out[7], wantExp)
+	if out[8] != wantExp {
+		t.Fatalf("expiration: got %q want %q", out[8], wantExp)
 	}
 }
 
@@ -107,7 +107,7 @@ func TestMapFyersRow_CD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out[1] != "FUTCUR" || out[2] != "100000" || out[4] != "250" || out[12] != "" {
+	if out[1] != "FUTCUR" || out[2] != "" || out[3] != "100000" || out[5] != "250" || out[13] != "" {
 		t.Fatalf("got %v", out)
 	}
 }
@@ -130,7 +130,24 @@ func TestMapFyersRow_MCX(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out[1] != "FUTIDX" || out[2] != "100000" || out[4] != "100000" {
+	if out[1] != "FUTIDX" || out[2] != "FUTURE" || out[3] != "100000" || out[5] != "100000" {
 		t.Fatalf("got %v", out)
+	}
+}
+
+func TestInstrumentType2(t *testing.T) {
+	cases := map[string]string{
+		"EQ":     "SPOT",
+		"FUTSTK": "FUTURE",
+		"FUTIDX": "FUTURE",
+		"OPTSTK": "OPTION",
+		"OPTIDX": "OPTION",
+		"FUTCUR": "",
+		"":       "",
+	}
+	for in, want := range cases {
+		if got := instrumentType2(in); got != want {
+			t.Fatalf("%q: got %q want %q", in, got, want)
+		}
 	}
 }

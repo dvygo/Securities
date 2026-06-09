@@ -16,12 +16,13 @@ import (
 	"github.com/dvygo/premarket/v4g/internal/paths"
 )
 
-var schemaRE = regexp.MustCompile(`^v2-\d{8}$`)
+var schemaRE = regexp.MustCompile(`^v4_\d{8}$`)
 
 var colNames = paths.NormalizedColumns
 
 var nullableCols = map[string]struct{}{
 	"lotSize": {}, "ISIN": {}, "expiration": {}, "strike": {}, "optionType": {},
+	"scriptInstrumentType2": {},
 }
 
 type tableJob struct {
@@ -32,8 +33,8 @@ type tableJob struct {
 
 func indiaJobs() []tableJob {
 	var jobs []tableJob
-	for _, seg := range paths.FyersSegments {
-		jobs = append(jobs, tableJob{seg.PostgresTable, seg.OutputCSV, false})
+	for _, b := range paths.FyersMICBundles {
+		jobs = append(jobs, tableJob{b.PostgresTable, b.OutputCSV, false})
 	}
 	for _, seg := range paths.NSESegments {
 		jobs = append(jobs, tableJob{seg.PostgresTable, seg.OutputCSV, true})
@@ -43,7 +44,7 @@ func indiaJobs() []tableJob {
 
 func PushDay(dayDir, schema, databaseURL string, dryRun, skipMissing bool) error {
 	if !schemaRE.MatchString(schema) {
-		return fmt.Errorf("invalid schema %q; want v2-YYYYMMDD", schema)
+		return fmt.Errorf("invalid schema %q; want v4_YYYYMMDD", schema)
 	}
 	if st, err := os.Stat(dayDir); err != nil || !st.IsDir() {
 		return fmt.Errorf("not found: %s", dayDir)
@@ -218,6 +219,7 @@ func buildFyersCreateDDL(schema, table string) string {
 	cols := strings.Join([]string{
 		`"scriptDetails" TEXT NOT NULL`,
 		`"scriptInstrumentType" TEXT NOT NULL`,
+		`"scriptInstrumentType2" TEXT`,
 		`"multiplier" BIGINT NOT NULL`,
 		`"lotSize" BIGINT`,
 		`"tickSize" BIGINT NOT NULL`,
@@ -262,6 +264,7 @@ func buildFyersIndexDDL(schema, table string) []string {
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_strike_idx ON "%s"."%s" ("strike")`, p, sch, tbl),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_script_idx ON "%s"."%s" ("script")`, p, sch, tbl),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_instrument_type_idx ON "%s"."%s" ("scriptInstrumentType")`, p, sch, tbl),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_instrument_type2_idx ON "%s"."%s" ("scriptInstrumentType2")`, p, sch, tbl),
 	}
 }
 

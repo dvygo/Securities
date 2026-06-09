@@ -19,24 +19,25 @@ copy secrets\secrets.example.ini secrets\secrets.ini
 
 ```powershell
 cd v4-golang
-go build -o premarket.exe ./cmd/premarket
-go build -o normalizer.exe ./cmd/normalizer
+.\build.ps1
 ```
+
+Outputs: `bin/premarket.exe`, `bin/normalizer.exe`. Runtime stderr is also written to `bin/LOGS/<binary>_YYYYMMDD_HHMMSS.log`.
 
 ## Run
 
 ```powershell
-.\premarket.exe
-.\premarket.exe --date-dir 20260609
-.\premarket.exe --include-csv-header
-.\premarket.exe --only xnse,xnfo
-.\premarket.exe --dry-run
+.\bin\premarket.exe
+.\bin\premarket.exe --date-dir 20260609
+.\bin\premarket.exe --include-csv-header
+.\bin\premarket.exe --only xnse,xnfo
+.\bin\premarket.exe --dry-run
 
-.\normalizer.exe
-.\normalizer.exe --date-dir 20260609
-.\normalizer.exe --only normalize,baskets
-.\normalizer.exe --postgres-push --only normalize,postgres
-.\normalizer.exe --dry-run
+.\bin\normalizer.exe
+.\bin\normalizer.exe --date-dir 20260609
+.\bin\normalizer.exe --only normalize,baskets
+.\bin\normalizer.exe --postgres-push --only postgres
+.\bin\normalizer.exe --dry-run
 ```
 
 ## Pipeline
@@ -44,7 +45,9 @@ go build -o normalizer.exe ./cmd/normalizer
 1. **premarket** — Fyers HTTP → `YYYYMMDD/raw/FYERS/*.csv` (headerless, source names e.g. `NSE_CM.csv`)
 2. **normalizer** — `YYYYMMDD/normalized/` (14 columns, v2 schema below)
 3. **normalizer --only baskets** — `constituents/contracts/YYYYMMDD/*.csv` (`date`, `exchange`, + full normalized v2 row)
-4. **normalizer --postgres-push** — India tables: `nse_cm`, `nse_fo`, `nse_cd`, `bse_cm`, `bse_fo`, `mcx_com`
+4. **normalizer --postgres-push** — schema `v4_YYYYMMDD` on **contract** Postgres (`127.0.0.1:7730/cdb`, reads `7731`). Fyers tables (ISO MIC): `XNSE_FYERS`, `XBOM_FYERS`, `XIMC_FYERS`. NSE exchange (unchanged): `XNSE_NSE_EXCHANGE`, `XNFO_NSE_EXCHANGE`, `XNCD_NSE_EXCHANGE`. Compose: `docker/contract-postgres/`.
+
+Normalized Fyers outputs merge raw segments per MIC: `XNSE-FYERS.csv` (NSE CM+FO+CD), `XBOM-FYERS.csv` (BSE CM+FO), `XIMC-FYERS.csv` (MCX).
 
 ### Normalized CSV columns (v2)
 
@@ -52,6 +55,7 @@ go build -o normalizer.exe ./cmd/normalizer
 |--------|--------|-------|
 | `scriptDetails` | `symDetails` | verbatim |
 | `scriptInstrumentType` | `exInstType` | appendix string (`EQ`, `FUTIDX`, `OPTSTK`, …) |
+| `scriptInstrumentType2` | `scriptInstrumentType` | `EQ`→`SPOT`, `FUTSTK`/`FUTIDX`→`FUTURE`, `OPT*`→`OPTION` |
 | `multiplier` | — | constant `100000` (price scale) |
 | `lotSize` | `minLotSize` | int; empty if missing |
 | `tickSize` | `tickSize` | `int(round(price × 100000))` |
@@ -79,7 +83,7 @@ Place NSE **NEW FILE FORMAT** CSVs under `YYYYMMDD/raw/NSE_EXCHANGE/NEW FILE FOR
 | `NSE_FO_contract.csv` | `XNFO-NSE_EXCHANGE.csv` |
 | `NSE_CD_contract.csv` | `XNCD-NSE_EXCHANGE.csv` |
 
-`normalizer --only normalize-nse` (or default `normalize`) copies NSE files byte-for-byte into `normalized/` under the `*-NSE_EXCHANGE.csv` names — no field mapping. Postgres push loads them into `nse_cm_exchange`, `nse_fo_exchange`, `nse_cd_exchange` with the original NSE column names (all TEXT, empty cells as NULL).
+`normalizer --only normalize-nse` (or default `normalize`) copies NSE files byte-for-byte into `normalized/` under the `*-NSE_EXCHANGE.csv` names — no field mapping. Postgres push loads them into `XNSE_NSE_EXCHANGE`, `XNFO_NSE_EXCHANGE`, `XNCD_NSE_EXCHANGE` with the original NSE column names (all TEXT, empty cells as NULL).
 
 Raw Fyers field names (`fyToken`, `symTicker`, `exToken`, …) are used in Go code only. Pass `--include-csv-header` to write them as the first CSV row.
 

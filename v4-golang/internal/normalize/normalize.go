@@ -15,10 +15,9 @@ import (
 func RunFyers(asOf time.Time, dryRun bool) error {
 	day := paths.DayDir(asOf)
 	fmt.Fprintf(os.Stderr, "normalizer (fyers): as_of=%s dir=%s scale=%d\n", asOf.Format("2006-01-02"), day, IndiaPriceScale)
-	for _, seg := range paths.FyersSegments {
-		src := paths.FyersRawCSV(asOf, seg.SourceFile)
-		dst := paths.NormalizedCSV(asOf, seg.OutputCSV)
-		if _, err := rewriteFyers(src, dst, dryRun); err != nil {
+	for _, bundle := range paths.FyersMICBundles {
+		dst := paths.NormalizedCSV(asOf, bundle.OutputCSV)
+		if _, err := rewriteFyersBundle(asOf, bundle, dst, dryRun); err != nil {
 			return err
 		}
 	}
@@ -32,20 +31,50 @@ func RunAll(asOf time.Time, dryRun bool) error {
 	return RunNSE(asOf, dryRun)
 }
 
-func rewriteFyers(src, dst string, dryRun bool) (int, error) {
+func rewriteFyersBundle(asOf time.Time, bundle paths.FyersMICBundle, dst string, dryRun bool) (int, error) {
+	var out [][]string
+	skipped := 0
+	for _, sourceFile := range bundle.SourceFiles {
+		src := paths.FyersRawCSV(asOf, sourceFile)
+		rows, nSkip, err := mapFyersSource(src)
+		if err != nil {
+			return 0, err
+		}
+		skipped += nSkip
+		out = append(out, rows...)
+	}
+	if len(out) == 0 {
+		fmt.Fprintf(os.Stderr, "skip (empty): %s\n", dst)
+		return 0, nil
+	}
+	if dryRun {
+		fmt.Fprintf(os.Stderr, "dry-run: would write %d rows -> %s (%s)\n", len(out), dst, bundle.ExchangeMIC)
+		return len(out), nil
+	}
+	if err := writeNormalized(dst, out); err != nil {
+		return 0, err
+	}
+	msg := fmt.Sprintf("normalized %d rows -> %s (%s)", len(out), dst, bundle.ExchangeMIC)
+	if skipped > 0 {
+		msg += fmt.Sprintf(" (%d rows skipped)", skipped)
+	}
+	fmt.Fprintln(os.Stderr, msg)
+	return len(out), nil
+}
+
+func mapFyersSource(src string) ([][]string, int, error) {
 	if _, err := os.Stat(src); err != nil {
 		fmt.Fprintf(os.Stderr, "skip (missing): %s\n", src)
-		return 0, nil
+		return nil, 0, nil
 	}
 	rows, err := fyers.ReadRawCSV(src)
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	if len(rows) == 0 {
 		fmt.Fprintf(os.Stderr, "skip (empty): %s\n", src)
-		return 0, nil
+		return nil, 0, nil
 	}
-
 	skipped := 0
 	out := make([][]string, 0, len(rows))
 	for _, row := range rows {
@@ -56,20 +85,7 @@ func rewriteFyers(src, dst string, dryRun bool) (int, error) {
 		}
 		out = append(out, mapped)
 	}
-
-	if dryRun {
-		fmt.Fprintf(os.Stderr, "dry-run: would write %d rows -> %s\n", len(out), dst)
-		return len(out), nil
-	}
-	if err := writeNormalized(dst, out); err != nil {
-		return 0, err
-	}
-	msg := fmt.Sprintf("normalized %d rows -> %s", len(out), dst)
-	if skipped > 0 {
-		msg += fmt.Sprintf(" (%d rows skipped)", skipped)
-	}
-	fmt.Fprintln(os.Stderr, msg)
-	return len(out), nil
+	return out, skipped, nil
 }
 
 func writeNormalized(path string, rows [][]string) error {
