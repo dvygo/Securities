@@ -14,7 +14,7 @@ import (
 
 func RunFyers(asOf time.Time, dryRun bool) error {
 	day := paths.DayDir(asOf)
-	fmt.Fprintf(os.Stderr, "normalizer: as_of=%s dir=%s scale=%d\n", asOf.Format("2006-01-02"), day, IndiaPriceScale)
+	fmt.Fprintf(os.Stderr, "normalizer (fyers): as_of=%s dir=%s scale=%d\n", asOf.Format("2006-01-02"), day, IndiaPriceScale)
 	for _, seg := range paths.FyersSegments {
 		src := paths.FyersRawCSV(asOf, seg.SourceFile)
 		dst := paths.NormalizedCSV(asOf, seg.OutputCSV)
@@ -23,6 +23,13 @@ func RunFyers(asOf time.Time, dryRun bool) error {
 		}
 	}
 	return nil
+}
+
+func RunAll(asOf time.Time, dryRun bool) error {
+	if err := RunFyers(asOf, dryRun); err != nil {
+		return err
+	}
+	return RunNSE(asOf, dryRun)
 }
 
 func rewriteFyers(src, dst string, dryRun bool) (int, error) {

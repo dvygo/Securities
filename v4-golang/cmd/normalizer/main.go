@@ -25,24 +25,27 @@ func run() int {
 		basket       string
 	)
 
-	flag.StringVar(&onlyStr, "only", "all", "steps: all, or comma-separated (normalize,baskets,postgres)")
+	flag.StringVar(&onlyStr, "only", "all", "steps: all, or comma-separated (normalize,normalize-fyers,normalize-nse,baskets,postgres)")
 	flag.StringVar(&dateDir, "date-dir", "", "YYYYMMDD day folder (default: today)")
 	flag.BoolVar(&dryRun, "dry-run", false, "print actions only")
 	flag.BoolVar(&postgresPush, "postgres-push", false, "load India symbology to Postgres after normalize")
 	flag.StringVar(&databaseURL, "database-url", "", "override postgres URL")
 	flag.StringVar(&basket, "basket", "all", "basket name for --only baskets")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `normalizer — Fyers symbology normalization (Go)
+		fmt.Fprintf(os.Stderr, `normalizer — India symbology normalization (Go)
 
-  normalizer                           # normalize all six segments
+  normalizer                           # normalize Fyers + NSE exchange (if present)
+  normalizer --only normalize-fyers    # Fyers only
+  normalizer --only normalize-nse      # NSE NEW FILE FORMAT only
   normalizer --only normalize,baskets
   normalizer --postgres-push --only normalize,postgres
   normalizer --date-dir 20260609
   normalizer --dry-run
 
-Expects raw Fyers CSV under %s/YYYYMMDD/raw/FYERS/
+Fyers:  %s/YYYYMMDD/raw/FYERS/
+NSE:    %s/YYYYMMDD/raw/NSE_EXCHANGE/NEW FILE FORMAT/
 
-`, paths.RepoRoot())
+`, paths.RepoRoot(), paths.RepoRoot())
 		flag.PrintDefaults()
 	}
 	flag.Parse()

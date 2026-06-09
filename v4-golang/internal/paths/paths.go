@@ -10,6 +10,8 @@ import (
 const (
 	RawSubdir            = "raw"
 	FyersSubdir          = "FYERS"
+	NSEExchangeSubdir    = "NSE_EXCHANGE"
+	NSENewFormatSubdir   = "NEW FILE FORMAT"
 	NormalizedSubdir     = "normalized"
 	PostgresSchemaPrefix = "v2-"
 )
@@ -41,6 +43,10 @@ const (
 	XBSECSV = "XBSE-FYERS.csv"
 	XBFOCSV = "XBFO-FYERS.csv"
 	XMCXCSV = "XMCX-FYERS.csv"
+
+	XNSENSEEXCHGCSV = "XNSE-NSE_EXCHANGE.csv"
+	XNFOEXCHGCSV    = "XNFO-NSE_EXCHANGE.csv"
+	XNCDEXCHGCSV    = "XNCD-NSE_EXCHANGE.csv"
 )
 
 type FyersSegment struct {
@@ -81,6 +87,27 @@ func FyersSegmentByKey(key string) (FyersSegment, error) {
 		return FyersSegment{}, fmt.Errorf("unknown Fyers segment %q", key)
 	}
 	return s, nil
+}
+
+type NSESegment struct {
+	Key           string
+	SourceFile    string
+	OutputCSV     string
+	PostgresTable string
+}
+
+var NSESegments = []NSESegment{
+	{"nse_cm", "NSE_CM_security.csv", XNSENSEEXCHGCSV, "nse_cm_exchange"},
+	{"nse_fo", "NSE_FO_contract.csv", XNFOEXCHGCSV, "nse_fo_exchange"},
+	{"nse_cd", "NSE_CD_contract.csv", XNCDEXCHGCSV, "nse_cd_exchange"},
+}
+
+func NSEExchangeRawDir(asOf time.Time) string {
+	return filepath.Join(RawDir(asOf), NSEExchangeSubdir, NSENewFormatSubdir)
+}
+
+func NSEExchangeRawCSV(asOf time.Time, sourceFile string) string {
+	return filepath.Join(NSEExchangeRawDir(asOf), sourceFile)
 }
 
 func FyersSegmentForOutputCSV(csvName string) (FyersSegment, error) {

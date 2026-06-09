@@ -21,7 +21,7 @@ EXCHANGE_CAL  = "XNAS"
 
 UNDERLYINGS_FILE = "underlying.txt"
 BASE_OUT_DIR = Path("output_matrix")
-CONFIG_INI = Path(__file__).resolve().parent / "config.ini"
+CONFIG_INI = Path(__file__).resolve().parent.parent / "secrets" / "secrets.ini"
 # ============================================================
 
 UTC = ZoneInfo("UTC")

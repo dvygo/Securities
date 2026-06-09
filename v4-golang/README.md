@@ -69,6 +69,18 @@ Price scale `100000` matches v3 GLBX/OPRA (`internal/normalize/price.go`). Human
 
 Fyers appendix codes (exchange, segment, exInstType, fyToken layout, symbology) are hardcoded in `internal/fyers/appendix.go` and `symbology.go`.
 
+### NSE exchange (manual drop)
+
+Place NSE **NEW FILE FORMAT** CSVs under `YYYYMMDD/raw/NSE_EXCHANGE/NEW FILE FORMAT/`:
+
+| File | Staged output (unnormalized copy) |
+|------|-----------------------------------|
+| `NSE_CM_security.csv` | `XNSE-NSE_EXCHANGE.csv` |
+| `NSE_FO_contract.csv` | `XNFO-NSE_EXCHANGE.csv` |
+| `NSE_CD_contract.csv` | `XNCD-NSE_EXCHANGE.csv` |
+
+`normalizer --only normalize-nse` (or default `normalize`) copies NSE files byte-for-byte into `normalized/` under the `*-NSE_EXCHANGE.csv` names — no field mapping. Postgres push loads them into `nse_cm_exchange`, `nse_fo_exchange`, `nse_cd_exchange` with the original NSE column names (all TEXT, empty cells as NULL).
+
 Raw Fyers field names (`fyToken`, `symTicker`, `exToken`, …) are used in Go code only. Pass `--include-csv-header` to write them as the first CSV row.
 
 ## Environment

@@ -21,9 +21,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
-# Paths / DB config (EquityAlgo postgres — see config.ini [postgres])
+# Paths / DB config (EquityAlgo postgres — see secrets/secrets.ini [postgres_equityalgo])
 # ─────────────────────────────────────────────────────────────
-CONFIG_INI = Path(__file__).resolve().parent / "config.ini"
+CONFIG_INI = Path(__file__).resolve().parent.parent / "secrets" / "secrets.ini"
 BASE_DIR = Path(__file__).resolve().parent / "output_matrix"
 UNDERLYINGS_FILE = Path(__file__).resolve().parent / "underlying.txt"
 
@@ -36,10 +36,10 @@ def get_database_url() -> str:
         raise SystemExit(f"Missing {CONFIG_INI}")
     cp = configparser.ConfigParser()
     cp.read(CONFIG_INI, encoding="utf-8")
-    u = cp.get("postgres", "database_url", fallback="").strip()
+    u = cp.get("postgres_equityalgo", "database_url", fallback="").strip()
     if not u:
         raise SystemExit(
-            f"Set DATABASE_URL or [postgres] database_url in {CONFIG_INI}"
+            f"Set DATABASE_URL or [postgres_equityalgo] database_url in {CONFIG_INI}"
         )
     return u
 

@@ -74,7 +74,7 @@ def _weekly_expiry_dates(as_of: date) -> frozenset[date]:
         ts = pd.Timestamp(friday)
         if cal.is_session(ts):
             return friday
-        return cal.previous_session(ts).date()
+        return cal.date_to_session(ts, direction="previous").date()
 
     f1, f2 = _anchor_fridays(as_of)
     return frozenset({map_friday(f1), map_friday(f2)})

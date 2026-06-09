@@ -41,6 +41,8 @@ var downloadSteps = []Step{
 
 var normalizerSteps = []Step{
 	{Name: "normalize", Run: runNormalize},
+	{Name: "normalize-fyers", Run: runNormalizeFyers},
+	{Name: "normalize-nse", Run: runNormalizeNSE},
 	{Name: "baskets", Run: runBaskets},
 	{Name: "postgres", Run: runPostgres},
 }
@@ -58,7 +60,15 @@ func runFyers(key string) func(Opts) error {
 }
 
 func runNormalize(o Opts) error {
+	return normalize.RunAll(o.AsOf, o.DryRun)
+}
+
+func runNormalizeFyers(o Opts) error {
 	return normalize.RunFyers(o.AsOf, o.DryRun)
+}
+
+func runNormalizeNSE(o Opts) error {
+	return normalize.RunNSE(o.AsOf, o.DryRun)
 }
 
 func runBaskets(o Opts) error {
@@ -136,11 +146,16 @@ func expandOnly(only []string, isNormalizer bool) map[string]struct{} {
 			continue
 		}
 		if name == "all" && isNormalizer {
-			for _, s := range normalizerSteps {
-				if s.Name != "postgres" {
-					m[s.Name] = struct{}{}
-				}
-			}
+			m["normalize"] = struct{}{}
+			m["baskets"] = struct{}{}
+			continue
+		}
+		if name == "nse" && isNormalizer {
+			m["normalize-nse"] = struct{}{}
+			continue
+		}
+		if name == "fyers" && isNormalizer {
+			m["normalize-fyers"] = struct{}{}
 			continue
 		}
 		m[name] = struct{}{}

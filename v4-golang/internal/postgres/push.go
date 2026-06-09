@@ -25,14 +25,18 @@ var nullableCols = map[string]struct{}{
 }
 
 type tableJob struct {
-	table string
-	csv   string
+	table   string
+	csv     string
+	dynamic bool // true = NSE exchange raw CSV (header-driven TEXT columns)
 }
 
 func indiaJobs() []tableJob {
 	var jobs []tableJob
 	for _, seg := range paths.FyersSegments {
-		jobs = append(jobs, tableJob{seg.PostgresTable, seg.OutputCSV})
+		jobs = append(jobs, tableJob{seg.PostgresTable, seg.OutputCSV, false})
+	}
+	for _, seg := range paths.NSESegments {
+		jobs = append(jobs, tableJob{seg.PostgresTable, seg.OutputCSV, true})
 	}
 	return jobs
 }
@@ -93,7 +97,13 @@ func PushDay(dayDir, schema, databaseURL string, dryRun, skipMissing bool) error
 	total := 0
 	for _, j := range jobs {
 		csvPath := filepath.Join(dayDir, paths.NormalizedSubdir, j.csv)
-		n, err := loadTable(ctx, tx, schema, j.table, csvPath)
+		var n int
+		var err error
+		if j.dynamic {
+			n, err = loadNSETable(ctx, tx, schema, j.table, csvPath)
+		} else {
+			n, err = loadFyersTable(ctx, tx, schema, j.table, csvPath)
+		}
 		if err != nil {
 			return err
 		}
@@ -116,7 +126,7 @@ func PushDay(dayDir, schema, databaseURL string, dryRun, skipMissing bool) error
 	return nil
 }
 
-func loadTable(ctx context.Context, tx pgx.Tx, schema, table, csvPath string) (int, error) {
+func loadFyersTable(ctx context.Context, tx pgx.Tx, schema, table, csvPath string) (int, error) {
 	data, nIn, nOut, nSkip, err := csvBytesForCopy(csvPath)
 	if err != nil {
 		return 0, err
@@ -131,17 +141,17 @@ func loadTable(ctx context.Context, tx pgx.Tx, schema, table, csvPath string) (i
 		fmt.Fprintf(os.Stderr, "dedupe: %d CSV rows -> %d unique (%s)\n", nIn, nOut, filepath.Base(csvPath))
 	}
 
-	dropCreate := buildCreateDDL(schema, table)
+	dropCreate := buildFyersCreateDDL(schema, table)
 	if _, err := tx.Exec(ctx, dropCreate); err != nil {
 		return 0, err
 	}
-	for _, idx := range buildIndexDDL(schema, table) {
+	for _, idx := range buildFyersIndexDDL(schema, table) {
 		if _, err := tx.Exec(ctx, idx); err != nil {
 			return 0, err
 		}
 	}
 
-	copySQL := buildCopySQL(schema, table)
+	copySQL := buildFyersCopySQL(schema, table)
 	_, err = tx.Conn().PgConn().CopyFrom(ctx, strings.NewReader(string(data)), copySQL)
 	if err != nil {
 		return 0, err
@@ -155,7 +165,56 @@ func loadTable(ctx context.Context, tx pgx.Tx, schema, table, csvPath string) (i
 	return int(n), nil
 }
 
-func buildCreateDDL(schema, table string) string {
+func loadNSETable(ctx context.Context, tx pgx.Tx, schema, table, csvPath string) (int, error) {
+	header, data, err := readCSVHeaderAndBody(csvPath)
+	if err != nil {
+		return 0, err
+	}
+	if len(header) == 0 || len(bytes.TrimSpace(data)) == 0 {
+		return 0, nil
+	}
+
+	dropCreate := buildNSECreateDDL(schema, table, header)
+	if _, err := tx.Exec(ctx, dropCreate); err != nil {
+		return 0, err
+	}
+	for _, idx := range buildNSEIndexDDL(schema, table, header) {
+		if _, err := tx.Exec(ctx, idx); err != nil {
+			return 0, err
+		}
+	}
+
+	copySQL := buildNSECopySQL(schema, table, header)
+	_, err = tx.Conn().PgConn().CopyFrom(ctx, bytes.NewReader(data), copySQL)
+	if err != nil {
+		return 0, err
+	}
+
+	var n int64
+	q := fmt.Sprintf(`SELECT COUNT(*)::bigint FROM "%s"."%s"`, schema, table)
+	if err := tx.QueryRow(ctx, q).Scan(&n); err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+func readCSVHeaderAndBody(path string) ([]string, []byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(raw) == 0 {
+		return nil, nil, nil
+	}
+	r := csv.NewReader(bytes.NewReader(raw))
+	header, err := r.Read()
+	if err != nil {
+		return nil, nil, err
+	}
+	return header, raw, nil
+}
+
+func buildFyersCreateDDL(schema, table string) string {
 	cols := strings.Join([]string{
 		`"scriptDetails" TEXT NOT NULL`,
 		`"scriptInstrumentType" TEXT NOT NULL`,
@@ -178,7 +237,22 @@ CREATE TABLE "%s"."%s" (
 );`, schema, table, schema, table, cols)
 }
 
-func buildIndexDDL(schema, table string) []string {
+func buildNSECreateDDL(schema, table string, header []string) string {
+	defs := make([]string, len(header))
+	for i, col := range header {
+		defs[i] = fmt.Sprintf(`"%s" TEXT`, quoteIdent(col))
+	}
+	return fmt.Sprintf(`DROP TABLE IF EXISTS "%s"."%s" CASCADE;
+CREATE TABLE "%s"."%s" (
+    %s
+);`, schema, table, schema, table, strings.Join(defs, ",\n    "))
+}
+
+func quoteIdent(name string) string {
+	return strings.ReplaceAll(name, `"`, `""`)
+}
+
+func buildFyersIndexDDL(schema, table string) []string {
 	p := table
 	sch, tbl := schema, table
 	return []string{
@@ -191,7 +265,18 @@ func buildIndexDDL(schema, table string) []string {
 	}
 }
 
-func buildCopySQL(schema, table string) string {
+func buildNSEIndexDDL(schema, table string, header []string) []string {
+	for _, col := range header {
+		if col == "FinInstrmId" {
+			return []string{
+				fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS %s_fin_instrm_id_uq ON "%s"."%s" ("FinInstrmId")`, table, schema, table),
+			}
+		}
+	}
+	return nil
+}
+
+func buildFyersCopySQL(schema, table string) string {
 	nulls := sortedKeys(nullableCols)
 	quotedCols := make([]string, len(colNames))
 	for i, c := range colNames {
@@ -200,6 +285,17 @@ func buildCopySQL(schema, table string) string {
 	return fmt.Sprintf(
 		`COPY "%s"."%s" (%s) FROM STDIN WITH (FORMAT csv, HEADER true, ENCODING 'UTF8', FORCE_NULL (%s))`,
 		schema, table, strings.Join(quotedCols, ", "), strings.Join(nulls, ", "),
+	)
+}
+
+func buildNSECopySQL(schema, table string, header []string) string {
+	quotedCols := make([]string, len(header))
+	for i, col := range header {
+		quotedCols[i] = `"` + quoteIdent(col) + `"`
+	}
+	return fmt.Sprintf(
+		`COPY "%s"."%s" (%s) FROM STDIN WITH (FORMAT csv, HEADER true, ENCODING 'UTF8', FORCE_NULL (%s))`,
+		schema, table, strings.Join(quotedCols, ", "), strings.Join(quotedCols, ", "),
 	)
 }
 

@@ -1,4 +1,4 @@
-"""Databento API keys for ``__________v3`` Live scripts — read ``config.ini`` next to this file."""
+"""Databento API keys for ``__________v3`` — read ``../secrets/secrets.ini``."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 
 _V3_DIR = Path(__file__).resolve().parent
-CONFIG_INI = _V3_DIR / "config.ini"
+_SECRETS_DIR = _V3_DIR.parent / "secrets"
+CONFIG_INI = _SECRETS_DIR / "secrets.ini"
 
 
 def _flat_ini_keys() -> dict[str, str]:

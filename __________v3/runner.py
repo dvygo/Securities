@@ -18,12 +18,15 @@
 
 Uses repo ``.venv`` when present, else current ``python``.
 Extra CLI args (after ``--``) are passed only to the three Live scripts, not strip / normalizer / postgres.
+
+Ctrl+C stops the current step and exits (terminates child process if needed).
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 from datetime import date
@@ -31,6 +34,11 @@ from pathlib import Path
 
 _V3_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _V3_DIR.parent
+
+if sys.platform == "win32":
+    _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+else:
+    _CREATE_NEW_PROCESS_GROUP = 0
 
 _BASE_STEPS: tuple[tuple[str, str, bool], ...] = (
     ("glbx", "glbx_mdp3.py", True),
@@ -41,6 +49,8 @@ _BASE_STEPS: tuple[tuple[str, str, bool], ...] = (
 )
 
 _POSTGRES_STEP: tuple[str, str, bool] = ("postgres", "postgres-database-push.py", False)
+
+_child_proc: subprocess.Popen[bytes] | None = None
 
 
 def _python_exe() -> Path:
@@ -61,6 +71,28 @@ def _env() -> dict[str, str]:
     return env
 
 
+def _terminate_child(*, force_after_sec: float = 6.0) -> None:
+    global _child_proc
+    proc = _child_proc
+    if proc is None or proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        try:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        except (OSError, ValueError, AttributeError):
+            pass
+    else:
+        try:
+            proc.send_signal(signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
+    try:
+        proc.wait(timeout=force_after_sec)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def _run_script(
     py: Path,
     script: Path,
@@ -68,16 +100,28 @@ def _run_script(
     dry_run: bool,
     extra_argv: list[str],
 ) -> int:
+    global _child_proc
     cmd = [str(py), str(script), *extra_argv]
     print(f"\n>>> {' '.join(cmd)}", flush=True)
     if dry_run:
         return 0
-    r = subprocess.run(
-        cmd,
-        cwd=str(_V3_DIR),
-        env=_env(),
-    )
-    return int(r.returncode)
+
+    popen_kw: dict = {
+        "cwd": str(_V3_DIR),
+        "env": _env(),
+    }
+    if sys.platform == "win32":
+        popen_kw["creationflags"] = _CREATE_NEW_PROCESS_GROUP
+
+    _child_proc = subprocess.Popen(cmd, **popen_kw)
+    try:
+        return int(_child_proc.wait())
+    except KeyboardInterrupt:
+        print("\nrunner: interrupted, stopping current step...", file=sys.stderr, flush=True)
+        _terminate_child()
+        raise
+    finally:
+        _child_proc = None
 
 
 def _build_steps(
@@ -143,23 +187,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"date-dir: {date_dir}", flush=True)
 
     rc = 0
-    for name, script_name, forward_live in selected:
-        script = _V3_DIR / script_name
-        if not script.is_file():
-            print(f"error: missing {script}", file=sys.stderr)
-            return 1
-        argv_extra: list[str] = []
-        if forward_live:
-            argv_extra = extra
-        elif name in ("normalize", "postgres"):
-            argv_extra = ["--date-dir", date_dir]
-            if args.dry_run:
-                argv_extra.append("--dry-run")
-        code = _run_script(py, script, dry_run=args.dry_run, extra_argv=argv_extra)
-        if code != 0:
-            print(f"error: {script_name} exited {code}", file=sys.stderr)
-            rc = code
-            break
+    try:
+        for name, script_name, forward_live in selected:
+            script = _V3_DIR / script_name
+            if not script.is_file():
+                print(f"error: missing {script}", file=sys.stderr)
+                return 1
+            argv_extra: list[str] = []
+            if forward_live:
+                argv_extra = extra
+            elif name in ("normalize", "postgres"):
+                argv_extra = ["--date-dir", date_dir]
+                if name == "postgres":
+                    argv_extra.append("--skip-missing")
+                if args.dry_run:
+                    argv_extra.append("--dry-run")
+            code = _run_script(py, script, dry_run=args.dry_run, extra_argv=argv_extra)
+            if code != 0:
+                print(f"error: {script_name} exited {code}", file=sys.stderr)
+                rc = code
+                break
+    except KeyboardInterrupt:
+        return 130
 
     if rc == 0 and not args.dry_run:
         print("\nrunner: all steps finished OK", flush=True)

@@ -30,7 +30,7 @@ from typing import Any, Callable
 from trading_expiry import is_session
 
 _V3_DIR = Path(__file__).resolve().parent
-CONFIG_INI = _V3_DIR / "config.ini"
+from v3_config import CONFIG_INI
 
 ORIGINAL_COLUMNS = (
     "instrument_id",
