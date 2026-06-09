@@ -17,6 +17,7 @@ const (
 var NormalizedColumns = []string{
 	"scriptDetails",
 	"scriptInstrumentType",
+	"multiplier",
 	"lotSize",
 	"tickSize",
 	"ISIN",
@@ -29,6 +30,9 @@ var NormalizedColumns = []string{
 	"strike",
 	"optionType",
 }
+
+// ContractColumns is the basket contract CSV layout: run metadata + normalized v2 row.
+var ContractColumns = append([]string{"date", "exchange"}, NormalizedColumns...)
 
 const (
 	XNSECSV = "XNSE-FYERS.csv"

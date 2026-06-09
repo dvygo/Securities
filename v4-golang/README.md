@@ -42,8 +42,8 @@ go build -o normalizer.exe ./cmd/normalizer
 ## Pipeline
 
 1. **premarket** — Fyers HTTP → `YYYYMMDD/raw/FYERS/*.csv` (headerless, source names e.g. `NSE_CM.csv`)
-2. **normalizer** — `YYYYMMDD/normalized/` (13 columns, v2 schema below)
-3. **normalizer --only baskets** — `constituents/contracts/YYYYMMDD/*.csv`
+2. **normalizer** — `YYYYMMDD/normalized/` (14 columns, v2 schema below)
+3. **normalizer --only baskets** — `constituents/contracts/YYYYMMDD/*.csv` (`date`, `exchange`, + full normalized v2 row)
 4. **normalizer --postgres-push** — India tables: `nse_cm`, `nse_fo`, `nse_cd`, `bse_cm`, `bse_fo`, `mcx_com`
 
 ### Normalized CSV columns (v2)
@@ -52,6 +52,7 @@ go build -o normalizer.exe ./cmd/normalizer
 |--------|--------|-------|
 | `scriptDetails` | `symDetails` | verbatim |
 | `scriptInstrumentType` | `exInstType` | appendix string (`EQ`, `FUTIDX`, `OPTSTK`, …) |
+| `multiplier` | — | constant `100000` (price scale) |
 | `lotSize` | `minLotSize` | int; empty if missing |
 | `tickSize` | `tickSize` | `int(round(price × 100000))` |
 | `ISIN` | `isin` | nullable |
@@ -78,4 +79,8 @@ Raw Fyers field names (`fyToken`, `symTicker`, `exToken`, …) are used in Go co
 | `PREMARKET_SECRETS_DIR` | Override secrets directory (default: `../secrets`) |
 | `DATABASE_URL` | Postgres URL (overrides secrets.ini) |
 
-Basket templates live in `constituents/baskets/` (copied from v4).
+Basket templates live in `constituents/baskets/` (copied from v4). Contract CSV columns = `paths.ContractColumns` (`date`, `exchange`, then all 14 normalized fields). Join key: basket `NSE:SYMBOL-EQ` lines match normalized `script`.
+
+### Contract CSV columns
+
+`date`, `exchange`, then the same 14 columns as normalized output (`scriptDetails` … `optionType`). No separate `instrument` / `displaySymbol` — use `scriptInstrumentType` and `scriptDetails` from the normalized row.

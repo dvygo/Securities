@@ -159,6 +159,7 @@ func buildCreateDDL(schema, table string) string {
 	cols := strings.Join([]string{
 		`"scriptDetails" TEXT NOT NULL`,
 		`"scriptInstrumentType" TEXT NOT NULL`,
+		`"multiplier" BIGINT NOT NULL`,
 		`"lotSize" BIGINT`,
 		`"tickSize" BIGINT NOT NULL`,
 		`"ISIN" TEXT`,

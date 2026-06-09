@@ -61,6 +61,7 @@ func mapFyersRow(row map[string]string) ([]string, error) {
 	return []string{
 		details,
 		instType,
+		strconv.Itoa(IndiaPriceScale),
 		parseLotSize(row["minLotSize"]),
 		strconv.FormatInt(ScalePrice(tickF, IndiaPriceScale), 10),
 		strings.TrimSpace(row["isin"]),
