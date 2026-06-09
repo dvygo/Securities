@@ -24,6 +24,8 @@ var allBasketNames = []string{
 	"NIFTY_FNO_EQUITY_SPOTS",
 	"NIFTY_FNO_FUTURES_NEAR",
 	"NIFTY_FNO_FUTURES_ALL",
+	"NIFTY500_EQUITY_ONLY",
+	"NIFTY500_FUTURES",
 	"NSE_INDEX_FUTURES",
 	"BSE_INDEX_FUTURES",
 	"MCX_FUTURES",
@@ -238,6 +240,31 @@ func RefreshBasket(name string, asOf time.Time, dryRun bool) (Stats, error) {
 			return Stats{}, err
 		}
 		rows, st := resolveEquityFutures(spotsBasket, idx, asOf, false)
+		return st, writeContractCSV(outPath, rows, dryRun)
+
+	case "NIFTY500_EQUITY_ONLY":
+		norm, mic, err := segmentNorm(asOf, paths.XNSECSV)
+		if err != nil {
+			return Stats{}, err
+		}
+		idx, err := loadSymIndex(norm, mic)
+		if err != nil {
+			return Stats{}, err
+		}
+		rows, st := resolveByScript(filepath.Join(basketsDir, "NIFTY500_EQUITY_ONLY.csv"), idx, asOf)
+		return st, writeContractCSV(outPath, rows, dryRun)
+
+	case "NIFTY500_FUTURES":
+		norm, mic, err := segmentNorm(asOf, paths.XNFOCSV)
+		if err != nil {
+			return Stats{}, err
+		}
+		idx, err := loadSymIndex(norm, mic)
+		if err != nil {
+			return Stats{}, err
+		}
+		nifty500Spots := filepath.Join(basketsDir, "NIFTY500_EQUITY_ONLY.csv")
+		rows, st := resolveEquityFutures(nifty500Spots, idx, asOf, false)
 		return st, writeContractCSV(outPath, rows, dryRun)
 
 	case "NSE_INDEX_FUTURES":
