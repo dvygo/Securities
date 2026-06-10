@@ -74,6 +74,7 @@ func mapFyersRow(row map[string]string) ([]string, error) {
 		underlying,
 		strikeScaled(row["strikePrice"]),
 		optionTypeResolved(row["optType"]),
+		"INR",
 	}, nil
 }
 
@@ -130,16 +131,19 @@ func strikeScaled(raw string) string {
 }
 
 func instrumentType2(instType string) string {
-	switch strings.ToUpper(strings.TrimSpace(instType)) {
-	case "EQ":
-		return "SPOT"
-	case "FUTSTK", "FUTIDX":
-		return "FUTURE"
-	default:
-		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(instType)), "OPT") {
-			return "OPTION"
-		}
+	t := strings.ToUpper(strings.TrimSpace(instType))
+	if t == "" {
 		return ""
+	}
+	switch {
+	case t == "EQ":
+		return "EQUITY"
+	case strings.HasPrefix(t, "FUT"):
+		return "FUTURE"
+	case strings.HasPrefix(t, "OPT"):
+		return "OPTION"
+	default:
+		return t
 	}
 }
 

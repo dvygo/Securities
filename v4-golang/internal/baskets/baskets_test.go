@@ -24,6 +24,7 @@ func TestToContractRow_passesNormalizedColumns(t *testing.T) {
 		"underlying":           "IOC",
 		"strike":               "11000000",
 		"optionType":           "PUT",
+		"currency":             "INR",
 	}
 	asOf := time.Date(2026, 6, 9, 0, 0, 0, 0, time.UTC)
 	out := toContractRow(row, asOf, "XNSE")
@@ -33,8 +34,11 @@ func TestToContractRow_passesNormalizedColumns(t *testing.T) {
 	if out[0] != "20260609" || out[1] != "XNSE" || out[2] != row["scriptDetails"] || out[4] != "OPTION" || out[5] != "100000" {
 		t.Fatalf("metadata/type2/mult: %v", out[:7])
 	}
-	if out[len(out)-1] != "PUT" {
-		t.Fatalf("optionType: %q", out[len(out)-1])
+	if out[len(out)-2] != "PUT" {
+		t.Fatalf("optionType: %q", out[len(out)-2])
+	}
+	if out[len(out)-1] != "INR" {
+		t.Fatalf("currency: %q", out[len(out)-1])
 	}
 }
 

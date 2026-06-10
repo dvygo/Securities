@@ -232,6 +232,7 @@ func buildFyersCreateDDL(schema, table string) string {
 		`"underlying" TEXT NOT NULL`,
 		`"strike" BIGINT`,
 		`"optionType" TEXT`,
+		`"currency" TEXT NOT NULL`,
 	}, ",\n    ")
 	return fmt.Sprintf(`DROP TABLE IF EXISTS "%s"."%s" CASCADE;
 CREATE TABLE "%s"."%s" (

@@ -55,7 +55,7 @@ Normalized Fyers outputs merge raw segments per MIC: `XNSE-FYERS.csv` (NSE CM+FO
 |--------|--------|-------|
 | `scriptDetails` | `symDetails` | verbatim |
 | `scriptInstrumentType` | `exInstType` | appendix string (`EQ`, `FUTIDX`, `OPTSTK`, …) |
-| `scriptInstrumentType2` | `scriptInstrumentType` | `EQ`→`SPOT`, `FUTSTK`/`FUTIDX`→`FUTURE`, `OPT*`→`OPTION` |
+| `scriptInstrumentType2` | `scriptInstrumentType` | `EQ`→`EQUITY`, `FUT*`→`FUTURE`, `OPT*`→`OPTION`, else copy (`INDEX`, `ETF`, …) |
 | `multiplier` | — | constant `100000` (price scale) |
 | `lotSize` | `minLotSize` | int; empty if missing |
 | `tickSize` | `tickSize` | `int(round(price × 100000))` |
@@ -68,6 +68,7 @@ Normalized Fyers outputs merge raw segments per MIC: `XNSE-FYERS.csv` (NSE CM+FO
 | `underlying` | `exSymName` | verbatim |
 | `strike` | `strikePrice` | `int(round(price × 100000))` when > 0 |
 | `optionType` | `optType` | `CE`→`CALL`, `PE`→`PUT` |
+| `currency` | — | constant `INR` |
 
 Price scale `100000` matches v3 GLBX/OPRA (`internal/normalize/price.go`). Human price = `strike / 100000` or `tickSize / 100000`.
 

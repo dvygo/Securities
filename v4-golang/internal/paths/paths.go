@@ -32,6 +32,7 @@ var NormalizedColumns = []string{
 	"underlying",
 	"strike",
 	"optionType",
+	"currency",
 }
 
 // ContractColumns is the basket contract CSV layout: run metadata + normalized v2 row.
