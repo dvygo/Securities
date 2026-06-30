@@ -27,7 +27,7 @@ type Normalizer map[string]string
 func loadINI() (*ini.File, error) {
 	p := paths.ConfigINI()
 	if _, err := os.Stat(p); err != nil {
-		return nil, fmt.Errorf("secrets not found at %s (set PREMARKET_SECRETS_DIR or create ../secrets/secrets.ini)", p)
+		return nil, fmt.Errorf("config not found at %s (copy conf/config.example.ini to conf/config.ini or set PREMARKET_CONFIG)", p)
 	}
 	return ini.Load(p)
 }

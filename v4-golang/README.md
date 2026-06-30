@@ -36,7 +36,7 @@ Outputs: `bin/premarket.exe`, `bin/normalizer.exe`. Runtime stderr is also writt
 .\bin\normalizer.exe
 .\bin\normalizer.exe --date-dir 20260609
 .\bin\normalizer.exe --only normalize,baskets
-.\bin\normalizer.exe --postgres-push --only postgres
+.\bin\normalizer.exe --only postgres
 .\bin\normalizer.exe --dry-run
 ```
 
@@ -45,7 +45,7 @@ Outputs: `bin/premarket.exe`, `bin/normalizer.exe`. Runtime stderr is also writt
 1. **premarket** — Fyers HTTP → `YYYYMMDD/raw/FYERS/*.csv` (headerless, source names e.g. `NSE_CM.csv`)
 2. **normalizer** — `YYYYMMDD/normalized/` (14 columns, v2 schema below)
 3. **normalizer --only baskets** — `constituents/contracts/YYYYMMDD/*.csv` (`date`, `exchange`, + full normalized v2 row)
-4. **normalizer --postgres-push** — schema `v4_YYYYMMDD` on **contract** Postgres (`127.0.0.1:7730/cdb`, reads `7731`). Fyers tables (ISO MIC): `XNSE_FYERS`, `XBOM_FYERS`, `XIMC_FYERS`. NSE exchange (unchanged): `XNSE_NSE_EXCHANGE`, `XNFO_NSE_EXCHANGE`, `XNCD_NSE_EXCHANGE`. Compose: `docker/contract-postgres/`.
+4. **normalizer** (default) also pushes Postgres on **contract** DB (`127.0.0.1:7730/cdb`, reads `7731`). Symbology schema `v4_YYYYMMDD`: Fyers `XNSE_FYERS`, `XBOM_FYERS`, `XIMC_FYERS`; NSE exchange `XNSE_NSE_EXCHANGE`, `XNFO_NSE_EXCHANGE`, `XNCD_NSE_EXCHANGE`. Baskets schema `v4_YYYYMMDD_baskets`: one table per contract CSV (`NIFTY_FNO_EQUITY_SPOTS`, `NIFTY500_FUTURES`, …). Compose: `docker/contract-postgres/`. Use `--only normalize,baskets` to skip postgres, or `--only postgres` to push only.
 
 Normalized Fyers outputs merge raw segments per MIC: `XNSE-FYERS.csv` (NSE CM+FO+CD), `XBOM-FYERS.csv` (BSE CM+FO), `XIMC-FYERS.csv` (MCX).
 

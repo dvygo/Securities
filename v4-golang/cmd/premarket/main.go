@@ -43,7 +43,7 @@ func run() int {
 
 Normalize / baskets / Postgres: use normalizer.exe (separate binary).
 
-Secrets: %s
+Config:  %s
 Data:    %s/YYYYMMDD/raw/FYERS/
 
 `, paths.ConfigINI(), paths.RepoRoot())
@@ -81,7 +81,7 @@ Data:    %s/YYYYMMDD/raw/FYERS/
 
 	if !dryRun {
 		fmt.Fprintf(os.Stderr, "root:    %s\n", paths.RepoRoot())
-		fmt.Fprintf(os.Stderr, "secrets: %s\n", paths.ConfigINI())
+		fmt.Fprintf(os.Stderr, "config:  %s\n", paths.ConfigINI())
 		fmt.Fprintf(os.Stderr, "date-dir: %s\n", dateDir)
 	}
 

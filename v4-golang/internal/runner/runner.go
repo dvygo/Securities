@@ -80,7 +80,11 @@ func runBaskets(o Opts) error {
 }
 
 func runPostgres(o Opts) error {
-	schema, err := paths.PostgresSchema(o.DateDir)
+	symSchema, err := paths.PostgresSchema(o.DateDir)
+	if err != nil {
+		return err
+	}
+	basketsSchema, err := paths.PostgresBasketsSchema(o.DateDir)
 	if err != nil {
 		return err
 	}
@@ -88,7 +92,15 @@ func runPostgres(o Opts) error {
 	if err != nil {
 		return err
 	}
-	return postgres.PushDay(paths.DayDir(o.AsOf), schema, url, o.DryRun, true)
+	return postgres.PushAll(
+		paths.DayDir(o.AsOf),
+		paths.ContractsDayDir(o.AsOf),
+		symSchema,
+		basketsSchema,
+		url,
+		o.DryRun,
+		true,
+	)
 }
 
 // BuildDownloadSteps selects Fyers raw download steps (premarket.exe).
@@ -105,9 +117,6 @@ func buildSteps(pool []Step, only []string, postgresPush bool, isNormalizer bool
 	onlySet := expandOnly(only, isNormalizer)
 	var steps []Step
 	for _, s := range pool {
-		if s.Name == "postgres" {
-			continue
-		}
 		if onlySet != nil {
 			if _, ok := onlySet[s.Name]; !ok {
 				continue
@@ -115,8 +124,10 @@ func buildSteps(pool []Step, only []string, postgresPush bool, isNormalizer bool
 		}
 		steps = append(steps, s)
 	}
-	if postgresPush || (onlySet != nil && containsOnly(only, "postgres")) {
-		steps = append(steps, Step{Name: "postgres", Run: runPostgres})
+	if postgresPush && onlySet != nil {
+		if _, ok := onlySet["postgres"]; !ok {
+			steps = append(steps, Step{Name: "postgres", Run: runPostgres})
+		}
 	}
 	if len(steps) == 0 {
 		return nil, fmt.Errorf("no steps selected")
@@ -148,6 +159,7 @@ func expandOnly(only []string, isNormalizer bool) map[string]struct{} {
 		if name == "all" && isNormalizer {
 			m["normalize"] = struct{}{}
 			m["baskets"] = struct{}{}
+			m["postgres"] = struct{}{}
 			continue
 		}
 		if name == "nse" && isNormalizer {

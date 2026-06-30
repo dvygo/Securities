@@ -184,9 +184,11 @@ func SecretsINI() string {
 	return filepath.Join(SecretsDir(), "secrets.ini")
 }
 
-// ConfigINI is an alias for SecretsINI.
 func ConfigINI() string {
-	return SecretsINI()
+	if v := os.Getenv("PREMARKET_CONFIG"); v != "" {
+		return v
+	}
+	return filepath.Join(RepoRoot(), "conf", "config.ini")
 }
 
 func BasketsDir() string {
@@ -236,4 +238,12 @@ func PostgresSchema(dateDir string) (string, error) {
 		}
 	}
 	return PostgresSchemaPrefix + dateDir, nil
+}
+
+func PostgresBasketsSchema(dateDir string) (string, error) {
+	base, err := PostgresSchema(dateDir)
+	if err != nil {
+		return "", err
+	}
+	return base + "_baskets", nil
 }

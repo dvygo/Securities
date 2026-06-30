@@ -29,16 +29,17 @@ func run() int {
 	flag.StringVar(&onlyStr, "only", "all", "steps: all, or comma-separated (normalize,normalize-fyers,normalize-nse,baskets,postgres)")
 	flag.StringVar(&dateDir, "date-dir", "", "YYYYMMDD day folder (default: today)")
 	flag.BoolVar(&dryRun, "dry-run", false, "print actions only")
-	flag.BoolVar(&postgresPush, "postgres-push", false, "load India symbology to Postgres after normalize")
+	flag.BoolVar(&postgresPush, "postgres-push", false, "also push Postgres when --only omits postgres (default all run includes postgres)")
 	flag.StringVar(&databaseURL, "database-url", "", "override postgres URL")
 	flag.StringVar(&basket, "basket", "all", "basket name for --only baskets")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `normalizer — India symbology normalization (Go)
 
-  normalizer                           # normalize Fyers + NSE exchange (if present)
+  normalizer                           # normalize + baskets + postgres (symbology + baskets schemas)
   normalizer --only normalize-fyers    # Fyers only
   normalizer --only normalize-nse      # NSE NEW FILE FORMAT only
-  normalizer --only normalize,baskets
+  normalizer --only normalize,baskets   # skip postgres
+  normalizer --only postgres            # push v4_YYYYMMDD + v4_YYYYMMDD_baskets only
   normalizer --postgres-push --only normalize,postgres
   normalizer --date-dir 20260609
   normalizer --dry-run
@@ -81,7 +82,7 @@ NSE:    %s/YYYYMMDD/raw/NSE_EXCHANGE/NEW FILE FORMAT/
 
 	if !dryRun {
 		fmt.Fprintf(os.Stderr, "root:     %s\n", paths.RepoRoot())
-		fmt.Fprintf(os.Stderr, "secrets:  %s\n", paths.ConfigINI())
+		fmt.Fprintf(os.Stderr, "config:   %s\n", paths.ConfigINI())
 		fmt.Fprintf(os.Stderr, "date-dir: %s\n", dateDir)
 	}
 

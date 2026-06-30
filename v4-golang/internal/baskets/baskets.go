@@ -20,7 +20,8 @@ var (
 	futTail = regexp.MustCompile(`^[^:]+:(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))FUT$`)
 )
 
-var allBasketNames = []string{
+// AllBasketNames are contract CSV / Postgres table names written by basket refresh.
+var AllBasketNames = []string{
 	"NIFTY_FNO_EQUITY_SPOTS",
 	"NIFTY_FNO_FUTURES_NEAR",
 	"NIFTY_FNO_FUTURES_ALL",
@@ -470,7 +471,7 @@ func resolveIndexFuturesAll(template string, idx *SymIndex, asOf time.Time) ([][
 
 func RefreshAll(asOf time.Time, dryRun bool) error {
 	fmt.Fprintf(os.Stderr, "basket_refresh: as_of=%s day=%s\n", asOf.Format("2006-01-02"), paths.DayDir(asOf))
-	for _, name := range allBasketNames {
+	for _, name := range AllBasketNames {
 		if name == "ALL_INDEX_FUTURES" {
 			continue
 		}
