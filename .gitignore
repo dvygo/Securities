@@ -5,32 +5,55 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# Secrets
-secrets/secrets.ini
+# Secrets and local config (never commit real keys)
 secrets/
-v4/conf/config.ini
-__________v3_EquityAlgoV20260519-0/config.ini
+**/secrets.ini
+**/config.ini
+!**/config.example.ini
 
-# Generated symbology dumps
-v4/**/raw/
-v4/**/normalized/
+# Legacy v3 scratch paths
 __________v3/20*/
 __________v3/config.ini
-
-# Large backups
+__________v3_EquityAlgoV20260519-0/config.ini
 __________v3_EquityAlgoV20260519-0/*.zip
-
-# Generated daily contract CSVs (basket templates under constituents/baskets/ are tracked)
-v4/constituents/contracts/
-
-# v4-golang generated data
-v4-golang/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
-v4-golang/constituents/contracts/
-v4-golang/premarket.exe
-
-# Equity algo output matrices
 __________v3_EquityAlgoV20260519-0/output_matrix/
 __________v3_EquityAlgoV20260519-0/output_matrix_*/
+
+# Generated symbology / download output
+**/raw/
+**/normalized/
+v4/**/20[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
+v4/constituents/contracts/
+v4-golang/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
+v4-golang/constituents/contracts/
+
+# Binaries, archives, local DBs
+*.exe
+*.zip
+*.db
+*.sqlite
+*.sqlite3
+/bin/
+/vendor/
+
+# Logs and runtime dumps
+*LOGS/
+**/LOGS/
+*.log
+
+# Go build output (v4-golang)
+v4-golang/premarket
+v4-golang/premarket.exe
+v4-golang/normalizer.exe
+v4-golang/premarket-*
+v4-golang/normalizer
+v4-golang/bin/
+
+# Local scratch / experiments (not part of the pipeline)
+v1-hist-downloader/
+v4-golang/test/
+v4-golang/old.zip
+v4-golang/conf/_test_*.txt
 
 # OS / editor
 .DS_Store
