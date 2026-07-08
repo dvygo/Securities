@@ -1,4 +1,4 @@
-# Build premarket + normalizer into bin/; runtime logs go to bin/LOGS/.
+# Build premarket venue binaries + normalizer into bin/; runtime logs go to bin/LOGS/.
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $bin = Join-Path $root "bin"
@@ -6,15 +6,39 @@ $logs = Join-Path $bin "LOGS"
 
 New-Item -ItemType Directory -Force -Path $bin, $logs | Out-Null
 
+$targets = @(
+    @{ Out = "premarket-india.exe"; Pkg = "./cmd/premarket-india" },
+    @{ Out = "premarket-XCME.exe";  Pkg = "./cmd/premarket-xcme" },
+    @{ Out = "premarket-XCBO.exe";  Pkg = "./cmd/premarket-xcbo" },
+    @{ Out = "premarket-XNAS.exe";  Pkg = "./cmd/premarket-xnas" },
+    @{ Out = "normalizer.exe";      Pkg = "./cmd/normalizer" }
+)
+
+$remove = @(
+    "premarket.exe",
+    "premarket-india.exe",
+    "premarket-XCME.exe",
+    "premarket-XCBO.exe",
+    "premarket-XNAS.exe",
+    "normalizer.exe"
+)
+
 Push-Location $root
 try {
-    go build -o (Join-Path $bin "premarket.exe") ./cmd/premarket
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    go build -o (Join-Path $bin "normalizer.exe") ./cmd/normalizer
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    Write-Host "built:"
-    Write-Host "  $(Join-Path $bin 'premarket.exe')"
-    Write-Host "  $(Join-Path $bin 'normalizer.exe')"
+    foreach ($name in $remove) {
+        $path = Join-Path $bin $name
+        if (Test-Path $path) {
+            Remove-Item -Force $path
+        }
+    }
+
+    Write-Host "building..."
+    foreach ($t in $targets) {
+        $outPath = Join-Path $bin $t.Out
+        go build -o $outPath $t.Pkg
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host "  $outPath"
+    }
     Write-Host "logs: $logs"
 }
 finally {

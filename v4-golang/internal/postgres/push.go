@@ -36,18 +36,45 @@ var contractNullableCols = map[string]struct{}{
 type tableJob struct {
 	table   string
 	csv     string
-	dynamic bool // true = NSE exchange raw CSV (header-driven TEXT columns)
+	layout  string // fyers, nse, databento
 }
 
 func indiaJobs() []tableJob {
 	var jobs []tableJob
 	for _, b := range paths.FyersMICBundles {
-		jobs = append(jobs, tableJob{b.PostgresTable, b.OutputCSV, false})
+		jobs = append(jobs, tableJob{b.PostgresTable, b.OutputCSV, "fyers"})
 	}
 	for _, seg := range paths.NSESegments {
-		jobs = append(jobs, tableJob{seg.PostgresTable, seg.OutputCSV, true})
+		jobs = append(jobs, tableJob{seg.PostgresTable, seg.OutputCSV, "nse"})
 	}
 	return jobs
+}
+
+func usJobs() []tableJob {
+	return []tableJob{
+		{"glbx_mdp3", paths.XCMECSV, "databento"},
+		{"opra_pillar", paths.XCBOCSV, "databento"},
+		{"equs_mini", paths.XNASCSV, "databento"},
+	}
+}
+
+func symJobs(dayDir string, skipMissing bool) ([]tableJob, error) {
+	var jobs []tableJob
+	for _, j := range append(indiaJobs(), usJobs()...) {
+		p := filepath.Join(dayDir, paths.NormalizedSubdir, j.csv)
+		if _, err := os.Stat(p); err != nil {
+			if skipMissing {
+				fmt.Fprintf(os.Stderr, "skip (missing): %s\n", p)
+				continue
+			}
+			return nil, fmt.Errorf("missing %s", p)
+		}
+		jobs = append(jobs, j)
+	}
+	if len(jobs) == 0 {
+		return nil, fmt.Errorf("no tables to load")
+	}
+	return jobs, nil
 }
 
 // PushAll loads symbology into v4_YYYYMMDD and basket contracts into v4_YYYYMMDD_baskets.
@@ -66,20 +93,9 @@ func PushSymbology(dayDir, schema, databaseURL string, dryRun, skipMissing bool)
 		return fmt.Errorf("not found: %s", dayDir)
 	}
 
-	var jobs []tableJob
-	for _, j := range indiaJobs() {
-		p := filepath.Join(dayDir, paths.NormalizedSubdir, j.csv)
-		if _, err := os.Stat(p); err != nil {
-			if skipMissing {
-				fmt.Fprintf(os.Stderr, "skip (missing): %s\n", p)
-				continue
-			}
-			return fmt.Errorf("missing %s", p)
-		}
-		jobs = append(jobs, j)
-	}
-	if len(jobs) == 0 {
-		return fmt.Errorf("no tables to load")
+	jobs, err := symJobs(dayDir, skipMissing)
+	if err != nil {
+		return err
 	}
 
 	if dryRun {
@@ -116,9 +132,12 @@ func PushSymbology(dayDir, schema, databaseURL string, dryRun, skipMissing bool)
 		csvPath := filepath.Join(dayDir, paths.NormalizedSubdir, j.csv)
 		var n int
 		var err error
-		if j.dynamic {
+		switch j.layout {
+		case "nse":
 			n, err = loadNSETable(ctx, tx, schema, j.table, csvPath)
-		} else {
+		case "databento":
+			n, err = loadDatabentoTable(ctx, tx, schema, j.table, csvPath)
+		default:
 			n, err = loadFyersTable(ctx, tx, schema, j.table, csvPath)
 		}
 		if err != nil {
@@ -165,7 +184,7 @@ func PushBaskets(contractsDir, schema, databaseURL string, dryRun, skipMissing b
 			}
 			return fmt.Errorf("missing %s", p)
 		}
-		jobs = append(jobs, tableJob{name, name + ".csv", false})
+		jobs = append(jobs, tableJob{name, name + ".csv", "basket"})
 	}
 	if len(jobs) == 0 {
 		if skipMissing {
@@ -659,4 +678,165 @@ func countCSVRows(path string) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+var databentoNullableCols = map[string]struct{}{
+	"lotSize": {}, "tickSize": {}, "ISIN": {},
+	"expiration": {}, "strike": {}, "optionType": {}, "scriptInstrumentType2": {},
+}
+
+func loadDatabentoTable(ctx context.Context, tx pgx.Tx, schema, table, csvPath string) (int, error) {
+	data, nIn, nOut, nSkip, err := csvBytesForCopyWithRowOK(csvPath, rowOKDatabento)
+	if err != nil {
+		return 0, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return 0, nil
+	}
+	if nSkip > 0 {
+		fmt.Fprintf(os.Stderr, "skip: %d malformed rows (%s)\n", nSkip, filepath.Base(csvPath))
+	}
+	if nOut < nIn {
+		fmt.Fprintf(os.Stderr, "dedupe: %d CSV rows -> %d unique (%s)\n", nIn, nOut, filepath.Base(csvPath))
+	}
+
+	dropCreate := buildDatabentoCreateDDL(schema, table)
+	if _, err := tx.Exec(ctx, dropCreate); err != nil {
+		return 0, err
+	}
+	for _, idx := range buildFyersIndexDDL(schema, table) {
+		if _, err := tx.Exec(ctx, idx); err != nil {
+			return 0, err
+		}
+	}
+
+	copySQL := buildDatabentoCopySQL(schema, table)
+	_, err = tx.Conn().PgConn().CopyFrom(ctx, strings.NewReader(string(data)), copySQL)
+	if err != nil {
+		return 0, err
+	}
+
+	var n int64
+	q := fmt.Sprintf(`SELECT COUNT(*)::bigint FROM "%s"."%s"`, schema, table)
+	if err := tx.QueryRow(ctx, q).Scan(&n); err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+func buildDatabentoCreateDDL(schema, table string) string {
+	cols := strings.Join([]string{
+		`"scriptDetails" TEXT NOT NULL`,
+		`"scriptInstrumentType" TEXT NOT NULL`,
+		`"scriptInstrumentType2" TEXT`,
+		`"multiplier" BIGINT NOT NULL`,
+		`"lotSize" BIGINT`,
+		`"tickSize" BIGINT`,
+		`"ISIN" TEXT`,
+		`"tradingSessionUTC" TEXT NOT NULL`,
+		`"expiration" BIGINT`,
+		`"script" TEXT NOT NULL`,
+		`"scriptToken" BIGINT NOT NULL`,
+		`"underlying_root" TEXT NOT NULL`,
+		`"underlying" TEXT NOT NULL`,
+		`"strike" BIGINT`,
+		`"optionType" TEXT`,
+		`"currency" TEXT NOT NULL`,
+	}, ",\n    ")
+	return fmt.Sprintf(`DROP TABLE IF EXISTS "%s"."%s" CASCADE;
+CREATE TABLE "%s"."%s" (
+    %s
+);`, schema, table, schema, table, cols)
+}
+
+func buildDatabentoCopySQL(schema, table string) string {
+	nulls := sortedKeys(databentoNullableCols)
+	quotedCols := make([]string, len(colNames))
+	for i, c := range colNames {
+		quotedCols[i] = `"` + c + `"`
+	}
+	return fmt.Sprintf(
+		`COPY "%s"."%s" (%s) FROM STDIN WITH (FORMAT csv, HEADER true, ENCODING 'UTF8', FORCE_NULL (%s))`,
+		schema, table, strings.Join(quotedCols, ", "), strings.Join(nulls, ", "),
+	)
+}
+
+func rowOKDatabento(row map[string]string) bool {
+	if strings.TrimSpace(row["scriptDetails"]) == "" {
+		return false
+	}
+	if strings.TrimSpace(row["scriptInstrumentType"]) == "" {
+		return false
+	}
+	tok := strings.TrimSpace(row["scriptToken"])
+	sym := strings.TrimSpace(row["script"])
+	if tok == "" || sym == "" {
+		return false
+	}
+	if _, err := parseInt(tok); err != nil {
+		return false
+	}
+	if strings.TrimSpace(row["tradingSessionUTC"]) == "" {
+		return false
+	}
+	return strings.TrimSpace(row["underlying"]) != "" && strings.TrimSpace(row["underlying_root"]) != ""
+}
+
+func csvBytesForCopyWithRowOK(path string, ok func(map[string]string) bool) ([]byte, int, int, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+	defer f.Close()
+	r := csv.NewReader(f)
+	header, err := r.Read()
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	if err := w.Write(colNames); err != nil {
+		return nil, 0, 0, 0, err
+	}
+	seen := make(map[string]struct{})
+	nIn, nOut, nSkip := 0, 0, 0
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, 0, 0, 0, err
+		}
+		nIn++
+		row := make(map[string]string, len(header))
+		for i, h := range header {
+			if i < len(rec) {
+				row[h] = rec[i]
+			}
+		}
+		if !ok(row) {
+			nSkip++
+			continue
+		}
+		key := strings.TrimSpace(row["scriptToken"]) + "\x00" + strings.TrimSpace(row["script"])
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out := make([]string, len(colNames))
+		for i, c := range colNames {
+			out[i] = strings.TrimSpace(row[c])
+		}
+		if err := w.Write(out); err != nil {
+			return nil, 0, 0, 0, err
+		}
+		nOut++
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return nil, 0, 0, 0, err
+	}
+	return buf.Bytes(), nIn, nOut, nSkip, nil
 }

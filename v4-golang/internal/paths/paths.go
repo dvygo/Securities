@@ -47,6 +47,10 @@ const (
 	XNFOEXCHGCSV    = "XNFO-NSE_EXCHANGE.csv"
 	XNCDEXCHGCSV    = "XNCD-NSE_EXCHANGE.csv"
 
+	XCMECSV = "XCME-DATABENTO.csv"
+	XCBOCSV = "XCBO-DATABENTO.csv"
+	XNASCSV = "XNAS-DATABENTO.csv"
+
 	FyersTableSuffix       = "_FYERS"
 	NSEExchangeTableSuffix = "_NSE_EXCHANGE"
 )
@@ -222,6 +226,10 @@ func FyersRawCSV(asOf time.Time, sourceFile string) string {
 
 func NormalizedCSV(asOf time.Time, name string) string {
 	return filepath.Join(NormalizedDir(asOf), name)
+}
+
+func DatabentoRawCSV(asOf time.Time, name string) string {
+	return filepath.Join(RawDir(asOf), name)
 }
 
 func ContractsDayDir(asOf time.Time) string {

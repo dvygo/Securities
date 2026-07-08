@@ -7,6 +7,7 @@ import (
 
 	"github.com/dvygo/premarket/v4g/internal/baskets"
 	"github.com/dvygo/premarket/v4g/internal/config"
+	"github.com/dvygo/premarket/v4g/internal/databento"
 	"github.com/dvygo/premarket/v4g/internal/fyers"
 	"github.com/dvygo/premarket/v4g/internal/normalize"
 	"github.com/dvygo/premarket/v4g/internal/paths"
@@ -26,25 +27,45 @@ type Opts struct {
 	DatabaseURL      string
 	Basket           string
 	IncludeCSVHeader bool
+	AllSymbols       bool
+	SymbolsFile      string
+	StypeIn          string
+	LiveStart        int
 }
 
-var fyersKeys = []string{"xnse", "xnfo", "xncd", "xbse", "xbfo", "xmcx"}
-
-var downloadSteps = []Step{
-	{Name: "xnse", Run: runFyers("xnse")},
-	{Name: "xnfo", Run: runFyers("xnfo")},
-	{Name: "xncd", Run: runFyers("xncd")},
-	{Name: "xbse", Run: runFyers("xbse")},
-	{Name: "xbfo", Run: runFyers("xbfo")},
-	{Name: "xmcx", Run: runFyers("xmcx")},
-}
+var databentoLiveKeys = []string{"xcme", "xcbo", "xnas"}
+var databentoHistKeys = []string{"xcme-hist", "xcbo-hist", "xnas-hist"}
 
 var normalizerSteps = []Step{
 	{Name: "normalize", Run: runNormalize},
 	{Name: "normalize-fyers", Run: runNormalizeFyers},
 	{Name: "normalize-nse", Run: runNormalizeNSE},
+	{Name: "normalize-databento", Run: runNormalizeDatabento},
+	{Name: "strip", Run: runStrip},
 	{Name: "baskets", Run: runBaskets},
 	{Name: "postgres", Run: runPostgres},
+}
+
+var fyersKeys = []string{"xnse", "xnfo", "xncd", "xbse", "xbfo", "xmcx"}
+
+func runDatabento(name string, mode databento.Mode) func(Opts) error {
+	return func(o Opts) error {
+		v, err := databento.ParseVenue(name)
+		if err != nil {
+			return err
+		}
+		_, err = databento.Download(databento.DownloadOpts{
+			Venue:       v,
+			Mode:        mode,
+			AsOf:        o.AsOf,
+			DryRun:      o.DryRun,
+			AllSymbols:  o.AllSymbols,
+			SymbolsFile: o.SymbolsFile,
+			StypeIn:     o.StypeIn,
+			LiveStart:   o.LiveStart,
+		})
+		return err
+	}
 }
 
 func runFyers(key string) func(Opts) error {
@@ -69,6 +90,14 @@ func runNormalizeFyers(o Opts) error {
 
 func runNormalizeNSE(o Opts) error {
 	return normalize.RunNSE(o.AsOf, o.DryRun)
+}
+
+func runNormalizeDatabento(o Opts) error {
+	return normalize.RunDatabento(o.AsOf, o.DryRun)
+}
+
+func runStrip(o Opts) error {
+	return normalize.RunStrip(o.AsOf, o.DryRun)
 }
 
 func runBaskets(o Opts) error {
@@ -101,11 +130,6 @@ func runPostgres(o Opts) error {
 		o.DryRun,
 		true,
 	)
-}
-
-// BuildDownloadSteps selects Fyers raw download steps (premarket.exe).
-func BuildDownloadSteps(only []string) ([]Step, error) {
-	return buildSteps(downloadSteps, only, false, false)
 }
 
 // BuildNormalizerSteps selects normalize / baskets / postgres (normalizer.exe).
@@ -156,8 +180,42 @@ func expandOnly(only []string, isNormalizer bool) map[string]struct{} {
 			}
 			continue
 		}
+		if name == "databento" && !isNormalizer {
+			for _, k := range databentoLiveKeys {
+				m[k] = struct{}{}
+			}
+			for _, k := range databentoHistKeys {
+				m[k] = struct{}{}
+			}
+			continue
+		}
+		if name == "databento-live" && !isNormalizer {
+			for _, k := range databentoLiveKeys {
+				m[k] = struct{}{}
+			}
+			continue
+		}
+		if name == "databento-hist" && !isNormalizer {
+			for _, k := range databentoHistKeys {
+				m[k] = struct{}{}
+			}
+			continue
+		}
+		if name == "live" && !isNormalizer {
+			for _, k := range databentoLiveKeys {
+				m[k] = struct{}{}
+			}
+			continue
+		}
+		if name == "hist" && !isNormalizer {
+			for _, k := range databentoHistKeys {
+				m[k] = struct{}{}
+			}
+			continue
+		}
 		if name == "all" && isNormalizer {
 			m["normalize"] = struct{}{}
+			m["normalize-databento"] = struct{}{}
 			m["baskets"] = struct{}{}
 			m["postgres"] = struct{}{}
 			continue
@@ -169,6 +227,16 @@ func expandOnly(only []string, isNormalizer bool) map[string]struct{} {
 		if name == "fyers" && isNormalizer {
 			m["normalize-fyers"] = struct{}{}
 			continue
+		}
+		if name == "databento" && isNormalizer {
+			m["normalize-databento"] = struct{}{}
+			continue
+		}
+		if name == "csv-export" && isNormalizer {
+			continue // handled via --csv flag in normalizer main
+		}
+		if name == "test-db" && isNormalizer {
+			continue // handled via --test-db flag in normalizer main
 		}
 		m[name] = struct{}{}
 	}

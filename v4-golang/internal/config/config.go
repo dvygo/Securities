@@ -74,6 +74,13 @@ func LoadNormalizer() Normalizer {
 		"xbse_exchange": "XBSE",
 		"xbfo_exchange": "XBFO",
 		"xmcx_exchange": "XIMC",
+		"glbx_underlying": "ES",
+		"glbx_multiplier": "100000",
+		"glbx_exchange": "XCME",
+		"opra_exchange": "XCBO",
+		"opra_multiplier": "100000",
+		"equs_exchange": "XNAS",
+		"equs_multiplier": "1",
 	}
 	f, err := loadINI()
 	if err != nil {
@@ -111,4 +118,81 @@ func DatabaseURL(override string) (string, error) {
 		return "", fmt.Errorf("postgres: database_url empty in %s", paths.ConfigINI())
 	}
 	return v, nil
+}
+
+type Databento struct {
+	APIKey            string
+	APIKeyES          string
+	LiveSeconds       float64
+	LiveRetries       int
+	LiveRetryDelaySec float64
+	MaxMaps           int
+	HistLookbackDays  int
+}
+
+func LoadDatabento() (Databento, error) {
+	def := Databento{
+		LiveSeconds:       25,
+		LiveRetries:       3,
+		LiveRetryDelaySec: 2,
+		MaxMaps:           100_000,
+		HistLookbackDays:  7,
+	}
+	if v := strings.TrimSpace(os.Getenv("DATABENTO_API_KEY")); v != "" {
+		def.APIKey = v
+	}
+	if v := strings.TrimSpace(os.Getenv("DATABENTO_API_KEY_ES")); v != "" {
+		def.APIKeyES = v
+	}
+	f, err := loadINI()
+	if err != nil {
+		if def.APIKey == "" && def.APIKeyES == "" {
+			return def, fmt.Errorf("databento: %w", err)
+		}
+		return def, nil
+	}
+	sec, err := f.GetSection("databento")
+	if err == nil {
+		if def.APIKey == "" {
+			def.APIKey = strings.TrimSpace(sec.Key("api_key").String())
+		}
+		if def.APIKeyES == "" {
+			def.APIKeyES = strings.TrimSpace(sec.Key("api_key_es").String())
+		}
+		if v, e := sec.Key("live_seconds").Float64(); e == nil && v > 0 {
+			def.LiveSeconds = v
+		}
+		if v, e := sec.Key("live_retries").Int(); e == nil && v > 0 {
+			def.LiveRetries = v
+		}
+		if v, e := sec.Key("live_retry_delay_sec").Float64(); e == nil && v >= 0 {
+			def.LiveRetryDelaySec = v
+		}
+		if v, e := sec.Key("max_maps").Int(); e == nil && v > 0 {
+			def.MaxMaps = v
+		}
+		if v, e := sec.Key("hist_lookback_days").Int(); e == nil && v > 0 {
+			def.HistLookbackDays = v
+		}
+	}
+	if def.APIKeyES == "" {
+		def.APIKeyES = def.APIKey
+	}
+	if def.APIKey == "" && def.APIKeyES == "" {
+		return def, fmt.Errorf("databento: missing api_key in %s (or DATABENTO_API_KEY env)", paths.ConfigINI())
+	}
+	return def, nil
+}
+
+func (d Databento) APIKeyForES(useES bool) (string, error) {
+	if useES {
+		if d.APIKeyES == "" {
+			return "", fmt.Errorf("databento: missing api_key_es for GLBX")
+		}
+		return d.APIKeyES, nil
+	}
+	if d.APIKey == "" {
+		return "", fmt.Errorf("databento: missing api_key")
+	}
+	return d.APIKey, nil
 }
