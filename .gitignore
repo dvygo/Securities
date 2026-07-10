@@ -35,6 +35,7 @@ v4-golang/constituents/contracts/
 *.sqlite3
 /bin/
 /vendor/
+/dist/
 
 # Logs and runtime dumps
 *LOGS/
