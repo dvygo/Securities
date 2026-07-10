@@ -28,6 +28,16 @@ def create_parser() -> argparse.ArgumentParser:
             help="Don't write files, just simulate",
         )
         subparser.add_argument(
+            "--hist",
+            action="store_true",
+            help="Download historical symbology data",
+        )
+        subparser.add_argument(
+            "--live",
+            action="store_true",
+            help="Download live streaming data",
+        )
+        subparser.add_argument(
             "--only",
             action="append",
             default=[],
@@ -145,7 +155,17 @@ def run_download(venue: str, args: argparse.Namespace) -> int:
             live_start=getattr(args, "live_start", None),
         )
 
-        steps = runner.build_download_steps(venue)
+        # Determine mode from flags; default to hist if neither specified
+        hist_flag = getattr(args, "hist", False)
+        live_flag = getattr(args, "live", False)
+        if hist_flag and live_flag:
+            mode = None  # Both modes
+        elif live_flag:
+            mode = "live"
+        else:
+            mode = "hist"  # Default to hist
+
+        steps = runner.build_download_steps(venue, mode=mode)
         only = getattr(args, "only", []) or []
         if only:
             steps = runner.expand_only(only, steps)

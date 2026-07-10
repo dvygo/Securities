@@ -59,9 +59,9 @@ def normalized_dir(as_of: str) -> Path:
     return day_dir(as_of) / "normalized"
 
 
-def databento_raw_csv(as_of: str, venue: str, mode: str) -> Path:
-    """Raw Databento CSV path: YYYYMMDD/raw/databento_{venue.lower()}_{mode.lower()}.csv"""
-    return raw_dir(as_of) / f"databento_{venue.lower()}_{mode.lower()}.csv"
+def databento_raw_csv(as_of: str, venue: str) -> Path:
+    """Raw Databento CSV path: YYYYMMDD/raw/{VENUE}-DATABENTO.csv (matches v4-golang naming)."""
+    return raw_dir(as_of) / f"{venue.upper()}-DATABENTO.csv"
 
 
 def baskets_dir() -> Path:

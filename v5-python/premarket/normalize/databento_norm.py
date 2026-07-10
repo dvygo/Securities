@@ -168,28 +168,27 @@ def run(opts: runner.Opts) -> None:
     # Process each Databento venue
     venues = ["xcme", "xcbo", "xnas"]
     for venue in venues:
-        for mode in ["hist", "live"]:
-            csv_path = raw_dir / f"databento_{venue}_{mode}.csv"
-            if not csv_path.exists():
-                continue
+        csv_path = paths.databento_raw_csv(opts.date_dir, venue)
+        if not csv_path.exists():
+            continue
 
-            print(f"    Processing {venue} {mode}...")
+        print(f"    Processing {venue}...")
 
-            try:
-                df = pd.read_csv(csv_path)
-                rows = []
+        try:
+            df = pd.read_csv(csv_path)
+            rows = []
 
-                for _, row in df.iterrows():
-                    norm_row = map_databento_row(row.to_dict(), venue.upper())
-                    if norm_row.get("script"):
-                        rows.append(norm_row)
+            for _, row in df.iterrows():
+                norm_row = map_databento_row(row.to_dict(), venue.upper())
+                if norm_row.get("script"):
+                    rows.append(norm_row)
 
-                # Write normalized CSV
-                output_path = normalized_dir / f"databento_{venue}_{mode}_normalized.csv"
-                if rows:
-                    out_df = pd.DataFrame(rows)
-                    out_df = out_df[paths.NORMALIZED_COLUMNS]
-                    out_df.to_csv(output_path, index=False, encoding="utf-8-sig")
-                    print(f"      Wrote {len(out_df)} rows")
-            except Exception as e:
-                print(f"      Error processing {csv_path}: {e}")
+            # Write normalized CSV
+            output_path = normalized_dir / f"{venue.upper()}-DATABENTO-normalized.csv"
+            if rows:
+                out_df = pd.DataFrame(rows)
+                out_df = out_df[paths.NORMALIZED_COLUMNS]
+                out_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+                print(f"      Wrote {len(out_df)} rows")
+        except Exception as e:
+            print(f"      Error processing {csv_path}: {e}")
