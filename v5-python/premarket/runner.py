@@ -91,6 +91,9 @@ def run(steps: List[Step], opts: Opts) -> int:
     Execute steps sequentially.
     Returns 0 on success, 1 on first error.
     """
+    if not steps:
+        print("error: --only matched no steps", file=sys.stderr)
+        return 1
     for step in steps:
         print(f">>> {step.name}", file=sys.stderr)
         sys.stderr.flush()

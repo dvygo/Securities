@@ -195,10 +195,12 @@ def run_normalize(args: argparse.Namespace) -> int:
             basket=getattr(args, "basket", None),
         )
 
-        steps = runner.build_normalizer_steps(
-            getattr(args, "only", []) or [],
-            postgres_push=args.postgres_push,
-        )
+        only = getattr(args, "only", []) or []
+        # Asking for the postgres step by name is itself the request to push;
+        # --postgres-push only matters for a full run with no --only filter.
+        postgres_push = args.postgres_push or "postgres" in only
+
+        steps = runner.build_normalizer_steps(only, postgres_push=postgres_push)
 
         return runner.run(steps, opts)
     finally:
