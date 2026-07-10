@@ -26,6 +26,12 @@ OCC_REGEX = re.compile(r"(\d{6})([CP])(\d{8})\s*$")
 # match this, so its absence is what identifies a plain future.
 GLBX_OPTION_REGEX = re.compile(r"\s+([CP])(\d+(?:\.\d+)?)\s*$")
 
+# US venues (XCME/XCBO) mirror Databento's own wire format: prices are
+# fixed-point with a 1e-9 scale (e.g. a $1 price is the int64 1_000_000_000).
+# Must be passed explicitly to price.scale_price -- its default scale is
+# India's INDIA_PRICE_SCALE (1e5) for the Fyers/rupee path, not this one.
+US_PRICE_SCALE = 10**9
+
 
 def parse_occ_symbol(symbol: str) -> Dict[str, Any]:
     """Parse OCC option symbol format: AAAA YYMMDD C/P 8-digit-strike."""
@@ -113,8 +119,8 @@ def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[st
         result["exchange"] = "XCME"
         result["underlying_root"] = underlying_root_from_stype_in(stype_in)
         result["underlying"] = underlying_root_from_stype_in(stype_in)
-        result["multiplier"] = 100000  # ES multiplier
-        result["tickSize"] = 25  # ES tick size
+        result["multiplier"] = US_PRICE_SCALE  # matches Databento's 1e-9 fixed-point wire price scale
+        result["tickSize"] = ""  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
         result["lotSize"] = 1
         result["tradingSessionUTC"] = session.trading_session_for_xcme(ref_date)
 
@@ -123,7 +129,7 @@ def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[st
             result["scriptInstrumentType"] = "OPTIDX"
             result["scriptInstrumentType2"] = "OPTION"
             result["optionType"] = "CALL" if opt_match.group(1) == "C" else "PUT"
-            result["strike"] = price.scale_price(float(opt_match.group(2)))
+            result["strike"] = price.scale_price(float(opt_match.group(2)), US_PRICE_SCALE)
         else:
             result["scriptInstrumentType"] = "FUTIDX"
             result["scriptInstrumentType2"] = "FUTURE"
@@ -137,7 +143,7 @@ def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[st
             underlying = parsed.get("underlying", "")
             result["underlying"] = underlying
             result["underlying_root"] = underlying.upper()
-            result["strike"] = price.scale_price(parsed.get("strike", 0))
+            result["strike"] = price.scale_price(parsed.get("strike", 0), US_PRICE_SCALE)
             result["optionType"] = parsed.get("option_type", "")
             result["expiration"] = int(datetime.strptime(parsed.get("expiration", "20240101"), "%Y%m%d").timestamp()) * 10**9
         else:
@@ -150,8 +156,8 @@ def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[st
         is_index = underlying.upper() in ("SPX", "SPXW", "VIX", "RUT")
         result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
         result["scriptInstrumentType2"] = "OPTION"
-        result["multiplier"] = 100000  # OPRA standard
-        result["tickSize"] = price.scale_price(0.01)
+        result["multiplier"] = US_PRICE_SCALE  # matches Databento's 1e-9 fixed-point wire price scale
+        result["tickSize"] = ""  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
         result["lotSize"] = 100
         result["tradingSessionUTC"] = (
             session.trading_session_for_xcbo_index(ref_date) if is_index else session.trading_session_for_xcbo_equity(ref_date)
@@ -165,8 +171,8 @@ def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[st
         result["underlying"] = stype_in
         result["strike"] = 0
         result["optionType"] = ""
-        result["multiplier"] = 1
-        result["tickSize"] = price.scale_price(0.01)
+        result["multiplier"] = US_PRICE_SCALE  # matches Databento's 1e-9 fixed-point wire price scale
+        result["tickSize"] = ""  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
         result["lotSize"] = 1
         result["expiration"] = 0  # No expiration for equities
         result["tradingSessionUTC"] = session.trading_session_for_xnas(ref_date)

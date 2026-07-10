@@ -78,23 +78,28 @@ def push_contracts(
     copy_cols = ["date", "exchange"] + paths.NORMALIZED_COLUMNS
     df = df[copy_cols]
 
-    # Convert numeric columns to int/float as needed
-    for col in ["multiplier", "lotSize", "tickSize", "expiration", "strike", "scriptToken"]:
+    # Convert numeric columns to int as needed. "multiplier" and "tickSize"
+    # use a nullable dtype: multiplier is a per-venue wire price scale (set
+    # for every US venue including XNAS) so it's rarely blank, but tickSize
+    # is exclusive to the interactive layer -- Nexus doesn't depend on it --
+    # and is always blank; both must stay SQL NULL rather than become 0.
+    for col in ["lotSize", "expiration", "strike", "scriptToken"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    for col in ["multiplier", "tickSize"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
 
-    # Replace NaN with NULL for COPY
-    df = df.fillna("")
-
-    # Push via COPY. COPY FROM STDIN defaults to tab-delimited text format;
-    # values like tradingSessionUTC legitimately contain "|" (3-part
-    # sessions), so the delimiter here must not be "|".
+    # Push via COPY. COPY FROM STDIN defaults to tab-delimited text format
+    # with "\N" as the NULL sentinel; values like tradingSessionUTC
+    # legitimately contain "|" (3-part sessions), so the delimiter must not
+    # be "|".
     print(f"    Pushing {len(df)} symbols...")
     with conn.cursor() as cur:
         with cur.copy(f"COPY {schema_name}.symbols ({','.join(copy_cols)}) FROM STDIN") as copy:
             for _, row in df.iterrows():
-                line = "\t".join(str(v) for v in row.values) + "\n"
-                copy.write(line.encode())
+                fields = ["\\N" if pd.isna(v) or v == "" else str(v) for v in row.values]
+                copy.write(("\t".join(fields) + "\n").encode())
 
     conn.commit()
     print(f"      Pushed {len(df)} rows")
