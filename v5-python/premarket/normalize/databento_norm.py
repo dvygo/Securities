@@ -15,17 +15,27 @@ CME_MONTHS = {
     "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12,
 }
 
-# OCC option symbol regex for parsing
-OCC_REGEX = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
+# OCC option symbol regex for parsing. Only the suffix is anchored (matches
+# v4-golang's opraOCCTail): real Databento OPRA symbols space-pad the root
+# to 6 chars (e.g. "NVDA  270115P00090000"), so anchoring the root at "^"
+# with no whitespace allowance silently fails to match every row.
+OCC_REGEX = re.compile(r"(\d{6})([CP])(\d{8})\s*$")
+
+# GLBX weekly-option suffix, e.g. "ESZ7 P8250" / "ESM8 C9700" -> (P, 8250).
+# Matches v4-golang's glbxCPStrike. Futures symbols (e.g. "ESZ7") never
+# match this, so its absence is what identifies a plain future.
+GLBX_OPTION_REGEX = re.compile(r"\s+([CP])(\d+(?:\.\d+)?)\s*$")
 
 
 def parse_occ_symbol(symbol: str) -> Dict[str, Any]:
     """Parse OCC option symbol format: AAAA YYMMDD C/P 8-digit-strike."""
-    match = OCC_REGEX.match(symbol)
+    s = symbol.strip()
+    match = OCC_REGEX.search(s)
     if not match:
         return {}
 
-    underlying, expiry_str, option_type, strike_str = match.groups()
+    expiry_str, option_type, strike_str = match.groups()
+    underlying = s[: match.start()].strip().replace(" ", "").upper()
 
     try:
         year = int(expiry_str[:2])
@@ -83,7 +93,7 @@ def underlying_root_from_stype_in(symbol: str) -> str:
     return re.match(r"^[A-Z]+", symbol).group(0) if re.match(r"^[A-Z]+", symbol) else symbol
 
 
-def map_databento_row(row: Dict[str, Any], venue: str) -> Dict[str, Any]:
+def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[str, Any]:
     """Map a Databento symbology record to canonical schema."""
     result = {}
 
@@ -101,36 +111,49 @@ def map_databento_row(row: Dict[str, Any], venue: str) -> Dict[str, Any]:
     # Venue-specific processing
     if venue == "GLBX" or venue.startswith("XCME"):
         result["exchange"] = "XCME"
-        result["scriptInstrumentType"] = "FUTURE"  # GLBX is futures-only
         result["underlying_root"] = underlying_root_from_stype_in(stype_in)
         result["underlying"] = underlying_root_from_stype_in(stype_in)
-        result["strike"] = 0
-        result["optionType"] = ""
         result["multiplier"] = 100000  # ES multiplier
         result["tickSize"] = 25  # ES tick size
         result["lotSize"] = 1
-        result["tradingSessionUTC"] = session.trading_session_for_xcme()
+        result["tradingSessionUTC"] = session.trading_session_for_xcme(ref_date)
+
+        opt_match = GLBX_OPTION_REGEX.search(stype_out or stype_in)
+        if opt_match:
+            result["scriptInstrumentType"] = "OPTIDX"
+            result["scriptInstrumentType2"] = "OPTION"
+            result["optionType"] = "CALL" if opt_match.group(1) == "C" else "PUT"
+            result["strike"] = price.scale_price(float(opt_match.group(2)))
+        else:
+            result["scriptInstrumentType"] = "FUTIDX"
+            result["strike"] = 0
+            result["optionType"] = ""
 
     elif venue == "OPRA" or venue.startswith("XCBO"):
         result["exchange"] = "XCBO"
-        result["scriptInstrumentType"] = "OPTION"
         parsed = parse_occ_symbol(stype_out or stype_in)
         if parsed:
-            result["underlying"] = parsed.get("underlying", "")
-            result["underlying_root"] = parsed.get("underlying", "").upper()
+            underlying = parsed.get("underlying", "")
+            result["underlying"] = underlying
+            result["underlying_root"] = underlying.upper()
             result["strike"] = price.scale_price(parsed.get("strike", 0))
             result["optionType"] = "C" if parsed.get("option_type") == "CALL" else "P"
             result["expiration"] = int(datetime.strptime(parsed.get("expiration", "20240101"), "%Y%m%d").timestamp()) * 10**9
         else:
+            underlying = ""
             result["underlying"] = ""
             result["underlying_root"] = ""
             result["strike"] = 0
             result["optionType"] = ""
             result["expiration"] = 0
+        is_index = underlying.upper() in ("SPX", "SPXW", "VIX", "RUT")
+        result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
         result["multiplier"] = 100000  # OPRA standard
         result["tickSize"] = price.scale_price(0.01)
         result["lotSize"] = 100
-        result["tradingSessionUTC"] = session.trading_session_for_xcbo_equity()
+        result["tradingSessionUTC"] = (
+            session.trading_session_for_xcbo_index(ref_date) if is_index else session.trading_session_for_xcbo_equity(ref_date)
+        )
 
     elif venue == "EQUS" or venue.startswith("XNAS"):
         result["exchange"] = "XNAS"
@@ -143,7 +166,7 @@ def map_databento_row(row: Dict[str, Any], venue: str) -> Dict[str, Any]:
         result["tickSize"] = price.scale_price(0.01)
         result["lotSize"] = 1
         result["expiration"] = 0  # No expiration for equities
-        result["tradingSessionUTC"] = session.trading_session_for_xnas()
+        result["tradingSessionUTC"] = session.trading_session_for_xnas(ref_date)
 
     # Fill in missing columns
     for col in paths.NORMALIZED_COLUMNS:
@@ -162,6 +185,7 @@ def run(opts: runner.Opts) -> None:
     print("  Normalizing Databento data...")
     normalized_dir = paths.normalized_dir(opts.date_dir)
     raw_dir = paths.raw_dir(opts.date_dir)
+    ref_date = datetime.strptime(opts.date_dir, "%Y%m%d").date()
 
     normalized_dir.mkdir(parents=True, exist_ok=True)
 
@@ -179,7 +203,7 @@ def run(opts: runner.Opts) -> None:
             rows = []
 
             for _, row in df.iterrows():
-                norm_row = map_databento_row(row.to_dict(), venue.upper())
+                norm_row = map_databento_row(row.to_dict(), venue.upper(), ref_date)
                 if norm_row.get("script"):
                     rows.append(norm_row)
 

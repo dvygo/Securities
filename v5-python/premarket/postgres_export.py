@@ -86,12 +86,14 @@ def push_contracts(
     # Replace NaN with NULL for COPY
     df = df.fillna("")
 
-    # Push via COPY
+    # Push via COPY. COPY FROM STDIN defaults to tab-delimited text format;
+    # values like tradingSessionUTC legitimately contain "|" (3-part
+    # sessions), so the delimiter here must not be "|".
     print(f"    Pushing {len(df)} symbols...")
     with conn.cursor() as cur:
         with cur.copy(f"COPY {schema_name}.symbols ({','.join(copy_cols)}) FROM STDIN") as copy:
             for _, row in df.iterrows():
-                line = "|".join(str(v) for v in row.values) + "\n"
+                line = "\t".join(str(v) for v in row.values) + "\n"
                 copy.write(line.encode())
 
     conn.commit()
@@ -115,7 +117,7 @@ def push_baskets(
     with conn.cursor() as cur:
         with cur.copy("COPY " + schema_name + ".baskets (date, basket, symbol) FROM STDIN") as copy:
             for _, row in df.iterrows():
-                line = f"{row['date']}|{row['basket']}|{row['symbol']}\n"
+                line = f"{row['date']}\t{row['basket']}\t{row['symbol']}\n"
                 copy.write(line.encode())
 
     conn.commit()

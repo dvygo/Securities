@@ -26,12 +26,18 @@ def aggregate_contract_rows(date_dir: str) -> List[dict]:
         if csv_path.name.endswith(".stripped.csv") or csv_path.name.startswith("NSE-"):
             continue
 
+        # Normalized filenames are always "{MIC}-...csv" (XNSE-FYERS.csv,
+        # XCME-DATABENTO-normalized.csv, ...); the 16-col schema never
+        # carries an exchange column itself, so derive it from the name
+        # like v4-golang's ExchangeMICForNormalizedCSV.
+        exchange = csv_path.name.split("-", 1)[0]
+
         try:
             df = pd.read_csv(csv_path)
             for _, row in df.iterrows():
                 contract_row = {
                     "date": date_dir,
-                    "exchange": row.get("exchange", ""),
+                    "exchange": exchange,
                 }
                 # Add canonical columns
                 for col in paths.NORMALIZED_COLUMNS:
