@@ -1,4 +1,5 @@
 """Pipeline runner: Step class, --only expansion, sequential execution."""
+import re
 import sys
 from dataclasses import dataclass
 from typing import Callable, List, Optional
@@ -25,6 +26,18 @@ class Opts:
     symbols_file: Optional[str] = None
     stype_in: Optional[str] = None
     live_start: Optional[str] = None
+    hist_range: Optional[str] = None  # raw 16-digit YYYYMMDDYYYYMMDD, unparsed
+
+
+_RANGE_RE = re.compile(r"^(\d{8})(\d{8})$")
+
+
+def parse_hist_range(range_str: str) -> tuple[str, str]:
+    """Parse 16-digit YYYYMMDDYYYYMMDD into (from, to) YYYYMMDD strings."""
+    m = _RANGE_RE.match(range_str)
+    if not m:
+        raise ValueError(f"--range must be 16 digits YYYYMMDDYYYYMMDD, got: {range_str}")
+    return m.group(1), m.group(2)
 
 
 def expand_only(only: List[str], all_steps: List[Step]) -> List[Step]:

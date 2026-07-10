@@ -13,7 +13,7 @@ class DatabentoCfg:
     """Databento configuration."""
     api_key: str
     api_key_es: str
-    live_seconds: int = 25
+    live_seconds: int = 10
     live_retries: int = 3
     live_retry_delay_sec: int = 2
     max_maps: int = 100000
@@ -66,7 +66,7 @@ def load_databento() -> DatabentoCfg:
             return DatabentoCfg(
                 api_key=api_key or "",
                 api_key_es=api_key_es or "",
-                live_seconds=section.getint("live_seconds", 25),
+                live_seconds=section.getint("live_seconds", 10),
                 live_retries=section.getint("live_retries", 3),
                 live_retry_delay_sec=section.getint("live_retry_delay_sec", 2),
                 max_maps=section.getint("max_maps", 100000),

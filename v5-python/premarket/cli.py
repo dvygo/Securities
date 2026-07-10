@@ -38,6 +38,11 @@ def create_parser() -> argparse.ArgumentParser:
             help="Download live streaming data",
         )
         subparser.add_argument(
+            "--range",
+            dest="hist_range",
+            help="Hist date range, 16 digits YYYYMMDDYYYYMMDD (from,to). Ignored with --live.",
+        )
+        subparser.add_argument(
             "--only",
             action="append",
             default=[],
@@ -153,6 +158,7 @@ def run_download(venue: str, args: argparse.Namespace) -> int:
             symbols_file=getattr(args, "symbols_file", None),
             stype_in=getattr(args, "stype_in", None),
             live_start=getattr(args, "live_start", None),
+            hist_range=getattr(args, "hist_range", None),
         )
 
         # Determine mode from flags; default to hist if neither specified

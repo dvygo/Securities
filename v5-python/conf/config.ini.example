@@ -3,7 +3,7 @@
 [databento]
 api_key = db-YOUR_KEY_EQUS_OPRA
 api_key_es = db-YOUR_KEY_GLBX
-live_seconds = 25
+live_seconds = 10
 live_retries = 3
 live_retry_delay_sec = 2
 max_maps = 100000

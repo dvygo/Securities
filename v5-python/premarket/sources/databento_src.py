@@ -9,6 +9,8 @@ Matches v4-golang's internal/databento exactly:
     internal/databento/mapping.go's MappingColumns
 """
 import datetime as dt
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -94,16 +96,36 @@ def resolve_symbols(
     return symbols
 
 
-def resolve_hist_range(client: db.Historical, dataset: str, as_of: str, lookback_days: int) -> tuple[str, str]:
+def resolve_hist_range(
+    client: db.Historical,
+    dataset: str,
+    as_of: str,
+    lookback_days: int,
+    explicit_range: Optional[str] = None,
+) -> tuple[str, str]:
     """
     Compute (start_date, end_date) for the hist resolve request.
-    Matches ResolveHistRange in v4-golang: end = asOf+1day (exclusive UTC midnight,
-    clamped to dataset's actual available end), start = end - lookback_days
-    (clamped to dataset's actual available start).
+
+    If explicit_range is given (16-digit YYYYMMDDYYYYMMDD, from --range), use it
+    directly: from=start (inclusive), to=end+1day (exclusive UTC midnight),
+    still clamped to the dataset's actual available window.
+
+    Otherwise matches ResolveHistRange in v4-golang: end = asOf+1day (exclusive
+    UTC midnight, clamped to dataset's actual available end), start = end -
+    lookback_days (clamped to dataset's actual available start).
     """
     dataset_range = client.metadata.get_dataset_range(dataset=dataset)
     first = dt.datetime.strptime(dataset_range["start"][:10], "%Y-%m-%d").date()
     last = dt.datetime.strptime(dataset_range["end"][:10], "%Y-%m-%d").date()
+
+    if explicit_range:
+        from_str, to_str = runner.parse_hist_range(explicit_range)
+        start = dt.datetime.strptime(from_str, "%Y%m%d").date()
+        end_day = min(dt.datetime.strptime(to_str, "%Y%m%d").date(), last)
+        end = end_day + dt.timedelta(days=1)  # exclusive UTC midnight
+        if start < first:
+            start = first
+        return start.isoformat(), end.isoformat()
 
     as_of_date = dt.datetime.strptime(as_of, "%Y%m%d").date()
     end_day = min(as_of_date, last)
@@ -132,8 +154,6 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     if not api_key:
         raise ValueError(f"No Databento API key configured for {venue}")
 
-    client = db.Historical(key=api_key)
-
     # Resolve symbols
     symbols = resolve_symbols(
         venue,
@@ -154,9 +174,16 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
 
     try:
         if mode == "hist":
-            rows = _fetch_hist(client, venue_cfg, symbols, stype_in, opts.date_dir, cfg.hist_lookback_days)
+            client = db.Historical(key=api_key)
+            rows = _fetch_hist(
+                client, venue_cfg, symbols, stype_in, opts.date_dir,
+                cfg.hist_lookback_days, opts.hist_range,
+            )
         elif mode == "live":
-            raise NotImplementedError("Live mode not yet implemented")
+            rows = _fetch_live(
+                api_key, venue_cfg, symbols, stype_in, opts.live_start,
+                cfg.live_seconds, cfg.max_maps, cfg.live_retries, cfg.live_retry_delay_sec,
+            )
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -181,9 +208,10 @@ def _fetch_hist(
     stype_in: str,
     as_of: str,
     lookback_days: int,
+    explicit_range: Optional[str] = None,
 ) -> list[dict]:
     """Single batch symbology.resolve() call, matching HistoricalSymbolMappings in v4-golang."""
-    start_date, end_date = resolve_hist_range(client, venue_cfg.dataset, as_of, lookback_days)
+    start_date, end_date = resolve_hist_range(client, venue_cfg.dataset, as_of, lookback_days, explicit_range)
 
     print(f"  Resolving {venue_cfg.venue_name} hist: {len(symbols)} symbol(s), "
           f"stype_in={stype_in}, range=[{start_date}, {end_date})")
@@ -216,3 +244,99 @@ def _fetch_hist(
         print(f"    Warning: not found: {not_found}")
 
     return rows
+
+
+def _fetch_live(
+    api_key: str,
+    venue_cfg: VenueConfig,
+    symbols: list[str],
+    stype_in: str,
+    live_start: Optional[str],
+    live_seconds: float,
+    max_maps: int,
+    retries: int,
+    retry_delay_sec: float,
+) -> list[dict]:
+    """
+    Subscribe one symbol at a time (separate db.Live session per symbol) so a single
+    symbol that Databento can't resolve (e.g. no live contract right now) doesn't kill
+    the whole batch. Each symbol gets its own retry budget; failures are logged and
+    skipped rather than aborting the run.
+    """
+    retries = max(retries, 1)
+    all_rows: list[dict] = []
+
+    for symbol in symbols:
+        sym_rows: list[dict] = []
+        last_err: Optional[Exception] = None
+        for attempt in range(1, retries + 1):
+            try:
+                sym_rows = _fetch_live_once(
+                    api_key, venue_cfg, [symbol], stype_in, live_start, live_seconds, max_maps,
+                )
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < retries:
+                    print(f"  Live attempt {attempt}/{retries} failed for {symbol}: {e}; retry in {retry_delay_sec:.0f}s")
+                    time.sleep(retry_delay_sec)
+
+        if last_err is not None:
+            print(f"    Warning: {venue_cfg.venue_name} live failed for {symbol}: {last_err}")
+            continue
+
+        print(f"    {symbol}: {len(sym_rows)} mapping(s)")
+        all_rows.extend(sym_rows)
+
+    return all_rows
+
+
+def _fetch_live_once(
+    api_key: str,
+    venue_cfg: VenueConfig,
+    symbols: list[str],
+    stype_in: str,
+    live_start: Optional[str],
+    live_seconds: float,
+    max_maps: int,
+) -> list[dict]:
+    if not symbols:
+        raise ValueError("no symbols to subscribe")
+
+    client = db.Live(key=api_key)
+    try:
+        client.subscribe(
+            dataset=venue_cfg.dataset,
+            schema="definition",
+            symbols=symbols,
+            stype_in=stype_in,
+            start=live_start or None,
+        )
+
+        timeout = live_seconds if live_seconds > 0 else 25.0
+        stop_timer = threading.Timer(timeout, client.stop)
+        stop_timer.start()
+
+        rows: list[dict] = []
+        try:
+            for record in client:
+                if not isinstance(record, db.SymbolMappingMsg):
+                    continue
+                rows.append({
+                    "instrument_id": record.instrument_id,
+                    "stype_in_symbol": record.stype_in_symbol,
+                    "stype_out_symbol": record.stype_out_symbol,
+                    "stype_in": stype_in,
+                    "stype_out": "instrument_id",
+                    "start_ts": record.pretty_start_ts,
+                    "end_ts": record.pretty_end_ts,
+                })
+                if max_maps > 0 and len(rows) >= max_maps:
+                    break
+        finally:
+            stop_timer.cancel()
+
+        return rows
+    finally:
+        client.stop()
