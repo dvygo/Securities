@@ -1,8 +1,11 @@
 """Price scaling: convert decimal prices to fixed-point integers."""
 from typing import Union
 
-# India price scale: 1 rupee = 100000 units (paise * 1000)
-INDIA_PRICE_SCALE = 100000
+# India price scale: feed is quoted in paise, so 1 rupee = 100 units. This is
+# also what gets written into the "multiplier" column for every Fyers row
+# (matching the US convention: multiplier is the wire price scale, so
+# strike / multiplier always recovers the real price regardless of venue).
+INDIA_PRICE_SCALE = 100
 
 
 def scale_price(price: Union[float, str], scale: int = INDIA_PRICE_SCALE) -> int:

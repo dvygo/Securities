@@ -33,7 +33,10 @@ def aggregate_contract_rows(date_dir: str) -> List[dict]:
         exchange = csv_path.name.split("-", 1)[0]
 
         try:
-            df = pd.read_csv(csv_path)
+            # pandas reads empty CSV cells as float NaN, not "" -- keep_default_na=False
+            # keeps every cell a plain string so blank fields round-trip as "" downstream
+            # (e.g. into COPY's FORCE_NULL) instead of becoming the literal string "nan".
+            df = pd.read_csv(csv_path, keep_default_na=False, dtype=str)
             for _, row in df.iterrows():
                 contract_row = {
                     "date": date_dir,
@@ -64,7 +67,10 @@ def aggregate_contract_rows(date_dir: str) -> List[dict]:
 def aggregate_basket_rows(date_dir: str) -> List[dict]:
     """
     Aggregate all basket constituents into flat basket rows.
-    Returns list of dicts with [date, basket, symbol].
+    Returns list of dicts with [date, basket] + Nexus's basket columns
+    (paths.NEXUS_BASKET_COLUMNS) wherever the per-basket CSV has them --
+    the "script" fallback covers today's stub baskets.py output, which
+    only ever writes [date, symbol, underlying].
     """
     contracts_day_dir = paths.contracts_day_dir(date_dir)
     rows = []
@@ -76,15 +82,17 @@ def aggregate_basket_rows(date_dir: str) -> List[dict]:
     for csv_path in contracts_day_dir.glob("*.csv"):
         basket_name = csv_path.stem
         try:
-            df = pd.read_csv(csv_path)
+            df = pd.read_csv(csv_path, keep_default_na=False, dtype=str)
             for _, row in df.iterrows():
-                basket_row = {
-                    "date": date_dir,
-                    "basket": basket_name,
-                    "symbol": row.get("symbol", "") or row.get("script", ""),
-                }
-                if basket_row.get("symbol"):
-                    rows.append(basket_row)
+                script = row.get("script", "") or row.get("symbol", "")
+                if not script:
+                    continue
+                basket_row = {"date": date_dir, "basket": basket_name, "script": script}
+                for col in paths.NEXUS_BASKET_COLUMNS:
+                    if col == "script":
+                        continue
+                    basket_row[col] = row.get(col, "")
+                rows.append(basket_row)
         except Exception as e:
             print(f"  Error reading {csv_path}: {e}")
 

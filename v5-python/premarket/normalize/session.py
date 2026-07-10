@@ -63,18 +63,34 @@ def ist_hhmm_to_utc(ist_time_str: str) -> str:
 
 def trading_session_ist_to_utc(ist_session: str) -> str:
     """
-    Convert IST trading session string to UTC.
-    Input: "HHMM-HHMM" (IST), Output: "HH:MM-HH:MM" (UTC)
+    Convert an IST trading session string to UTC, matching v4-golang's
+    TradingSessionISTToUTC. The real Fyers tradingSession field is
+    pipe-separated for multi-segment sessions and has a trailing colon,
+    e.g. "0915-1530|1815-1915:" -> "0330-1000|1245-1345".
     """
-    try:
-        start, end = ist_session.split("-")
+    s = ist_session.strip().rstrip(":")
+    if not s:
+        return ""
+    slots = []
+    for part in s.split("|"):
+        part = part.strip()
+        if not part or "-" not in part:
+            return ""
+        start, end = part.split("-", 1)
         utc_start = ist_hhmm_to_utc(f"{start[:2]}:{start[2:]}")
         utc_end = ist_hhmm_to_utc(f"{end[:2]}:{end[2:]}")
-        if utc_start and utc_end:
-            return f"{utc_start}-{utc_end}"
-    except (ValueError, AttributeError):
-        pass
-    return ""
+        if not utc_start or not utc_end:
+            return ""
+        slots.append(f"{utc_start.replace(':', '')}-{utc_end.replace(':', '')}")
+    return "|".join(slots)
+
+
+# NSE/BSE pre-open auction order-entry window. Not carried on Fyers'
+# tradingSession field at all (it only has continuous + evening sessions),
+# so it must be injected rather than trusted from the raw feed -- same
+# principle as the independently-computed US 3-part sessions. India has no
+# DST, so a fixed +5:30 offset is exact (no need for the zoneinfo path).
+NSE_PREOPEN_UTC = "0330-0338"
 
 
 def trading_session_for_xnas(ref: Optional[date] = None) -> str:

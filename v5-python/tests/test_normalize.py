@@ -9,9 +9,8 @@ class TestPriceScaling:
     """Test price scaling functions."""
 
     def test_scale_price_default(self):
-        """Test scaling with default India scale."""
-        # 1.5 * 100000 = 150000
-        assert price.scale_price(1.5) == 150000
+        """Test scaling with default India scale (feed is quoted in paise: 1 rupee = 100 units)."""
+        assert price.scale_price(1.5) == 150
 
     def test_scale_price_zero(self):
         """Test scaling zero."""
@@ -19,11 +18,11 @@ class TestPriceScaling:
 
     def test_scale_price_negative(self):
         """Test scaling negative prices."""
-        assert price.scale_price(-1.0) == -100000
+        assert price.scale_price(-1.0) == -100
 
     def test_scale_price_string(self):
         """Test scaling from string input."""
-        assert price.scale_price("2.5") == 250000
+        assert price.scale_price("2.5") == 250
 
     def test_scale_price_invalid_string(self):
         """Test scaling invalid string."""
@@ -50,9 +49,8 @@ class TestFyersAppendix:
 
     def test_parse_fy_token_valid(self):
         """Test parsing valid fyToken."""
-        # Format: EE SS YYMMDD EXTOKEN
-        # NSE (01) CM (01) 240101 12345
-        token = "010124010112345"
+        # Format: EE SS YYMMDD EXTOKEN (appendix codes: NSE=10, CM=10)
+        token = "101026070912345"
         result = fyers_src.parse_fy_token(token)
         assert result.get("exchange") == "NSE"
         assert result.get("segment") == "CM"
@@ -63,10 +61,10 @@ class TestFyersAppendix:
         assert result == {}
 
     def test_resolve_exchange_mic(self):
-        """Test exchange/segment to MIC mapping."""
-        assert fyers_src.resolve_exchange_mic("NSE", "CM") == "XNSE"
-        assert fyers_src.resolve_exchange_mic("NSE", "FO") == "XNFO"
-        assert fyers_src.resolve_exchange_mic("BSE", "CM") == "XBSE"
+        """Test exchange/segment appendix codes to MIC mapping."""
+        assert fyers_src.resolve_exchange_mic("10", "10") == "XNSE"
+        assert fyers_src.resolve_exchange_mic("10", "11") == "XNFO"
+        assert fyers_src.resolve_exchange_mic("12", "10") == "XBSE"
 
     def test_is_cash_instrument(self):
         """Test cash instrument classification."""

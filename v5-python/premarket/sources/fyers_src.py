@@ -10,71 +10,85 @@ import requests
 from .. import config, paths, runner
 
 
-# Fyers columns (from internal/fyers/columns.go)
+# Fyers sym_details field names in column order for headerless CSVs.
+# Matches v4-golang's internal/fyers/columns.go JSONColumns exactly -- this
+# is the REAL on-wire column order (verified against a live BSE_CM.csv row);
+# a previous, unrelated, fabricated column list here never matched the
+# actual feed and silently misaligned every field.
 FYERS_COLUMNS = [
-    "exchange", "segment", "symbol", "description", "series", "isin",
-    "exch_token", "fyToken", "tick_size", "lot_size", "instrumenttype",
-    "optiontype", "expirydate", "strike", "underlyingsymbol", "underlyingtoken",
-    "mult", "contract_description", "contractsize", "buyqty", "sellqty",
+    "fyToken", "symDetails", "exInstType", "minLotSize", "tickSize", "isin",
+    "tradingSession", "lastUpdate", "expiryDate", "symTicker", "exchange",
+    "segment", "exToken", "exSymName", "underExToken", "strikePrice",
+    "optType", "underFyTok", "underSym", "fyersExtra1", "fyersExtra2",
 ]
 
-# Legacy header aliases for older Fyers format
+# Legacy pre-v2 CSV header names -> canonical FYERS_COLUMNS key.
+# Matches v4-golang's LegacyHeaderAliases.
 LEGACY_HEADER_ALIASES = {
-    "exchange": "EXCH",
-    "segment": "SEG",
-    "symbol": "SYMBOL",
-    "description": "DESC",
-    "series": "SERIES",
-    "isin": "ISIN",
-    "exch_token": "EXCH_TOKEN",
-    "fyToken": "FYTOKEN",
-    "tick_size": "TickSize",
-    "lot_size": "LotSize",
-    "instrumenttype": "InstType",
-    "optiontype": "OptionType",
-    "expirydate": "ExpiryDate",
-    "strike": "StrikPrice",
-    "underlyingsymbol": "Underlying",
-    "underlyingtoken": "UnderlyingToken",
-    "mult": "multiplier",
+    "fytoken": "fyToken",
+    "symbol": "symDetails",
+    "instrumenttype": "exInstType",
+    "lotsize": "minLotSize",
+    "isin": "isin",
+    "symbolticker": "symTicker",
+    "scriptcode": "exToken",
+    "scripcode": "exToken",
+    "scripname": "exSymName",
+    "shortsym": "exSymName",
+    "scriptoken": "underExToken",
+    "optiontype": "optType",
+    "underfytoken": "underFyTok",
+    "underexsymbol": "underSym",
 }
 
-# Fyers appendix codes (from internal/fyers/appendix.go)
+# Fyers API v3 appendix codes (https://myapi.fyers.in/docsv3#tag/Appendix),
+# matching v4-golang's internal/fyers/appendix.go.
 EXCHANGE_CODES = {
-    1: "NSE",
-    2: "BSE",
-    3: "MCX",
-    4: "NCDEX",
+    10: "NSE",
+    11: "MCX",
+    12: "BSE",
 }
 
 SEGMENT_CODES = {
-    1: "CM",
-    2: "FO",
-    3: "CD",
-    4: "COM",
+    10: "CM",
+    11: "FO",
+    12: "CD",
+    20: "COM",
 }
 
 INSTRUMENT_CODES = {
-    1: "EQ", 10: "FUTCOM", 11: "OPTCOM", 12: "FUTIDX", 13: "OPTIDX",
-    14: "FUTSTK", 15: "OPTSTK", 16: "OPTCUR", 17: "FUTCUR", 18: "SPOTFWD",
-    19: "SPOTCUR", 20: "FUTIRT", 21: "OPTIRT", 22: "SPOTIRT", 23: "SPOTGOLD",
-    24: "SPOTSILVER", 25: "MUTUALFUND", 26: "BOND", 27: "GOVT_BOND",
-    28: "ETF", 29: "SPOT", 30: "WARRANT", 31: "SPOTSLV",
+    0: "EQ", 1: "PREFSHARES", 2: "DEBENTURES", 3: "WARRANTS", 4: "MISC",
+    5: "SGB", 6: "G-SECS", 7: "T-BILLS", 8: "MF", 9: "ETF", 10: "INDEX",
+    11: "FUTIDX", 12: "FUTIVX", 13: "FUTSTK", 14: "OPTIDX", 15: "OPTSTK",
+    16: "FUTCUR", 17: "FUTIRT", 18: "FUTIRC", 19: "OPTCUR", 20: "UNDCUR",
+    21: "UNDIRC", 22: "UNDIRT", 23: "UNDIRD", 24: "INDEX_CD", 25: "FUTIRD",
+    30: "FUTCOM", 31: "OPTFUT", 32: "OPTCOM", 33: "FUTBAS", 34: "FUTBLN",
+    35: "FUTENR", 36: "OPTBLN", 37: "OPTFUT_NCOM", 50: "MISC_BSE",
 }
 
-OPTION_TYPES = {
-    1: "CE",
-    2: "PE",
+# optType is already the literal string CE/PE/XX on the wire, not a numeric code.
+OPTION_TYPE_NONE = "XX"
+OPTION_TYPE_CE = "CE"
+OPTION_TYPE_PE = "PE"
+
+# (exchange_code, segment_code) -> pipeline MIC, matching v4's exchangeMIC.
+_EXCHANGE_MIC = {
+    (10, 10): "XNSE", (10, 11): "XNFO", (10, 12): "XNCD", (10, 20): "XNCO",
+    (12, 10): "XBSE", (12, 11): "XBFO", (12, 12): "XBCD",
+    (11, 20): "XMCX",
 }
 
 
 def normalize_header_key(key: str) -> str:
-    """Normalize header key to canonical name."""
-    if key in LEGACY_HEADER_ALIASES.values():
-        for canonical, legacy in LEGACY_HEADER_ALIASES.items():
-            if legacy == key:
-                return canonical
-    return key.lower()
+    """Normalize a CSV header cell to its canonical FYERS_COLUMNS key."""
+    key = key.strip()
+    lowered = key.lower()
+    if lowered in LEGACY_HEADER_ALIASES:
+        return LEGACY_HEADER_ALIASES[lowered]
+    for col in FYERS_COLUMNS:
+        if key == col or lowered == col.lower():
+            return col
+    return key
 
 
 def parse_fy_token(fy_token: str) -> Dict[str, Any]:
@@ -105,22 +119,11 @@ def parse_fy_token(fy_token: str) -> Dict[str, Any]:
 
 
 def resolve_exchange_mic(exchange: str, segment: str) -> str:
-    """Map (exchange, segment) to pipeline MIC."""
-    if exchange == "NSE":
-        if segment == "CM":
-            return "XNSE"
-        elif segment == "FO":
-            return "XNFO"
-        elif segment == "CD":
-            return "XNCD"
-    elif exchange == "BSE":
-        if segment == "CM":
-            return "XBSE"
-        elif segment == "FO":
-            return "XBFO"
-    elif exchange == "MCX" or exchange == "NCDEX":
-        return "XIMC"
-    return ""
+    """Map raw (exchange, segment) appendix codes, e.g. ("12", "10"), to pipeline MIC (e.g. "XBSE")."""
+    try:
+        return _EXCHANGE_MIC.get((int(exchange), int(segment)), "")
+    except (ValueError, TypeError):
+        return ""
 
 
 def is_cash_instrument(inst_type: str) -> bool:

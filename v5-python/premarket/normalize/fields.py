@@ -10,126 +10,130 @@ from ..sources import fyers_src
 from . import price, session
 
 
-# Instrument type classification
-INST_TYPE_MAP = {
-    "EQ": "EQUITY",
-    "FUTCOM": "FUTURE",
-    "OPTCOM": "OPTION",
-    "FUTIDX": "FUTURE",
-    "OPTIDX": "OPTION",
-    "FUTSTK": "FUTURE",
-    "OPTSTK": "OPTION",
-    "OPTCUR": "OPTION",
-    "FUTCUR": "FUTURE",
-    "SPOTFWD": "EQUITY",
-    "SPOTCUR": "EQUITY",
-    "FUTIRT": "FUTURE",
-    "OPTIRT": "OPTION",
-    "SPOTIRT": "EQUITY",
-    "SPOTGOLD": "EQUITY",
-    "SPOTSILVER": "EQUITY",
-    "MUTUALFUND": "EQUITY",
-    "BOND": "EQUITY",
-    "GOVT_BOND": "EQUITY",
-    "ETF": "EQUITY",
-    "SPOT": "EQUITY",
-    "WARRANT": "WARRANT",
-    "SPOTSLV": "EQUITY",
-}
+# Broad category for scriptInstrumentType2, matching v4-golang's instrumentType2().
+def instrument_type2(inst_type: str) -> str:
+    t = (inst_type or "").upper()
+    if t == "EQ":
+        return "EQUITY"
+    if t.startswith("FUT"):
+        return "FUTURE"
+    if t.startswith("OPT"):
+        return "OPTION"
+    return t
 
 
-def classify_instrument(inst_code: str) -> tuple[str, str]:
-    """
-    Classify instrument type and subtype.
-    Returns (scriptInstrumentType, scriptInstrumentType2).
-    """
-    main_type = INST_TYPE_MAP.get(inst_code, "UNKNOWN")
+def classify_instrument(ex_inst_type: str) -> str:
+    """exInstType appendix code -> instrument type name (EQ, FUTIDX, OPTSTK, ...), matching
+    v4-golang's InstrumentTypeNameFromRow. Unknown codes fall back to UNKNOWN_<code>."""
+    code = (ex_inst_type or "").strip()
+    name = fyers_src.INSTRUMENT_CODES.get(_safe_int(code))
+    if name:
+        return name
+    return f"UNKNOWN_{code}" if code else "UNKNOWN"
 
-    # For options, add option type if available
-    sub_type = inst_code if inst_code in ["CE", "PE"] else ""
 
-    return main_type, sub_type
+def _safe_int(raw: str) -> Optional[int]:
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _expiration_ns(raw: str) -> int:
+    """Convert a raw expiryDate field (Unix seconds, ms, or YYYYMMDD) to nanoseconds UTC."""
+    s = (raw or "").strip()
+    if not s or s in ("0", "-1"):
+        return 0
+    try:
+        ts = int(float(s))
+    except ValueError:
+        try:
+            dt = datetime.strptime(s, "%Y%m%d")
+            return int(dt.timestamp()) * 10**9
+        except ValueError:
+            return 0
+    if ts <= 0:
+        return 0
+    if ts < 1_000_000_000_000:
+        return ts * 1_000_000_000
+    if ts < 1_000_000_000_000_000:
+        return ts * 1_000_000
+    return ts
 
 
 def map_fyers_row(row: Dict[str, str], cfg: config.NormalizerCfg) -> Dict[str, Any]:
     """
     Map a single Fyers raw row to the 16-column canonical schema.
+    Field keys here match the real feed (v4-golang's JSONColumns), e.g.
+    row["symTicker"] is the ticker, row["symDetails"] is the description --
+    NOT "symbol"/"description", which never existed on the actual wire.
     Returns dict with canonical columns (may be sparse).
     """
     result = {}
 
     # Basic identifiers
-    result["script"] = row.get("symbol", "")
-    result["scriptToken"] = row.get("fyToken", "")
-    result["scriptDetails"] = row.get("description", "") or row.get("symbol", "")
+    result["script"] = row.get("symTicker", "")
+    result["scriptToken"] = row.get("exToken", "")
+    result["scriptDetails"] = row.get("symDetails", "") or result["script"]
 
     # Exchange/MIC resolution
     exchange = row.get("exchange", "")
     segment = row.get("segment", "")
-    mic = fyers_src.resolve_exchange_mic(exchange, segment)
-    result["exchange"] = mic or exchange
+    result["exchange"] = fyers_src.resolve_exchange_mic(exchange, segment)
 
     # Instrument type classification
-    inst_type = row.get("instrumenttype", "").upper()
-    inst_type, opt_type = classify_instrument(inst_type)
+    inst_type = classify_instrument(row.get("exInstType", ""))
     result["scriptInstrumentType"] = inst_type
-    result["scriptInstrumentType2"] = opt_type
-    result["optionType"] = opt_type or ""
+    result["scriptInstrumentType2"] = instrument_type2(inst_type)
+
+    opt_type = (row.get("optType", "") or "").strip().upper()
+    result["optionType"] = "CALL" if opt_type == fyers_src.OPTION_TYPE_CE else (
+        "PUT" if opt_type == fyers_src.OPTION_TYPE_PE else ""
+    )
 
     # ISIN
     result["ISIN"] = row.get("isin", "")
 
-    # Price fields (scaled)
-    tick_size = row.get("tick_size") or row.get("TickSize", "0")
-    result["tickSize"] = price.scale_price(tick_size)
+    # Price fields (scaled). multiplier = wire price scale (matches US
+    # convention): feed is quoted in paise, so strike/tickSize/multiplier
+    # all use the same 100x scale.
+    result["multiplier"] = price.INDIA_PRICE_SCALE
+    result["tickSize"] = price.scale_price(row.get("tickSize", "0"))
 
-    strike = row.get("strike") or row.get("StrikPrice", "")
-    result["strike"] = price.scale_price(strike) if strike else 0
+    strike = row.get("strikePrice", "")
+    try:
+        strike_valid = strike and float(strike) > 0
+    except ValueError:
+        strike_valid = False
+    result["strike"] = price.scale_price(strike) if strike_valid else 0
 
     # Quantities
-    lot_size = row.get("lot_size") or row.get("LotSize", "1")
+    lot_size = row.get("minLotSize", "1")
     try:
-        result["lotSize"] = int(lot_size) if lot_size else 1
+        result["lotSize"] = int(float(lot_size)) if lot_size else 1
     except ValueError:
         result["lotSize"] = 1
-
-    # Multiplier (contract size)
-    mult = row.get("mult") or row.get("multiplier", "1")
-    try:
-        result["multiplier"] = int(mult) if mult else 1
-    except ValueError:
-        result["multiplier"] = 1
 
     # Currency (default to INR for India)
     result["currency"] = "INR"
 
-    # Underlying
-    underlying = row.get("underlyingsymbol") or row.get("Underlying", "")
+    # Underlying: exSymName is the short underlying/company name on the wire.
+    underlying = row.get("exSymName", "")
     result["underlying"] = underlying
-    # Extract underlying root (remove exchange prefix if present)
-    result["underlying_root"] = underlying.split(":")[-1] if underlying else ""
+    result["underlying_root"] = underlying
 
-    # Trading session (IST to UTC conversion for Fyers)
-    # Fyers doesn't provide session info in symbol master, use defaults
-    session_str = "09:15-15:30"  # NSE/BSE regular session IST
-    result["tradingSessionUTC"] = session.trading_session_ist_to_utc(session_str) or session_str
+    # Trading session: real per-row IST session string, e.g.
+    # "0915-1530|1815-1915:" -- Fyers does carry this on the wire, but never
+    # includes the NSE/BSE pre-open auction window, so prepend it ourselves
+    # for cash-market (CM) equities.
+    session_utc = session.trading_session_ist_to_utc(row.get("tradingSession", ""))
+    is_cm = fyers_src.SEGMENT_CODES.get(_safe_int(segment)) == "CM"
+    if is_cm and session_utc:
+        session_utc = f"{session.NSE_PREOPEN_UTC}|{session_utc}"
+    result["tradingSessionUTC"] = session_utc
 
-    # Expiration (convert Unix timestamp to nanoseconds UTC)
-    expiry = row.get("expirydate") or row.get("ExpiryDate", "")
-    if expiry:
-        try:
-            # Try parsing as Unix timestamp
-            expiry_ts = int(float(expiry))
-            result["expiration"] = expiry_ts * 10**9  # convert to nanoseconds
-        except ValueError:
-            # Try parsing as YYYYMMDD
-            try:
-                dt = datetime.strptime(str(expiry), "%Y%m%d")
-                result["expiration"] = int(dt.timestamp()) * 10**9
-            except ValueError:
-                result["expiration"] = 0
-    else:
-        result["expiration"] = 0
+    # Expiration (Unix seconds/ms or YYYYMMDD -> nanoseconds UTC)
+    result["expiration"] = _expiration_ns(row.get("expiryDate", ""))
 
     return result
 

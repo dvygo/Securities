@@ -97,8 +97,11 @@ def ensure_bin_dirs() -> None:
 
 def postgres_schema(date_dir: str) -> str:
     """
-    Postgres schema name for a date directory.
-    Validates YYYYMMDD format, returns v4_YYYYMMDD.
+    Dated schema name: v4_YYYYMMDD. Holds a single "contracts" table (all
+    exchanges) and a convenience merged "baskets" table. Must stay exactly
+    "v4_" + YYYYMMDD (no extra suffix) -- Nexus's own IsV4Schema/
+    FormatContractsSchema (internal/contract-db/pool/contracts_config.go)
+    hard-require this shape and derive the baskets schema from it.
     """
     if not re.match(r"^\d{8}$", date_dir):
         raise ValueError(f"Invalid date_dir format (must be YYYYMMDD): {date_dir}")
@@ -106,10 +109,29 @@ def postgres_schema(date_dir: str) -> str:
 
 
 def postgres_baskets_schema(date_dir: str) -> str:
-    """Postgres baskets schema name: v4_YYYYMMDD_baskets."""
-    if not re.match(r"^\d{8}$", date_dir):
-        raise ValueError(f"Invalid date_dir format (must be YYYYMMDD): {date_dir}")
-    return f"v4_{date_dir}_baskets"
+    """
+    Dated Nexus-compatible baskets schema: v4_YYYYMMDD_baskets, one table
+    per basket name. Fixed by Nexus's FormatBasketsSchema
+    (contractsSchema + "_baskets") and internal/contract-db/baskets/load.go,
+    which lists every table in this schema and treats the table name itself
+    as the basket name.
+    """
+    return f"{postgres_schema(date_dir)}_baskets"
+
+
+# Static, always-current mirror of the dated schema (single "contracts" and
+# "baskets" tables), overwritten on every push. Postgres's built-in default
+# schema -- Nexus never reads it, so its shape is ours to decide freely.
+POSTGRES_STATIC_SCHEMA = "public"
+
+# Columns Nexus's basket loader selects per row (internal/contract-db/
+# baskets/load.go's basketSelectCols) -- the per-basket-name tables in the
+# v4_YYYYMMDD_baskets schema must expose exactly these.
+NEXUS_BASKET_COLUMNS = [
+    "script", "scriptToken", "scriptInstrumentType2", "optionType",
+    "underlying_root", "underlying", "strike", "expiration", "multiplier",
+    "currency", "exchange",
+]
 
 
 # Canonical normalized column schema (16 columns)
