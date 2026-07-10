@@ -36,7 +36,7 @@ def secrets_ini() -> Path:
 
 def day_dir(as_of: str) -> Path:
     """Day directory: YYYYMMDD/"""
-    return repo_root().parent / as_of
+    return repo_root() / as_of
 
 
 def raw_dir(as_of: str) -> Path:
@@ -66,12 +66,12 @@ def databento_raw_csv(as_of: str, venue: str) -> Path:
 
 def baskets_dir() -> Path:
     """Baskets directory: constituents/baskets/"""
-    return repo_root().parent / "constituents" / "baskets"
+    return repo_root() / "constituents" / "baskets"
 
 
 def contracts_dir() -> Path:
     """Contracts directory: constituents/contracts/"""
-    return repo_root().parent / "constituents" / "contracts"
+    return repo_root() / "constituents" / "contracts"
 
 
 def contracts_day_dir(as_of: str) -> Path:
@@ -81,7 +81,7 @@ def contracts_day_dir(as_of: str) -> Path:
 
 def bin_dir() -> Path:
     """Binary/output directory: bin/"""
-    return repo_root().parent / "bin"
+    return repo_root() / "bin"
 
 
 def logs_dir() -> Path:
