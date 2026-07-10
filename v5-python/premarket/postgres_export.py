@@ -96,6 +96,11 @@ def push_contracts(
     # be "|".
     print(f"    Pushing {len(df)} symbols...")
     with conn.cursor() as cur:
+        # Re-running normalize for a day is a full re-snapshot of that day's
+        # symbology, not an incremental append -- truncate first so reruns
+        # (e.g. --only postgres after a normalizer fix) don't collide with
+        # the unique (scriptToken, script) constraint from the prior run.
+        cur.execute(f"TRUNCATE TABLE {schema_name}.symbols")
         with cur.copy(f"COPY {schema_name}.symbols ({','.join(copy_cols)}) FROM STDIN") as copy:
             for _, row in df.iterrows():
                 fields = ["\\N" if pd.isna(v) or v == "" else str(v) for v in row.values]
@@ -120,6 +125,7 @@ def push_baskets(
     print(f"    Pushing {len(df)} basket entries...")
 
     with conn.cursor() as cur:
+        cur.execute(f"TRUNCATE TABLE {schema_name}.baskets")
         with cur.copy("COPY " + schema_name + ".baskets (date, basket, symbol) FROM STDIN") as copy:
             for _, row in df.iterrows():
                 line = f"{row['date']}\t{row['basket']}\t{row['symbol']}\n"
