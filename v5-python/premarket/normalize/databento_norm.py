@@ -126,6 +126,7 @@ def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[st
             result["strike"] = price.scale_price(float(opt_match.group(2)))
         else:
             result["scriptInstrumentType"] = "FUTIDX"
+            result["scriptInstrumentType2"] = "FUTURE"
             result["strike"] = 0
             result["optionType"] = ""
 
@@ -137,7 +138,7 @@ def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[st
             result["underlying"] = underlying
             result["underlying_root"] = underlying.upper()
             result["strike"] = price.scale_price(parsed.get("strike", 0))
-            result["optionType"] = "C" if parsed.get("option_type") == "CALL" else "P"
+            result["optionType"] = parsed.get("option_type", "")
             result["expiration"] = int(datetime.strptime(parsed.get("expiration", "20240101"), "%Y%m%d").timestamp()) * 10**9
         else:
             underlying = ""
@@ -148,6 +149,7 @@ def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[st
             result["expiration"] = 0
         is_index = underlying.upper() in ("SPX", "SPXW", "VIX", "RUT")
         result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
+        result["scriptInstrumentType2"] = "OPTION"
         result["multiplier"] = 100000  # OPRA standard
         result["tickSize"] = price.scale_price(0.01)
         result["lotSize"] = 100
@@ -158,6 +160,7 @@ def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[st
     elif venue == "EQUS" or venue.startswith("XNAS"):
         result["exchange"] = "XNAS"
         result["scriptInstrumentType"] = "EQUITY"
+        result["scriptInstrumentType2"] = "EQUITY"
         result["underlying_root"] = underlying_root_from_stype_in(stype_in)
         result["underlying"] = stype_in
         result["strike"] = 0
