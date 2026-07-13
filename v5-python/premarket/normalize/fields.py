@@ -148,6 +148,10 @@ def run(opts: runner.Opts) -> None:
     normalized_dir = paths.normalized_dir(opts.date_dir)
     raw_dir = paths.fyers_raw_dir(opts.date_dir)
 
+    if not raw_dir.exists():
+        print("    No Fyers raw directory found")
+        return
+
     normalized_dir.mkdir(parents=True, exist_ok=True)
 
     # Process each Fyers MIC bundle
