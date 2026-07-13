@@ -2,23 +2,27 @@
 
 Layout, per push:
   v4_YYYYMMDD.contracts        single table, all exchanges (dated snapshot)
-  v4_YYYYMMDD.baskets          single table, all baskets (convenience mirror)
-  v4_YYYYMMDD_baskets.<name>   one table per basket -- Nexus reads this
-                                schema directly (internal/contract-db/
-                                baskets/load.go); schema/table shape here
-                                is fixed by Nexus's own code, not ours to
-                                change unilaterally.
+  v4_YYYYMMDD.baskets          one row per basket: basket name + scripts
+                                (JSONB array of constituent script strings)
+  v4_YYYYMMDD_baskets.baskets  same shape -- Nexus reads this schema
+                                directly (internal/contract-db/baskets/
+                                load.go), resolving each script against its
+                                own contracts index rather than trusting
+                                stored per-contract fields.
   public.contracts             always-current mirror of the dated contracts
   public.baskets                always-current mirror of the dated baskets
 
-COPY uses real CSV format with FORCE_NULL so Postgres itself turns blank
-fields into SQL NULL -- no manual "\\N" sentinel juggling, and no delimiter
-collision with values like tradingSessionUTC that legitimately contain "|".
+COPY uses real CSV format; the "contracts"/"scripts" JSONB cell round-trips
+fine as a quoted CSV field since Postgres casts COPY's text column straight
+to jsonb. FORCE_NULL turns blank contract fields into SQL NULL -- no manual
+"\\N" sentinel juggling, and no delimiter collision with values like
+tradingSessionUTC that legitimately contain "|".
 Every table is DROP+CREATE per run, so reruns never hit a stale unique-key
 conflict.
 """
 import csv
 import io
+import json
 from typing import Dict, Iterable, List
 
 import psycopg
@@ -53,30 +57,14 @@ CONTRACT_COLUMN_DDL = [
     ('"currency"', "TEXT NOT NULL"),
 ]
 
-# Matches Nexus's basketSelectCols exactly (script, scriptToken,
-# scriptInstrumentType2, optionType, underlying_root, underlying, strike,
-# expiration, multiplier, currency, exchange).
-NEXUS_BASKET_COLUMN_DDL = [
-    ('"script"', "TEXT NOT NULL"),
-    ('"scriptToken"', "BIGINT NOT NULL"),
-    ('"scriptInstrumentType2"', "TEXT"),
-    ('"optionType"', "TEXT"),
-    ('"underlying_root"', "TEXT"),
-    ('"underlying"', "TEXT"),
-    ('"strike"', "BIGINT"),
-    ('"expiration"', "BIGINT"),
-    ('"multiplier"', "BIGINT"),
-    ('"currency"', "TEXT"),
-    ('"exchange"', "TEXT"),
+# One row per basket: name + a JSONB array of constituent script strings.
+# Same shape everywhere a "baskets" table gets pushed (dated schema mirror,
+# Nexus-read baskets schema, public mirror) -- Nexus resolves each script
+# against its own contracts index (internal/contract-db/baskets/load.go).
+BASKET_COLUMN_DDL = [
+    ('"basket"', "TEXT NOT NULL"),
+    ('"scripts"', "JSONB NOT NULL"),
 ]
-
-NULLABLE_BASKET_COLUMNS = {
-    "scriptInstrumentType2", "optionType", "underlying_root", "underlying",
-    "strike", "expiration", "multiplier", "currency", "exchange",
-}
-
-# Convenience merged basket table = "basket" name column + Nexus's columns.
-MERGED_BASKET_COLUMN_DDL = [('"basket"', "TEXT NOT NULL")] + NEXUS_BASKET_COLUMN_DDL
 
 # Channel downstream apps LISTEN on for public.contracts reloads.
 CONTRACTS_NOTIFY_CHANNEL = "contracts_loaded"
@@ -175,38 +163,23 @@ def push_contracts(conn: psycopg.connection.Connection, schema_name: str, date_d
         print(f"    Pushed {n} rows -> {schema_name}.contracts")
 
 
-def push_baskets_nexus(conn: psycopg.connection.Connection, basket_schema: str, date_dir: str) -> None:
-    """Push one table per basket name into basket_schema -- the shape Nexus's own basket loader expects."""
-    basket_rows = export.aggregate_basket_rows(date_dir)
-    if not basket_rows:
+def push_baskets(conn: psycopg.connection.Connection, schema_name: str, date_dir: str) -> None:
+    """Push one "baskets" table: one row per basket name, scripts as a JSONB array."""
+    grouped: Dict[str, List[str]] = {}
+    for row in export.aggregate_basket_rows(date_dir):
+        basket, script = row.get("basket", ""), row.get("script", "")
+        if not basket or not script:
+            continue
+        grouped.setdefault(basket, []).append(script)
+
+    if not grouped:
         print(f"    No baskets to push for {date_dir}")
         return
 
-    by_basket: Dict[str, List[dict]] = {}
-    for row in basket_rows:
-        by_basket.setdefault(row.get("basket", ""), []).append(row)
-
-    total = 0
-    for basket_name, rows in by_basket.items():
-        _drop_create_table(conn, basket_schema, basket_name, NEXUS_BASKET_COLUMN_DDL)
-        n = _copy_rows(conn, basket_schema, basket_name, paths.NEXUS_BASKET_COLUMNS, rows, NULLABLE_BASKET_COLUMNS)
-        total += n
-        print(f"    loaded {n} rows -> {basket_schema}.{basket_name}")
-
-    print(f"      Pushed {total} rows across {len(by_basket)} basket tables")
-
-
-def push_baskets_merged(conn: psycopg.connection.Connection, schema_name: str, date_dir: str) -> None:
-    """Push all baskets into a single "baskets" table (convenience mirror; Nexus doesn't read this)."""
-    basket_rows = export.aggregate_basket_rows(date_dir)
-    if not basket_rows:
-        print(f"    No baskets to push for {date_dir}")
-        return
-
-    columns = ["basket"] + paths.NEXUS_BASKET_COLUMNS
-    _drop_create_table(conn, schema_name, "baskets", MERGED_BASKET_COLUMN_DDL)
-    n = _copy_rows(conn, schema_name, "baskets", columns, basket_rows, NULLABLE_BASKET_COLUMNS)
-    print(f"    Pushed {n} rows -> {schema_name}.baskets")
+    rows = [{"basket": name, "scripts": json.dumps(scripts)} for name, scripts in grouped.items()]
+    _drop_create_table(conn, schema_name, "baskets", BASKET_COLUMN_DDL)
+    n = _copy_rows(conn, schema_name, "baskets", ["basket", "scripts"], rows, nullable_cols=())
+    print(f"    Pushed {n} baskets -> {schema_name}.baskets")
 
 
 def run(opts: runner.Opts) -> None:
@@ -232,12 +205,12 @@ def run(opts: runner.Opts) -> None:
 
             print(f"  Pushing to {dated_schema} / {dated_basket_schema}...")
             push_contracts(conn, dated_schema, opts.date_dir)
-            push_baskets_merged(conn, dated_schema, opts.date_dir)
-            push_baskets_nexus(conn, dated_basket_schema, opts.date_dir)
+            push_baskets(conn, dated_schema, opts.date_dir)
+            push_baskets(conn, dated_basket_schema, opts.date_dir)
 
             print(f"  Pushing to {static_schema} (always-current mirror)...")
             push_contracts(conn, static_schema, opts.date_dir)
-            push_baskets_merged(conn, static_schema, opts.date_dir)
+            push_baskets(conn, static_schema, opts.date_dir)
 
         print(f"  Successfully pushed to {dated_schema}, {dated_basket_schema}, {static_schema}")
     except Exception as e:

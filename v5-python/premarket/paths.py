@@ -110,11 +110,11 @@ def postgres_schema(date_dir: str) -> str:
 
 def postgres_baskets_schema(date_dir: str) -> str:
     """
-    Dated Nexus-compatible baskets schema: v4_YYYYMMDD_baskets, one table
-    per basket name. Fixed by Nexus's FormatBasketsSchema
-    (contractsSchema + "_baskets") and internal/contract-db/baskets/load.go,
-    which lists every table in this schema and treats the table name itself
-    as the basket name.
+    Dated Nexus-compatible baskets schema: v4_YYYYMMDD_baskets, holding a
+    single "baskets" table (one row per basket name, scripts as a JSONB
+    array). Fixed by Nexus's FormatBasketsSchema (contractsSchema +
+    "_baskets") and internal/contract-db/baskets/load.go, which resolves
+    each script against its own contracts index.
     """
     return f"{postgres_schema(date_dir)}_baskets"
 
@@ -124,9 +124,10 @@ def postgres_baskets_schema(date_dir: str) -> str:
 # schema -- Nexus never reads it, so its shape is ours to decide freely.
 POSTGRES_STATIC_SCHEMA = "public"
 
-# Columns Nexus's basket loader selects per row (internal/contract-db/
-# baskets/load.go's basketSelectCols) -- the per-basket-name tables in the
-# v4_YYYYMMDD_baskets schema must expose exactly these.
+# Full per-contract fields kept in the flat CSV/SQLite basket exports
+# (export.py's aggregate_basket_rows, sqlite_export.py) -- the Postgres
+# "baskets" table itself only stores basket + a scripts JSONB array
+# (postgres_export.py), since Nexus re-resolves each script itself.
 NEXUS_BASKET_COLUMNS = [
     "script", "scriptToken", "scriptInstrumentType2", "optionType",
     "underlying_root", "underlying", "strike", "expiration", "multiplier",
