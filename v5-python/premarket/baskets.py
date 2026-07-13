@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Set
 
 import pandas as pd
 
-from . import paths, runner
+from . import export, paths, runner
 
 
 # Regex patterns for parsing ticker symbols
@@ -50,41 +50,55 @@ def pick_nearest_expiry(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(result) if result else df
 
 
-def refresh_basket(name: str, as_of: str, normalized_dir: Path, dry_run: bool = False) -> Optional[pd.DataFrame]:
+def _load_basket_scripts(basket_file: Path) -> List[str]:
+    """Read a basket file: one already-resolved contract script per line ("NSE:360ONE-EQ",
+    "MCX:GOLD26AUGFUT", ...). Blank lines and "#"-prefixed generator-provenance comments
+    are skipped -- these files are plain lists, not tabular CSV with a header."""
+    scripts = []
+    with open(basket_file, encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            scripts.append(line)
+    return scripts
+
+
+def build_contract_index(as_of: str) -> Dict[str, dict]:
+    """Map contract script -> full contract row, built once per run and shared
+    across every basket refresh (avoids re-reading all normalized CSVs per basket)."""
+    return {row["script"]: row for row in export.aggregate_contract_rows(as_of) if row.get("script")}
+
+
+def refresh_basket(name: str, as_of: str, contract_index: Dict[str, dict], dry_run: bool = False) -> Optional[pd.DataFrame]:
     """
-    Refresh a single basket: resolve underlying symbols to concrete contracts.
-    Returns DataFrame of contract symbols for the basket, or None if not available.
+    Refresh a single basket: look up each listed contract script in today's
+    normalized contracts. Returns DataFrame of matched contract rows, or None
+    if the basket file is missing/empty or none of its constituents matched.
     """
     basket_file = paths.baskets_dir() / f"{name}.csv"
     if not basket_file.exists():
         print(f"    Basket {name} not found at {basket_file}")
         return None
 
-    # Read basket membership (list of underlying symbols)
-    basket_df = pd.read_csv(basket_file)
-    if basket_df.empty:
+    scripts = _load_basket_scripts(basket_file)
+    if not scripts:
         print(f"    Basket {name} is empty")
         return None
 
-    # Resolve each underlying to concrete contracts from normalized data
-    results = []
-    as_of_dt = datetime.strptime(as_of, "%Y%m%d")
-
-    for _, row in basket_df.iterrows():
-        underlying = row.get("symbol") or row.get("underlying", "")
-        if not underlying:
+    rows = []
+    missing = 0
+    for script in scripts:
+        row = contract_index.get(script)
+        if row is None:
+            missing += 1
             continue
+        rows.append(row)
 
-        # Find matching contracts in normalized data
-        # This is simplified; actual implementation would join with normalized CSVs
-        contract_row = {
-            "date": as_of,
-            "symbol": underlying,
-            "underlying": underlying,
-        }
-        results.append(contract_row)
+    if missing:
+        print(f"    {name}: {missing}/{len(scripts)} constituents not found in today's contracts")
 
-    return pd.DataFrame(results) if results else None
+    return pd.DataFrame(rows) if rows else None
 
 
 def refresh_all(as_of: str, normalized_dir: Path, dry_run: bool = False) -> None:
@@ -92,13 +106,15 @@ def refresh_all(as_of: str, normalized_dir: Path, dry_run: bool = False) -> None
     contracts_day_dir = paths.contracts_day_dir(as_of)
     contracts_day_dir.mkdir(parents=True, exist_ok=True)
 
+    contract_index = build_contract_index(as_of)
+
     for basket_name in paths.BASKET_NAMES:
         if dry_run:
             print(f"    Would refresh basket {basket_name}")
             continue
 
         try:
-            df = refresh_basket(basket_name, as_of, normalized_dir, dry_run)
+            df = refresh_basket(basket_name, as_of, contract_index, dry_run)
             if df is not None and not df.empty:
                 output_csv = contracts_day_dir / f"{basket_name}.csv"
                 df.to_csv(output_csv, index=False, encoding="utf-8-sig")
@@ -123,7 +139,8 @@ def run(opts: runner.Opts) -> None:
     if opts.basket:
         # Single basket refresh
         try:
-            df = refresh_basket(opts.basket, opts.date_dir, normalized_dir, opts.dry_run)
+            contract_index = build_contract_index(opts.date_dir)
+            df = refresh_basket(opts.basket, opts.date_dir, contract_index, opts.dry_run)
             if df is not None:
                 contracts_dir = paths.contracts_day_dir(opts.date_dir)
                 contracts_dir.mkdir(parents=True, exist_ok=True)
