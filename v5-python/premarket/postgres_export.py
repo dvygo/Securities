@@ -78,6 +78,9 @@ NULLABLE_BASKET_COLUMNS = {
 # Convenience merged basket table = "basket" name column + Nexus's columns.
 MERGED_BASKET_COLUMN_DDL = [('"basket"', "TEXT NOT NULL")] + NEXUS_BASKET_COLUMN_DDL
 
+# Channel downstream apps LISTEN on for public.contracts reloads.
+CONTRACTS_NOTIFY_CHANNEL = "contracts_loaded"
+
 
 def create_schema(conn: psycopg.connection.Connection, schema_name: str) -> None:
     """Create schema if it doesn't exist."""
@@ -128,6 +131,31 @@ def _copy_rows(
     return len(rows)
 
 
+def _ensure_contracts_notify_trigger(conn: psycopg.connection.Connection, schema_name: str) -> None:
+    """(Re)attach the pg_notify trigger on schema.contracts -- DROP TABLE CASCADE in
+    _drop_create_table wipes any trigger the previous push attached, so this must run
+    after every reload, not just once."""
+    with conn.cursor() as cur:
+        cur.execute(f'''
+            CREATE OR REPLACE FUNCTION "{schema_name}".notify_contracts_loaded() RETURNS trigger AS $$
+            BEGIN
+                PERFORM pg_notify(
+                    '{CONTRACTS_NOTIFY_CHANNEL}',
+                    json_build_object('schema', TG_TABLE_SCHEMA, 'table', TG_TABLE_NAME, 'op', TG_OP)::text
+                );
+                RETURN NULL;
+            END;
+            $$ LANGUAGE plpgsql;
+        ''')
+        cur.execute(f'DROP TRIGGER IF EXISTS contracts_notify_trigger ON "{schema_name}"."contracts"')
+        cur.execute(f'''
+            CREATE TRIGGER contracts_notify_trigger
+            AFTER INSERT OR UPDATE ON "{schema_name}"."contracts"
+            FOR EACH STATEMENT EXECUTE FUNCTION "{schema_name}".notify_contracts_loaded()
+        ''')
+    conn.commit()
+
+
 def push_contracts(conn: psycopg.connection.Connection, schema_name: str, date_dir: str) -> None:
     """Push all contracts/symbols into a single "contracts" table (all exchanges)."""
     contract_rows = export.aggregate_contract_rows(date_dir)
@@ -136,8 +164,15 @@ def push_contracts(conn: psycopg.connection.Connection, schema_name: str, date_d
         return
 
     _drop_create_table(conn, schema_name, "contracts", CONTRACT_COLUMN_DDL)
+    if schema_name == paths.POSTGRES_STATIC_SCHEMA:
+        # Attach trigger before COPY so this push's own load fires the notify too --
+        # not just the next one.
+        _ensure_contracts_notify_trigger(conn, schema_name)
     n = _copy_rows(conn, schema_name, "contracts", paths.CONTRACT_COLUMNS, contract_rows, NULLABLE_CONTRACT_COLUMNS)
-    print(f"    Pushed {n} rows -> {schema_name}.contracts")
+    if schema_name == paths.POSTGRES_STATIC_SCHEMA:
+        print(f"    Pushed {n} rows -> {schema_name}.contracts (notify '{CONTRACTS_NOTIFY_CHANNEL}' fired)")
+    else:
+        print(f"    Pushed {n} rows -> {schema_name}.contracts")
 
 
 def push_baskets_nexus(conn: psycopg.connection.Connection, basket_schema: str, date_dir: str) -> None:

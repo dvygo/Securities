@@ -181,7 +181,9 @@ NSE_SEGMENTS = {
     "nse_cd": "NSE_CD_Instruments.csv",
 }
 
-# Basket names (from internal/baskets/baskets.go)
+# Basket names (from internal/baskets/baskets.go). XNAS/XCBO/XCME are venue
+# underlying-symbol lists consumed directly by sources/databento_src.py for
+# download selection, not basket-refresh targets -- excluded here.
 BASKET_NAMES = [
     "NIFTY_FNO_EQUITY_SPOTS",
     "NIFTY_FNO_FUTURES_ALL",
@@ -189,6 +191,5 @@ BASKET_NAMES = [
     "ALL_INDEX_FUTURES",
     "NSE_INDEX_FUTURES",
     "BSE_INDEX_FUTURES",
-    "XNAS-XCBOE-underlyings",
     "MCX_FUTURES",
 ]
