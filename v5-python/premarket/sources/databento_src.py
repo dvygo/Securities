@@ -38,13 +38,12 @@ class VenueConfig:
     """Databento venue configuration."""
     venue_name: str
     dataset: str
-    uses_es_key: bool = False
 
 
 VENUE_CONFIGS = {
-    "xcme": VenueConfig(venue_name="XCME", dataset="GLBX.MDP3", uses_es_key=True),
-    "xcbo": VenueConfig(venue_name="XCBO", dataset="OPRA.PILLAR", uses_es_key=False),
-    "xnas": VenueConfig(venue_name="XNAS", dataset="EQUS.MINI", uses_es_key=False),
+    "xcme": VenueConfig(venue_name="XCME", dataset="GLBX.MDP3"),
+    "xcbo": VenueConfig(venue_name="XCBO", dataset="OPRA.PILLAR"),
+    "xnas": VenueConfig(venue_name="XNAS", dataset="EQUS.MINI"),
 }
 
 
@@ -150,9 +149,12 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     cfg = config.load_databento()
 
     # Select API key based on venue
-    api_key = cfg.api_key_es if venue_cfg.uses_es_key else cfg.api_key
+    api_key = cfg.keys.get(venue_cfg.venue_name, "")
     if not api_key:
-        raise ValueError(f"No Databento API key configured for {venue}")
+        raise ValueError(
+            f"No Databento API key configured for {venue} ({venue_cfg.venue_name}); "
+            f"set key_{venue_cfg.venue_name} in conf/keys.ini"
+        )
 
     # Resolve symbols
     symbols = resolve_symbols(

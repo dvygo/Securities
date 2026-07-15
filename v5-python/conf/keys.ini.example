@@ -1,0 +1,14 @@
+# Databento API keys, per environment. Copy to keys.ini (gitignored) and fill in.
+# key_<EXCHANGE> selects the key for that vendor feed (XNAS=equs-mini,
+# XCBO=opra-pillar, XCME=glbx-mdp3). DATABENTO_ENV / --production / --development
+# picks the section; defaults to production.
+
+[production]
+key_XNAS=
+key_XCBO=
+key_XCME=
+
+[development]
+key_XNAS=
+key_XCBO=
+key_XCME=

@@ -27,6 +27,13 @@ def config_ini() -> Path:
     return repo_root() / "conf" / "config.ini"
 
 
+def keys_ini() -> Path:
+    """Path to conf/keys.ini (Databento per-exchange keys), honoring PREMARKET_KEYS env var."""
+    if env := os.getenv("PREMARKET_KEYS"):
+        return Path(env)
+    return repo_root() / "conf" / "keys.ini"
+
+
 def secrets_ini() -> Path:
     """Path to secrets/secrets.ini, honoring PREMARKET_SECRETS env var."""
     if env := os.getenv("PREMARKET_SECRETS"):

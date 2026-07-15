@@ -1,8 +1,7 @@
 # Template — copy to config.ini and edit
 
 [databento]
-api_key = db-YOUR_KEY_EQUS_OPRA
-api_key_es = db-YOUR_KEY_GLBX
+# API keys now live in conf/keys.ini (per-exchange, per-environment: key_XNAS/key_XCBO/key_XCME).
 live_seconds = 10
 live_retries = 3
 live_retry_delay_sec = 2

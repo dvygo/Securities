@@ -8,11 +8,13 @@ from typing import Optional
 from . import paths
 
 
+DATABENTO_EXCHANGES = ("XNAS", "XCBO", "XCME")
+
+
 @dataclass
 class DatabentoCfg:
     """Databento configuration."""
-    api_key: str
-    api_key_es: str
+    keys: dict[str, str]  # exchange code (XNAS/XCBO/XCME) -> API key
     live_seconds: int = 10
     live_retries: int = 3
     live_retry_delay_sec: int = 2
@@ -49,9 +51,30 @@ class NormalizerCfg:
 
 
 def load_databento() -> DatabentoCfg:
-    """Load Databento config from env or config.ini, with fallback defaults."""
-    api_key = os.getenv("DATABENTO_API_KEY")
-    api_key_es = os.getenv("DATABENTO_API_KEY_ES")
+    """Load Databento config: per-exchange keys from keys.ini, other settings from config.ini.
+
+    Key resolution per exchange (XNAS/XCBO/XCME), highest priority first:
+    1. DATABENTO_KEY_<EXCHANGE> env var
+    2. keys.ini [<DATABENTO_ENV, default "production">] key_<EXCHANGE>
+    """
+    env = os.getenv("DATABENTO_ENV", "production")
+
+    keys: dict[str, str] = {exchange: "" for exchange in DATABENTO_EXCHANGES}
+    keys_file = paths.keys_ini()
+    if keys_file.exists():
+        keys_cfg = configparser.ConfigParser()
+        keys_cfg.read(keys_file)
+        if env in keys_cfg:
+            section = keys_cfg[env]
+            for exchange in DATABENTO_EXCHANGES:
+                keys[exchange] = section.get(f"key_{exchange}", "")
+
+    for exchange in DATABENTO_EXCHANGES:
+        if override := os.getenv(f"DATABENTO_KEY_{exchange}"):
+            keys[exchange] = override
+
+    live_seconds, live_retries, live_retry_delay_sec = 10, 3, 2
+    max_maps, hist_lookback_days = 100000, 7
 
     config_file = paths.config_ini()
     if config_file.exists():
@@ -59,23 +82,19 @@ def load_databento() -> DatabentoCfg:
         cfg.read(config_file)
         if "databento" in cfg:
             section = cfg["databento"]
-            if not api_key:
-                api_key = section.get("api_key")
-            if not api_key_es:
-                api_key_es = section.get("api_key_es")
-            return DatabentoCfg(
-                api_key=api_key or "",
-                api_key_es=api_key_es or "",
-                live_seconds=section.getint("live_seconds", 10),
-                live_retries=section.getint("live_retries", 3),
-                live_retry_delay_sec=section.getint("live_retry_delay_sec", 2),
-                max_maps=section.getint("max_maps", 100000),
-                hist_lookback_days=section.getint("hist_lookback_days", 7),
-            )
+            live_seconds = section.getint("live_seconds", live_seconds)
+            live_retries = section.getint("live_retries", live_retries)
+            live_retry_delay_sec = section.getint("live_retry_delay_sec", live_retry_delay_sec)
+            max_maps = section.getint("max_maps", max_maps)
+            hist_lookback_days = section.getint("hist_lookback_days", hist_lookback_days)
 
     return DatabentoCfg(
-        api_key=api_key or "",
-        api_key_es=api_key_es or "",
+        keys=keys,
+        live_seconds=live_seconds,
+        live_retries=live_retries,
+        live_retry_delay_sec=live_retry_delay_sec,
+        max_maps=max_maps,
+        hist_lookback_days=hist_lookback_days,
     )
 
 
