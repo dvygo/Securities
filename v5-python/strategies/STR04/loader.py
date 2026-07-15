@@ -1,16 +1,15 @@
 """STR04 beginning-of-day loader: python -m strategies --strategy=str04
 
 Fetches 1-minute OHLCV bars for every underlying in underlying.txt, covering
-the last three completed XNAS trading sessions, and writes them all to a
-single str04.csv. "Three trading days" means the three most recently closed
-sessions as of run time -- Databento's Historical API has no forward-looking
-data, so this is a lookback, not a forecast.
+the last three completed XNAS trading sessions, and writes one CSV per
+underlying to data/{underlying}.csv. "Three trading days" means the three
+most recently closed sessions as of run time -- Databento's Historical API
+has no forward-looking data, so this is a lookback, not a forecast.
 
-Uses premarket.config's api_key (DATABENTO_API_KEY / conf/config.ini
-[databento] api_key) -- the "Key 2" already scoped to OPRA.PILLAR and
-EQUS.MINI, not the GLBX key (api_key_es). Dataset is EQUS.MINI, which is
-what that key is actually provisioned for; EXCHANGE_CAL="XNAS" is only the
-trading-session calendar, independent of dataset choice.
+Uses premarket.config's XNAS key (DATABENTO_KEY_XNAS env var, or conf/keys.ini
+[production]/[development] key_XNAS, selected via DATABENTO_ENV). Dataset is
+EQUS.MINI, which is what that key is provisioned for; EXCHANGE_CAL="XNAS" is
+only the trading-session calendar, independent of dataset choice.
 """
 import sys
 from datetime import date, datetime, timedelta
@@ -29,7 +28,7 @@ LOOKBACK_TRADING_DAYS = 3
 
 STRATEGY_DIR = Path(__file__).resolve().parent
 UNDERLYINGS_FILE = STRATEGY_DIR / "underlying.txt"
-OUT_CSV = STRATEGY_DIR / "str04.csv"
+DATA_DIR = STRATEGY_DIR / "data"
 
 UTC = ZoneInfo("UTC")
 
@@ -105,12 +104,13 @@ def fetch_ohlcv_1m(hist: db.Historical, underlying: str, day: date) -> pd.DataFr
 # ------------------------------------------------------------
 def main() -> int:
     cfg = premarket_config.load_databento()
-    if not cfg.api_key:
+    api_key = cfg.keys.get("XNAS", "")
+    if not api_key:
         raise SystemExit(
-            "Missing Databento key: set DATABENTO_API_KEY env var, or "
-            "[databento] api_key in conf/config.ini."
+            "Missing Databento key: set DATABENTO_KEY_XNAS env var, or "
+            "key_XNAS in conf/keys.ini."
         )
-    hist = db.Historical(cfg.api_key)
+    hist = db.Historical(api_key)
 
     underlyings = load_underlyings(UNDERLYINGS_FILE)
     if not underlyings:
@@ -124,8 +124,12 @@ def main() -> int:
         flush=True,
     )
 
-    frames = []
+    DATA_DIR.mkdir(exist_ok=True)
+
+    total_rows = 0
+    wrote_any = False
     for underlying in underlyings:
+        frames = []
         for day in sessions:
             print(f"  fetch {underlying} {day.isoformat()}", flush=True)
             df = fetch_ohlcv_1m(hist, underlying, day)
@@ -134,12 +138,21 @@ def main() -> int:
                 continue
             frames.append(df)
 
-    if not frames:
+        if not frames:
+            print(f"  SKIP {underlying}: no data for any session", flush=True)
+            continue
+
+        out_csv = DATA_DIR / f"{underlying}.csv"
+        result = pd.concat(frames, ignore_index=True)[OUT_COLUMNS].sort_values("ts")
+        result.to_csv(out_csv, index=False)
+        print(f"  wrote {len(result)} rows -> {out_csv}", flush=True)
+        total_rows += len(result)
+        wrote_any = True
+
+    if not wrote_any:
         raise SystemExit("No OHLCV data fetched for any underlying/session")
 
-    result = pd.concat(frames, ignore_index=True)[OUT_COLUMNS].sort_values(["underlying", "ts"])
-    result.to_csv(OUT_CSV, index=False)
-    print(f"DONE: wrote {len(result)} rows -> {OUT_CSV}")
+    print(f"DONE: wrote {total_rows} rows across {DATA_DIR}")
     return 0
 
 
