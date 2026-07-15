@@ -10,6 +10,8 @@ secrets/
 **/secrets.ini
 **/config.ini
 !**/config.example.ini
+**/keys.ini
+!**/keys.ini.example
 
 # Legacy v3 scratch paths
 __________v3/20*/
@@ -26,6 +28,8 @@ v4/**/20[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
 v4/constituents/contracts/
 v4-golang/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
 v4-golang/constituents/contracts/
+v5-python/constituents/contracts/
+v5-python/strategies/*/data/
 
 # Binaries, archives, local DBs
 *.exe
