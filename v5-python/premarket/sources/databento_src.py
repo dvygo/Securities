@@ -216,7 +216,7 @@ def _fetch_hist(
     start_date, end_date = resolve_hist_range(client, venue_cfg.dataset, as_of, lookback_days, explicit_range)
 
     print(f"  Resolving {venue_cfg.venue_name} hist: {len(symbols)} symbol(s), "
-          f"stype_in={stype_in}, range=[{start_date}, {end_date})")
+          f"stype_in={stype_in}, start={start_date} (no end_date, defaults to latest available)")
 
     result = client.symbology.resolve(
         dataset=venue_cfg.dataset,
@@ -224,7 +224,6 @@ def _fetch_hist(
         stype_in=stype_in,
         stype_out="instrument_id",
         start_date=start_date,
-        end_date=end_date,
     )
 
     rows = []

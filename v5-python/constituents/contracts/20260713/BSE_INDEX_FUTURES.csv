@@ -1,3 +1,0 @@
-﻿date,exchange,scriptDetails,scriptInstrumentType,scriptInstrumentType2,multiplier,lotSize,tickSize,ISIN,tradingSessionUTC,expiration,script,scriptToken,underlying_root,underlying,strike,optionType,currency
-20260713,XIMC,BANKEX 30 Jul 26 FUT ,FUTIDX,FUTURE,100,30,5,,0345-1000|1245-1345,1785405600000000000,BSE:BANKEX26JULFUT,1146288,BANKEX,BANKEX,0,,INR
-20260713,XIMC,SENSEX 30 Jul 26 FUT ,FUTIDX,FUTURE,100,20,5,,0345-1000|1245-1345,1785405600000000000,BSE:SENSEX26JULFUT,1144507,SENSEX,SENSEX,0,,INR
