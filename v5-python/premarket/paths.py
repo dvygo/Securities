@@ -177,9 +177,9 @@ FYERS_RAW_SEGMENTS = {
 
 # Fyers MIC bundles: MIC -> (output_csv_name, postgres_table, source_csv_list)
 FYERS_MIC_BUNDLES = {
-    "XNSE": ("XNSE-FYERS.csv", "xnse", ["XNSE-FYERS.csv"]),
-    "XBOM": ("XBOM-FYERS.csv", "xbom", ["XBSE-FYERS.csv"]),  # BSE -> XBOM MIC
-    "XIMC": ("XIMC-FYERS.csv", "ximc", ["XBFO-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv", "XMCX-FYERS.csv"]),
+    "XNSE": ("XNSE-FYERS.csv", "xnse", ["XNSE-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv"]),
+    "XBOM": ("XBOM-FYERS.csv", "xbom", ["XBSE-FYERS.csv", "XBFO-FYERS.csv"]),  # BSE -> XBOM MIC
+    "XIMC": ("XIMC-FYERS.csv", "ximc", ["XMCX-FYERS.csv"]),
 }
 
 # NSE segments

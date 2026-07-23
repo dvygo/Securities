@@ -63,31 +63,32 @@ def parse_occ_symbol(symbol: str) -> Dict[str, Any]:
         return {}
 
 
-def glbx_strike_int(symbol: str) -> int:
-    """Extract strike price as integer from GLBX symbol (ES weekday contract)."""
-    # GLBX format: ES[Z23]P5500  (ZZ for week/quarter, then P/C for call/put, then strike)
-    # This is simplified; actual extraction is complex
-    match = re.search(r"([PC])(\d+)$", symbol)
-    if match:
-        try:
-            return int(match.group(2))
-        except ValueError:
-            pass
-    return 0
+# Trailing CME month-code + single-digit year on a GLBX root/option base, e.g.
+# "EWN6" -> ('N', '6') -> July, year digit 6. Distinct from OCC's 2-digit year.
+GLBX_MONTH_YEAR_REGEX = re.compile(r"([FGHJKMNQUVXZ])(\d)$")
 
 
-def glbx_expiration_yyyymmdd(symbol: str) -> str:
-    """Extract expiration date as YYYYMMDD from GLBX symbol."""
-    # GLBX format: ESH4 (March), ESM4 (June), etc.
-    # Simplified extraction
-    match = re.search(r"ES([A-Z])(\d{1,2})$", symbol)
-    if match:
-        month_char, year = match.groups()
-        month = CME_MONTHS.get(month_char)
-        if month:
-            year_full = 2000 + int(year) if int(year) < 50 else 1900 + int(year)
-            return f"{year_full:04d}{month:02d}01"  # Simplified to month start
-    return ""
+def glbx_expiration_ns(symbol_base: str, ref_date=None) -> int:
+    """Extract expiration as nanosecond epoch UTC (matches fields.py's
+    _expiration_ns convention) from a GLBX root's trailing month-code +
+    single-digit year (e.g. "EWN6" -> July, year digit 6). Day is not encoded
+    in the symbol, so it's simplified to the 1st of the month. Returns 0 when
+    the symbol doesn't end in a recognized month/year code (e.g. the "parent"
+    symbology entries GLBX also emits, which carry no contract month at all)."""
+    match = GLBX_MONTH_YEAR_REGEX.search(symbol_base)
+    if not match:
+        return 0
+    month = CME_MONTHS[match.group(1)]
+    year_digit = int(match.group(2))
+
+    anchor_year = ref_date.year if ref_date else datetime.now().year
+    decade_base = anchor_year - (anchor_year % 10)
+    year_full = decade_base + year_digit
+    if year_full < anchor_year - 5:  # single digit wrapped past the decade boundary
+        year_full += 10
+
+    dt = datetime(year_full, month, 1)
+    return int(dt.timestamp()) * 10**9
 
 
 def underlying_root_from_stype_in(symbol: str) -> str:
@@ -99,90 +100,148 @@ def underlying_root_from_stype_in(symbol: str) -> str:
     return re.match(r"^[A-Z]+", symbol).group(0) if re.match(r"^[A-Z]+", symbol) else symbol
 
 
-def map_databento_row(row: Dict[str, Any], venue: str, ref_date=None) -> Dict[str, Any]:
-    """Map a Databento symbology record to canonical schema."""
-    result = {}
-
-    # Basic fields from DBN record
-    stype_in = row.get("stype_in_symbol", "") or row.get("stype_in", "")
-    stype_out = row.get("stype_out_symbol", "") or row.get("stype_out", "")
-
-    result["script"] = stype_out or stype_in
-    result["scriptToken"] = row.get("instrument_id", 0)
-    result["scriptDetails"] = stype_out or stype_in
-
-    # Currency
-    result["currency"] = "USD"
-
-    # Venue-specific processing
-    if venue == "GLBX" or venue.startswith("XCME"):
-        result["exchange"] = "XCME"
-        result["underlying_root"] = underlying_root_from_stype_in(stype_in)
-        result["underlying"] = underlying_root_from_stype_in(stype_in)
-        result["multiplier"] = US_PRICE_SCALE  # matches Databento's 1e-9 fixed-point wire price scale
-        result["tickSize"] = ""  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
-        result["lotSize"] = 1
-        result["tradingSessionUTC"] = session.trading_session_for_xcme(ref_date)
-
-        opt_match = GLBX_OPTION_REGEX.search(stype_out or stype_in)
-        if opt_match:
-            result["scriptInstrumentType"] = "OPTIDX"
-            result["scriptInstrumentType2"] = "OPTION"
-            result["optionType"] = "CALL" if opt_match.group(1) == "C" else "PUT"
-            result["strike"] = price.scale_price(float(opt_match.group(2)), US_PRICE_SCALE)
-        else:
-            result["scriptInstrumentType"] = "FUTIDX"
-            result["scriptInstrumentType2"] = "FUTURE"
-            result["strike"] = 0
-            result["optionType"] = ""
-
-    elif venue == "OPRA" or venue.startswith("XCBO"):
-        result["exchange"] = "XCBO"
-        parsed = parse_occ_symbol(stype_out or stype_in)
-        if parsed:
-            underlying = parsed.get("underlying", "")
-            result["underlying"] = underlying
-            result["underlying_root"] = underlying.upper()
-            result["strike"] = price.scale_price(parsed.get("strike", 0), US_PRICE_SCALE)
-            result["optionType"] = parsed.get("option_type", "")
-            result["expiration"] = int(datetime.strptime(parsed.get("expiration", "20240101"), "%Y%m%d").timestamp()) * 10**9
-        else:
-            underlying = ""
-            result["underlying"] = ""
-            result["underlying_root"] = ""
-            result["strike"] = 0
-            result["optionType"] = ""
-            result["expiration"] = 0
-        is_index = underlying.upper() in ("SPX", "SPXW", "VIX", "RUT")
-        result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
-        result["scriptInstrumentType2"] = "OPTION"
-        result["multiplier"] = US_PRICE_SCALE  # matches Databento's 1e-9 fixed-point wire price scale
-        result["tickSize"] = ""  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
-        result["lotSize"] = 100
-        result["tradingSessionUTC"] = (
-            session.trading_session_for_xcbo_index(ref_date) if is_index else session.trading_session_for_xcbo_equity(ref_date)
-        )
-
-    elif venue == "EQUS" or venue.startswith("XNAS"):
-        result["exchange"] = "XNAS"
-        result["scriptInstrumentType"] = "EQUITY"
-        result["scriptInstrumentType2"] = "EQUITY"
-        result["underlying_root"] = underlying_root_from_stype_in(stype_in)
-        result["underlying"] = stype_in
-        result["strike"] = 0
-        result["optionType"] = ""
-        result["multiplier"] = US_PRICE_SCALE  # matches Databento's 1e-9 fixed-point wire price scale
-        result["tickSize"] = ""  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
-        result["lotSize"] = 1
-        result["expiration"] = 0  # No expiration for equities
-        result["tradingSessionUTC"] = session.trading_session_for_xnas(ref_date)
-
-    # Fill in missing columns
+def _fill_missing(result: Dict[str, Any]) -> Dict[str, Any]:
     for col in paths.NORMALIZED_COLUMNS:
         if col not in result:
             result[col] = ""
-
     return result
+
+
+def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
+    """Map a GLBX/XCME symbology record to canonical schema.
+
+    stype_out_symbol is only a real symbol string when stype_out is a symbol
+    space (e.g. "raw_symbol"); when stype_out is "instrument_id" that column
+    holds the numeric instrument id instead, so stype_in_symbol is the only
+    reliable symbol text in that case.
+    """
+    stype_in = row.get("stype_in_symbol", "") or row.get("stype_in", "")
+    stype_out = row.get("stype_out_symbol", "") or row.get("stype_out", "")
+    if row.get("stype_out") == "instrument_id":
+        stype_out = ""
+    stype_in = stype_in if isinstance(stype_in, str) else str(stype_in)
+    stype_out = stype_out if isinstance(stype_out, str) else str(stype_out)
+
+    symbol = stype_out or stype_in
+    result = {
+        "script": symbol,
+        "scriptToken": row.get("instrument_id", 0),
+        "scriptDetails": symbol,
+        "currency": "USD",
+        "exchange": "XCME",
+        "underlying_root": underlying_root_from_stype_in(stype_in),
+        "underlying": underlying_root_from_stype_in(stype_in),
+        "multiplier": US_PRICE_SCALE,  # matches Databento's 1e-9 fixed-point wire price scale
+        "tickSize": "",  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
+        "lotSize": 1,
+        "tradingSessionUTC": session.trading_session_for_xcme(ref_date),
+    }
+
+    opt_match = GLBX_OPTION_REGEX.search(symbol)
+    if opt_match:
+        base = symbol[: opt_match.start()].strip()
+        result["scriptInstrumentType"] = "OPTIDX"
+        result["scriptInstrumentType2"] = "OPTION"
+        result["optionType"] = "CALL" if opt_match.group(1) == "C" else "PUT"
+        result["strike"] = price.scale_price(float(opt_match.group(2)), US_PRICE_SCALE)
+        result["expiration"] = glbx_expiration_ns(base, ref_date)
+    else:
+        result["scriptInstrumentType"] = "FUTIDX"
+        result["scriptInstrumentType2"] = "FUTURE"
+        result["strike"] = 0
+        result["optionType"] = ""
+        result["expiration"] = glbx_expiration_ns(symbol, ref_date)
+
+    return _fill_missing(result)
+
+
+def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
+    """Map an OPRA/XCBO symbology record to canonical schema.
+
+    XCBO's symbol text (OCC format) is carried the same way regardless of
+    stype_out -- unlike XCME, OPRA never resolves to a bare numeric id here.
+    """
+    stype_in = row.get("stype_in_symbol", "") or row.get("stype_in", "")
+    stype_out = row.get("stype_out_symbol", "") or row.get("stype_out", "")
+    stype_in = stype_in if isinstance(stype_in, str) else str(stype_in)
+    stype_out = stype_out if isinstance(stype_out, str) else str(stype_out)
+
+    symbol = stype_out or stype_in
+    result = {
+        "script": symbol,
+        "scriptToken": row.get("instrument_id", 0),
+        "scriptDetails": symbol,
+        "currency": "USD",
+        "exchange": "XCBO",
+        "multiplier": US_PRICE_SCALE,  # matches Databento's 1e-9 fixed-point wire price scale
+        "tickSize": "",  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
+        "lotSize": 100,
+        "scriptInstrumentType2": "OPTION",
+    }
+
+    parsed = parse_occ_symbol(symbol)
+    underlying = parsed.get("underlying", "") if parsed else ""
+    if parsed:
+        result["underlying"] = underlying
+        result["underlying_root"] = underlying.upper()
+        result["strike"] = price.scale_price(parsed.get("strike", 0), US_PRICE_SCALE)
+        result["optionType"] = parsed.get("option_type", "")
+        result["expiration"] = int(datetime.strptime(parsed.get("expiration", "20240101"), "%Y%m%d").timestamp()) * 10**9
+    else:
+        result["underlying"] = ""
+        result["underlying_root"] = ""
+        result["strike"] = 0
+        result["optionType"] = ""
+        result["expiration"] = 0
+
+    is_index = underlying.upper() in ("SPX", "SPXW", "VIX", "RUT")
+    result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
+    result["tradingSessionUTC"] = (
+        session.trading_session_for_xcbo_index(ref_date) if is_index else session.trading_session_for_xcbo_equity(ref_date)
+    )
+
+    return _fill_missing(result)
+
+
+def map_xnas_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
+    """Map an EQUS/XNAS symbology record to canonical schema.
+
+    Equities have no strike/expiration/option fields at all -- kept separate
+    from the option venues rather than branching those fields to empty.
+    """
+    stype_in = row.get("stype_in_symbol", "") or row.get("stype_in", "")
+    stype_out = row.get("stype_out_symbol", "") or row.get("stype_out", "")
+    stype_in = stype_in if isinstance(stype_in, str) else str(stype_in)
+    stype_out = stype_out if isinstance(stype_out, str) else str(stype_out)
+
+    symbol = stype_out or stype_in
+    result = {
+        "script": symbol,
+        "scriptToken": row.get("instrument_id", 0),
+        "scriptDetails": symbol,
+        "currency": "USD",
+        "exchange": "XNAS",
+        "scriptInstrumentType": "EQUITY",
+        "scriptInstrumentType2": "EQUITY",
+        "underlying_root": underlying_root_from_stype_in(stype_in),
+        "underlying": stype_in,
+        "strike": 0,
+        "optionType": "",
+        "multiplier": US_PRICE_SCALE,  # matches Databento's 1e-9 fixed-point wire price scale
+        "tickSize": "",  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
+        "lotSize": 1,
+        "expiration": 0,  # No expiration for equities
+        "tradingSessionUTC": session.trading_session_for_xnas(ref_date),
+    }
+
+    return _fill_missing(result)
+
+
+VENUE_MAPPERS = {
+    "xcme": map_xcme_row,
+    "xcbo": map_xcbo_row,
+    "xnas": map_xnas_row,
+}
 
 
 def run(opts: runner.Opts) -> None:
@@ -198,9 +257,9 @@ def run(opts: runner.Opts) -> None:
 
     normalized_dir.mkdir(parents=True, exist_ok=True)
 
-    # Process each Databento venue
-    venues = ["xcme", "xcbo", "xnas"]
-    for venue in venues:
+    # Process each Databento venue independently -- stype_in/stype_out
+    # semantics differ per venue, so each gets its own mapper.
+    for venue, mapper in VENUE_MAPPERS.items():
         csv_path = paths.databento_raw_csv(opts.date_dir, venue)
         if not csv_path.exists():
             continue
@@ -212,7 +271,7 @@ def run(opts: runner.Opts) -> None:
             rows = []
 
             for _, row in df.iterrows():
-                norm_row = map_databento_row(row.to_dict(), venue.upper(), ref_date)
+                norm_row = mapper(row.to_dict(), ref_date)
                 if norm_row.get("script"):
                     rows.append(norm_row)
 
