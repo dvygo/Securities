@@ -189,44 +189,60 @@ def _resolve_index_futures(name: str, template: Path, idx: SymIndex, as_of: str,
 
 
 def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
-    """Resolve one basket's constituent rows, matching v4-golang's RefreshBasket switch."""
+    """Resolve one basket's constituent rows, matching v4-golang's RefreshBasket switch.
+    Basket names are standardized to {MIC}_{purpose} and match their definition CSV's
+    filename 1:1, except where noted (futures-roll baskets derive roots from a spots/
+    equity basket rather than their own frozen file, and ALL_INDEX_FUTURES has no file
+    of its own -- it's the union of the three index-futures baskets)."""
     baskets_dir = paths.baskets_dir()
 
-    if name == "NIFTY_FNO_EQUITY_SPOTS":
+    if name == "XNSE_NIFTYFNO_EQUITY":
         idx = _sym_index(as_of, "XNSE", cache)
         return _resolve_by_script(name, baskets_dir / f"{name}.csv", idx, as_of)
 
-    if name == "NIFTY_FNO_FUTURES_NEAR":
+    if name == "XNSE_NIFTYFNO_FUTURES_NEAR":
         idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_equity_futures(name, baskets_dir / "NIFTY_FNO_EQUITY_SPOTS.csv", idx, as_of, near_only=True)
+        return _resolve_equity_futures(name, baskets_dir / "XNSE_NIFTYFNO_EQUITY.csv", idx, as_of, near_only=True)
 
-    if name == "NIFTY_FNO_FUTURES_ALL":
+    if name == "XNSE_NIFTYFNO_FUTURES_ALL":
         idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_equity_futures(name, baskets_dir / "NIFTY_FNO_EQUITY_SPOTS.csv", idx, as_of, near_only=False)
+        return _resolve_equity_futures(name, baskets_dir / "XNSE_NIFTYFNO_EQUITY.csv", idx, as_of, near_only=False)
 
-    if name == "NSE_INDEX_FUTURES":
+    if name == "XNSE_INDEX_FUTURES_NEAR":
         idx = _sym_index(as_of, "XNSE", cache)
         return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=True)
 
-    if name == "BSE_INDEX_FUTURES":
+    if name == "XNSE_INDEX_FUTURES_ALL":
+        idx = _sym_index(as_of, "XNSE", cache)
+        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
+
+    if name == "XBOM_INDEX_FUTURES":
         idx = _sym_index(as_of, "XBOM", cache)
         return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=True)
 
-    if name == "MCX_FUTURES":
+    if name == "XIMC_FUTURES_ALL":
         idx = _sym_index(as_of, "XIMC", cache)
         return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
 
     if name == "ALL_INDEX_FUTURES":
         nse_rows = _resolve_index_futures(
-            "NSE_INDEX_FUTURES", baskets_dir / "NSE_INDEX_FUTURES.csv", _sym_index(as_of, "XNSE", cache), as_of, near_only=True
+            "XNSE_INDEX_FUTURES_NEAR", baskets_dir / "XNSE_INDEX_FUTURES_NEAR.csv", _sym_index(as_of, "XNSE", cache), as_of, near_only=True
         )
-        bse_rows = _resolve_index_futures(
-            "BSE_INDEX_FUTURES", baskets_dir / "BSE_INDEX_FUTURES.csv", _sym_index(as_of, "XBOM", cache), as_of, near_only=True
+        xbom_rows = _resolve_index_futures(
+            "XBOM_INDEX_FUTURES", baskets_dir / "XBOM_INDEX_FUTURES.csv", _sym_index(as_of, "XBOM", cache), as_of, near_only=True
         )
-        mcx_rows = _resolve_index_futures(
-            "MCX_FUTURES", baskets_dir / "MCX_FUTURES.csv", _sym_index(as_of, "XIMC", cache), as_of, near_only=False
+        ximc_rows = _resolve_index_futures(
+            "XIMC_FUTURES_ALL", baskets_dir / "XIMC_FUTURES_ALL.csv", _sym_index(as_of, "XIMC", cache), as_of, near_only=False
         )
-        return nse_rows + bse_rows + mcx_rows
+        return nse_rows + xbom_rows + ximc_rows
+
+    if name in ("XNSE_NIFTY50_EQUITY", "XNSE_NIFTY100_EQUITY", "XNSE_NIFTY200_EQUITY", "XNSE_NIFTY500_EQUITY"):
+        idx = _sym_index(as_of, "XNSE", cache)
+        return _resolve_by_script(name, baskets_dir / f"{name}.csv", idx, as_of)
+
+    if name == "XNSE_NIFTY500_FUTURES":
+        idx = _sym_index(as_of, "XNSE", cache)
+        return _resolve_equity_futures(name, baskets_dir / "XNSE_NIFTY500_EQUITY.csv", idx, as_of, near_only=False)
 
     raise ValueError(f"unknown basket {name!r}")
 

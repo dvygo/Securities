@@ -189,15 +189,24 @@ NSE_SEGMENTS = {
     "nse_cd": "NSE_CD_Instruments.csv",
 }
 
-# Basket names (from internal/baskets/baskets.go). XNAS/XCBO/XCME are venue
-# underlying-symbol lists consumed directly by sources/databento_src.py for
-# download selection, not basket-refresh targets -- excluded here.
+# Basket names, standardized to {MIC}_{purpose} (matches the definition CSV
+# filenames under constituents/baskets/ 1:1, except ALL_INDEX_FUTURES, which
+# has no file of its own -- it's the union of the three *_INDEX_FUTURES/
+# *_FUTURES baskets below). XNAS/XCBO/XCME are venue underlying-symbol lists
+# consumed directly by sources/databento_src.py for download selection, not
+# basket-refresh targets -- excluded here.
 BASKET_NAMES = [
-    "NIFTY_FNO_EQUITY_SPOTS",
-    "NIFTY_FNO_FUTURES_ALL",
-    "NIFTY_FNO_FUTURES_NEAR",
+    "XNSE_NIFTYFNO_EQUITY",
+    "XNSE_NIFTYFNO_FUTURES_ALL",
+    "XNSE_NIFTYFNO_FUTURES_NEAR",
     "ALL_INDEX_FUTURES",
-    "NSE_INDEX_FUTURES",
-    "BSE_INDEX_FUTURES",
-    "MCX_FUTURES",
+    "XNSE_INDEX_FUTURES_ALL",
+    "XNSE_INDEX_FUTURES_NEAR",
+    "XBOM_INDEX_FUTURES",
+    "XIMC_FUTURES_ALL",
+    "XNSE_NIFTY50_EQUITY",
+    "XNSE_NIFTY100_EQUITY",
+    "XNSE_NIFTY200_EQUITY",
+    "XNSE_NIFTY500_EQUITY",
+    "XNSE_NIFTY500_FUTURES",
 ]
