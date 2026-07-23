@@ -1,53 +1,30 @@
-"""Basket/constituents resolution: build daily contract lists."""
+"""Basket/constituents resolution: build daily contract lists.
+
+Mirrors v4-golang's internal/baskets/baskets.go: most basket definition
+files are frozen snapshots of a specific expiry month (e.g. "26MAYFUT")
+from whenever they were generated, so an exact-script match against them
+goes stale the moment that month's contracts expire. Futures baskets are
+instead resolved by extracting the underlying_root from each entry and
+rolling to the nearest (or all) still-live contract for that root in
+today's normalized data -- the swap/roll v4-golang already does.
+"""
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 import pandas as pd
 
-from . import export, paths, runner
+from . import paths, runner
 
 
-# Regex patterns for parsing ticker symbols
-EQUITY_REGEX = re.compile(r"^([A-Z0-9\-&]+)$")  # Simple equity symbol
-FUTURE_REGEX = re.compile(r"^([A-Z0-9\-&]+)-([A-Z]{3}\d{2})FUT$")  # ROOT-MONYYFUT
-OPTION_REGEX = re.compile(r"^([A-Z0-9\-&]+)-([A-Z]{3}\d{2})([CP])(\d+)$")  # ROOT-MONYYFUT C/P strike
-
-
-def live_futures(df: pd.DataFrame, as_of: datetime) -> pd.DataFrame:
-    """Filter futures contracts to only those not yet expired."""
-    if df.empty:
-        return df
-
-    def is_live(expiration_ns):
-        if not expiration_ns or expiration_ns == 0:
-            return True
-        exp_dt = datetime.fromtimestamp(expiration_ns / 10**9)
-        return exp_dt > as_of
-
-    return df[df["expiration"].apply(is_live)]
-
-
-def pick_nearest_expiry(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    From a group of contracts (same underlying, different expiries),
-    select only the nearest-expiry contract.
-    """
-    if df.empty:
-        return df
-
-    # Group by underlying_root and find minimum expiration
-    result = []
-    for underlying, group in df.groupby("underlying_root"):
-        live = group[group["expiration"] > 0]
-        if live.empty:
-            live = group
-
-        min_exp_idx = live["expiration"].idxmin()
-        result.append(df.loc[min_exp_idx])
-
-    return pd.DataFrame(result) if result else df
+# "NSE:360ONE-EQ" -> "360ONE"
+EQ_TAIL_REGEX = re.compile(r"^[^:]+:(.+)-EQ$")
+# "NSE:360ONE26JULFUT" -> "360ONE" (root is non-greedy so it stops at the
+# first valid MONYY it can match, same as v4-golang's futTail).
+FUT_TAIL_REGEX = re.compile(
+    r"^[^:]+:(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))FUT$"
+)
 
 
 def _load_basket_scripts(basket_file: Path) -> List[str]:
@@ -64,40 +41,204 @@ def _load_basket_scripts(basket_file: Path) -> List[str]:
     return scripts
 
 
-def build_contract_index(as_of: str) -> Dict[str, dict]:
-    """Map contract script -> full contract row, built once per run and shared
-    across every basket refresh (avoids re-reading all normalized CSVs per basket)."""
-    return {row["script"]: row for row in export.aggregate_contract_rows(as_of) if row.get("script")}
+def _parse_eq_root(script: str) -> str:
+    m = EQ_TAIL_REGEX.match(script.strip())
+    return m.group(1).upper() if m else ""
 
 
-def refresh_basket(name: str, as_of: str, contract_index: Dict[str, dict], dry_run: bool = False) -> Optional[pd.DataFrame]:
-    """
-    Refresh a single basket: look up each listed contract script in today's
-    normalized contracts. Returns DataFrame of matched contract rows, or None
-    if the basket file is missing/empty or none of its constituents matched.
-    """
+def _parse_fut_root(script: str) -> str:
+    m = FUT_TAIL_REGEX.match(script.strip())
+    return m.group(1).upper() if m else ""
+
+
+def _is_future_row(row: dict) -> bool:
+    t = (row.get("scriptInstrumentType") or "").strip().upper()
+    if t.startswith("FUT"):
+        return True
+    return (row.get("script") or "").strip().upper().endswith("FUT")
+
+
+def _int_field(row: dict, key: str) -> int:
+    raw = (row.get(key) or "").strip()
+    if not raw:
+        return 0
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+class SymIndex:
+    """Per-MIC lookup built from that segment's normalized CSV: exact script ->
+    row, and live-future candidates grouped by underlying_root for rolling."""
+
+    def __init__(self, exchange_mic: str, normalized_csv: Path):
+        self.exchange_mic = exchange_mic
+        self.by_script: Dict[str, dict] = {}
+        self.futures_by_root: Dict[str, List[dict]] = {}
+
+        if not normalized_csv.exists():
+            return
+        df = pd.read_csv(normalized_csv, keep_default_na=False, dtype=str)
+        for _, series in df.iterrows():
+            row = series.to_dict()
+            script = (row.get("script") or "").strip()
+            if script:
+                self.by_script[script] = row
+            if _is_future_row(row):
+                root = (row.get("underlying_root") or "").strip().upper()
+                if root:
+                    self.futures_by_root.setdefault(root, []).append(row)
+
+    def live_futures(self, root: str, as_of_ns: int) -> List[dict]:
+        return [r for r in self.futures_by_root.get(root.upper(), []) if _int_field(r, "expiration") >= as_of_ns]
+
+    def to_contract_row(self, row: dict, as_of: str) -> dict:
+        out = {"date": as_of, "exchange": self.exchange_mic}
+        for col in paths.NORMALIZED_COLUMNS:
+            out[col] = row.get(col, "")
+        return out
+
+
+def _pick_nearest_expiry(rows: List[dict]) -> Optional[dict]:
+    if not rows:
+        return None
+    return min(rows, key=lambda r: _int_field(r, "expiration"))
+
+
+def _as_of_start_ns(as_of: str) -> int:
+    """Nanosecond epoch for the start of as_of's calendar day. Matches this
+    codebase's existing naive-local-time convention (fields.py's
+    _expiration_ns, databento_norm.py's glbx_expiration_ns), not UTC --
+    consistent within v5-python even though v4-golang anchors to UTC."""
+    d = datetime.strptime(as_of, "%Y%m%d")
+    return int(d.timestamp()) * 10**9
+
+
+def _sym_index(as_of: str, mic: str, cache: Dict[str, SymIndex]) -> SymIndex:
+    if mic not in cache:
+        output_csv, _, _ = paths.FYERS_MIC_BUNDLES[mic]
+        cache[mic] = SymIndex(mic, paths.normalized_dir(as_of) / output_csv)
+    return cache[mic]
+
+
+def _resolve_by_script(name: str, template: Path, idx: SymIndex, as_of: str) -> List[dict]:
+    scripts = _load_basket_scripts(template)
+    rows, missing = [], 0
+    for script in scripts:
+        row = idx.by_script.get(script)
+        if row is None:
+            missing += 1
+            continue
+        rows.append(idx.to_contract_row(row, as_of))
+    if missing:
+        print(f"    {name}: {missing}/{len(scripts)} constituents not found in today's contracts")
+    return rows
+
+
+def _resolve_equity_futures(name: str, spots_template: Path, idx: SymIndex, as_of: str, near_only: bool) -> List[dict]:
+    scripts = _load_basket_scripts(spots_template)
+    as_of_ns = _as_of_start_ns(as_of)
+    rows, no_fut, seen = [], 0, set()
+    for script in scripts:
+        root = _parse_eq_root(script)
+        if not root or root in seen:
+            continue
+        seen.add(root)
+
+        live = idx.live_futures(root, as_of_ns)
+        if not live:
+            no_fut += 1
+            continue
+        if near_only:
+            picked = _pick_nearest_expiry(live)
+            if picked:
+                rows.append(idx.to_contract_row(picked, as_of))
+        else:
+            for r in sorted(live, key=lambda r: _int_field(r, "expiration")):
+                rows.append(idx.to_contract_row(r, as_of))
+    if no_fut:
+        print(f"    {name}: {no_fut}/{len(seen)} underlyings have no live future today")
+    return rows
+
+
+def _resolve_index_futures(name: str, template: Path, idx: SymIndex, as_of: str, near_only: bool) -> List[dict]:
+    scripts = _load_basket_scripts(template)
+    as_of_ns = _as_of_start_ns(as_of)
+    rows, no_fut, seen = [], 0, set()
+    for script in scripts:
+        root = _parse_fut_root(script)
+        if not root or root in seen:
+            continue
+        seen.add(root)
+
+        live = idx.live_futures(root, as_of_ns)
+        if not live:
+            no_fut += 1
+            continue
+        if near_only:
+            picked = _pick_nearest_expiry(live)
+            if picked:
+                rows.append(idx.to_contract_row(picked, as_of))
+        else:
+            for r in sorted(live, key=lambda r: _int_field(r, "expiration")):
+                rows.append(idx.to_contract_row(r, as_of))
+    if no_fut:
+        print(f"    {name}: {no_fut}/{len(scripts)} roots rolled to no live future")
+    return rows
+
+
+def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
+    """Resolve one basket's constituent rows, matching v4-golang's RefreshBasket switch."""
+    baskets_dir = paths.baskets_dir()
+
+    if name == "NIFTY_FNO_EQUITY_SPOTS":
+        idx = _sym_index(as_of, "XNSE", cache)
+        return _resolve_by_script(name, baskets_dir / f"{name}.csv", idx, as_of)
+
+    if name == "NIFTY_FNO_FUTURES_NEAR":
+        idx = _sym_index(as_of, "XNSE", cache)
+        return _resolve_equity_futures(name, baskets_dir / "NIFTY_FNO_EQUITY_SPOTS.csv", idx, as_of, near_only=True)
+
+    if name == "NIFTY_FNO_FUTURES_ALL":
+        idx = _sym_index(as_of, "XNSE", cache)
+        return _resolve_equity_futures(name, baskets_dir / "NIFTY_FNO_EQUITY_SPOTS.csv", idx, as_of, near_only=False)
+
+    if name == "NSE_INDEX_FUTURES":
+        idx = _sym_index(as_of, "XNSE", cache)
+        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=True)
+
+    if name == "BSE_INDEX_FUTURES":
+        idx = _sym_index(as_of, "XBOM", cache)
+        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=True)
+
+    if name == "MCX_FUTURES":
+        idx = _sym_index(as_of, "XIMC", cache)
+        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
+
+    if name == "ALL_INDEX_FUTURES":
+        nse_rows = _resolve_index_futures(
+            "NSE_INDEX_FUTURES", baskets_dir / "NSE_INDEX_FUTURES.csv", _sym_index(as_of, "XNSE", cache), as_of, near_only=True
+        )
+        bse_rows = _resolve_index_futures(
+            "BSE_INDEX_FUTURES", baskets_dir / "BSE_INDEX_FUTURES.csv", _sym_index(as_of, "XBOM", cache), as_of, near_only=True
+        )
+        mcx_rows = _resolve_index_futures(
+            "MCX_FUTURES", baskets_dir / "MCX_FUTURES.csv", _sym_index(as_of, "XIMC", cache), as_of, near_only=False
+        )
+        return nse_rows + bse_rows + mcx_rows
+
+    raise ValueError(f"unknown basket {name!r}")
+
+
+def refresh_basket(name: str, as_of: str, dry_run: bool = False) -> Optional[pd.DataFrame]:
+    """Refresh a single basket. Returns None if nothing resolved."""
     basket_file = paths.baskets_dir() / f"{name}.csv"
     if not basket_file.exists():
         print(f"    Basket {name} not found at {basket_file}")
         return None
 
-    scripts = _load_basket_scripts(basket_file)
-    if not scripts:
-        print(f"    Basket {name} is empty")
-        return None
-
-    rows = []
-    missing = 0
-    for script in scripts:
-        row = contract_index.get(script)
-        if row is None:
-            missing += 1
-            continue
-        rows.append(row)
-
-    if missing:
-        print(f"    {name}: {missing}/{len(scripts)} constituents not found in today's contracts")
-
+    rows = _refresh(name, as_of, cache={})
     return pd.DataFrame(rows) if rows else None
 
 
@@ -106,7 +247,7 @@ def refresh_all(as_of: str, normalized_dir: Path, dry_run: bool = False) -> None
     contracts_day_dir = paths.contracts_day_dir(as_of)
     contracts_day_dir.mkdir(parents=True, exist_ok=True)
 
-    contract_index = build_contract_index(as_of)
+    cache: Dict[str, SymIndex] = {}
 
     for basket_name in paths.BASKET_NAMES:
         if dry_run:
@@ -114,11 +255,11 @@ def refresh_all(as_of: str, normalized_dir: Path, dry_run: bool = False) -> None
             continue
 
         try:
-            df = refresh_basket(basket_name, as_of, contract_index, dry_run)
-            if df is not None and not df.empty:
+            rows = _refresh(basket_name, as_of, cache)
+            if rows:
                 output_csv = contracts_day_dir / f"{basket_name}.csv"
-                df.to_csv(output_csv, index=False, encoding="utf-8-sig")
-                print(f"    Wrote {basket_name}: {len(df)} contracts")
+                pd.DataFrame(rows).to_csv(output_csv, index=False, encoding="utf-8-sig")
+                print(f"    Wrote {basket_name}: {len(rows)} contracts")
         except Exception as e:
             print(f"    Error refreshing {basket_name}: {e}")
 
@@ -139,8 +280,7 @@ def run(opts: runner.Opts) -> None:
     if opts.basket:
         # Single basket refresh
         try:
-            contract_index = build_contract_index(opts.date_dir)
-            df = refresh_basket(opts.basket, opts.date_dir, contract_index, opts.dry_run)
+            df = refresh_basket(opts.basket, opts.date_dir, opts.dry_run)
             if df is not None:
                 contracts_dir = paths.contracts_day_dir(opts.date_dir)
                 contracts_dir.mkdir(parents=True, exist_ok=True)
