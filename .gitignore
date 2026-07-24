@@ -26,9 +26,8 @@ __________v3_EquityAlgoV20260519-0/output_matrix_*/
 **/normalized/
 v4/**/20[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
 v4/constituents/contracts/
-v4-golang/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
-v4-golang/constituents/contracts/
 v5-python/constituents/contracts/
+data/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
 v5-python/strategies/*/data/
 
 # Binaries, archives, local DBs
@@ -46,19 +45,8 @@ v5-python/strategies/*/data/
 **/LOGS/
 *.log
 
-# Go build output (v4-golang)
-v4-golang/premarket
-v4-golang/premarket.exe
-v4-golang/normalizer.exe
-v4-golang/premarket-*
-v4-golang/normalizer
-v4-golang/bin/
-
 # Local scratch / experiments (not part of the pipeline)
 v1-hist-downloader/
-v4-golang/test/
-v4-golang/old.zip
-v4-golang/conf/_test_*.txt
 
 # OS / editor
 .DS_Store
