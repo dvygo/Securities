@@ -1,5 +1,14 @@
 # Template — copy to config.ini and edit
 
+[paths]
+# All relative to repo root (v5-python/) unless absolute. Shared data_dir
+# with v4-golang so both pipelines read/write the same dated dirs.
+data_dir = ../data
+baskets_dir = constituents/baskets
+contracts_dir = constituents/contracts
+bin_dir = bin
+logs_dir = bin/LOGS
+
 [databento]
 # API keys now live in conf/keys.ini (per-exchange, per-environment: key_XNAS/key_XCBO/key_XCME).
 live_seconds = 10

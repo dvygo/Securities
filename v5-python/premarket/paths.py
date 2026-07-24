@@ -1,17 +1,15 @@
 """Directory and file path conventions for Premarket v5."""
+import configparser
 import os
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 def repo_root() -> Path:
     """Find v5-python repo root, honoring PREMARKET_V5_ROOT env var."""
     if env := os.getenv("PREMARKET_V5_ROOT"):
         return Path(env)
-    if env := os.getenv("PREMARKET_V4G_ROOT"):
-        # Fallback to v4-golang root if v5-specific not set
-        return Path(env).parent / "v5-python"
     # Walk up from cwd looking for premarket package + pyproject.toml
     cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
@@ -41,9 +39,41 @@ def secrets_ini() -> Path:
     return repo_root().parent / "secrets" / "secrets.ini"
 
 
+def _paths_section() -> Optional[configparser.SectionProxy]:
+    """The [paths] section of config.ini, if the file and section exist.
+
+    Read directly via configparser rather than the config module, which
+    itself imports paths -- avoids a circular import.
+    """
+    cfg_file = config_ini()
+    if not cfg_file.exists():
+        return None
+    cfg = configparser.ConfigParser()
+    cfg.read(cfg_file)
+    return cfg["paths"] if "paths" in cfg else None
+
+
+def _configured_dir(env_var: str, config_key: str, default: Path) -> Path:
+    """Resolve a directory: env var, then config.ini's [paths].<config_key>
+    (relative paths resolve against repo_root()), then default."""
+    if env := os.getenv(env_var):
+        return Path(env)
+    section = _paths_section()
+    if section and config_key in section:
+        value = Path(section[config_key])
+        return value if value.is_absolute() else repo_root() / value
+    return default
+
+
+def data_root() -> Path:
+    """Data root (dated dirs): PREMARKET_DATA_ROOT env, config.ini's
+    [paths].data_dir, else ../data."""
+    return _configured_dir("PREMARKET_DATA_ROOT", "data_dir", repo_root().parent / "data")
+
+
 def day_dir(as_of: str) -> Path:
-    """Day directory: YYYYMMDD/"""
-    return repo_root() / as_of
+    """Day directory: data/YYYYMMDD/"""
+    return data_root() / as_of
 
 
 def raw_dir(as_of: str) -> Path:
@@ -72,13 +102,15 @@ def databento_raw_csv(as_of: str, venue: str) -> Path:
 
 
 def baskets_dir() -> Path:
-    """Baskets directory: constituents/baskets/"""
-    return repo_root() / "constituents" / "baskets"
+    """Baskets directory: PREMARKET_BASKETS_DIR env, config.ini's
+    [paths].baskets_dir, else constituents/baskets/"""
+    return _configured_dir("PREMARKET_BASKETS_DIR", "baskets_dir", repo_root() / "constituents" / "baskets")
 
 
 def contracts_dir() -> Path:
-    """Contracts directory: constituents/contracts/"""
-    return repo_root() / "constituents" / "contracts"
+    """Contracts directory: PREMARKET_CONTRACTS_DIR env, config.ini's
+    [paths].contracts_dir, else constituents/contracts/"""
+    return _configured_dir("PREMARKET_CONTRACTS_DIR", "contracts_dir", repo_root() / "constituents" / "contracts")
 
 
 def contracts_day_dir(as_of: str) -> Path:
@@ -87,13 +119,15 @@ def contracts_day_dir(as_of: str) -> Path:
 
 
 def bin_dir() -> Path:
-    """Binary/output directory: bin/"""
-    return repo_root() / "bin"
+    """Binary/output directory: PREMARKET_BIN_DIR env, config.ini's
+    [paths].bin_dir, else bin/"""
+    return _configured_dir("PREMARKET_BIN_DIR", "bin_dir", repo_root() / "bin")
 
 
 def logs_dir() -> Path:
-    """Logs directory: bin/LOGS/"""
-    return bin_dir() / "LOGS"
+    """Logs directory: PREMARKET_LOGS_DIR env, config.ini's [paths].logs_dir,
+    else bin/LOGS/"""
+    return _configured_dir("PREMARKET_LOGS_DIR", "logs_dir", bin_dir() / "LOGS")
 
 
 def ensure_bin_dirs() -> None:
