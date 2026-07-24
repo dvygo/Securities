@@ -9,7 +9,7 @@ rolling to the nearest (or all) still-live contract for that root in
 today's normalized data -- the swap/roll v4-golang already does.
 """
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -107,11 +107,11 @@ def _pick_nearest_expiry(rows: List[dict]) -> Optional[dict]:
 
 
 def _as_of_start_ns(as_of: str) -> int:
-    """Nanosecond epoch for the start of as_of's calendar day. Matches this
-    codebase's existing naive-local-time convention (fields.py's
-    _expiration_ns, databento_norm.py's glbx_expiration_ns), not UTC --
-    consistent within v5-python even though v4-golang anchors to UTC."""
-    d = datetime.strptime(as_of, "%Y%m%d")
+    """Nanosecond epoch UTC for the start of as_of's calendar day. Must stay
+    UTC to compare against "expiration" (databento_norm.py's
+    glbx_expiration_ns/OCC path, fields.py's _expiration_ns), which are
+    themselves UTC -- matches v4-golang's anchor."""
+    d = datetime.strptime(as_of, "%Y%m%d").replace(tzinfo=timezone.utc)
     return int(d.timestamp()) * 10**9
 
 

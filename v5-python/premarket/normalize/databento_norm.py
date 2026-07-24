@@ -1,6 +1,6 @@
 """Databento normalization: GLBX/OPRA/EQUS symbol parsing and row mapping."""
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -87,7 +87,7 @@ def glbx_expiration_ns(symbol_base: str, ref_date=None) -> int:
     if year_full < anchor_year - 5:  # single digit wrapped past the decade boundary
         year_full += 10
 
-    dt = datetime(year_full, month, 1)
+    dt = datetime(year_full, month, 1, tzinfo=timezone.utc)
     return int(dt.timestamp()) * 10**9
 
 
@@ -107,6 +107,26 @@ def _fill_missing(result: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _resolve_symbol_id_fallback(row: Dict[str, Any]) -> tuple[str, str, str]:
+    """Extract (stype_in, stype_out, symbol) for a GLBX/OPRA/EQUS symbology row.
+
+    Every venue's resolve() call here requests stype_out="instrument_id",
+    which makes stype_out_symbol ("s") a bare numeric id rather than ticker
+    text -- symbol must fall back to stype_in instead, or "script" ends up
+    numeric. Confirmed on live data for all three venues (XCME, XCBO, XNAS);
+    an earlier assumption that OPRA was exempt from this was wrong -- it
+    just hadn't been checked against a real XCBO row yet, causing the same
+    guard to be copy-pasted-and-dropped per-mapper before it was unified here.
+    """
+    stype_in = row.get("stype_in_symbol", "") or row.get("stype_in", "")
+    stype_out = row.get("stype_out_symbol", "") or row.get("stype_out", "")
+    if row.get("stype_out") == "instrument_id":
+        stype_out = ""
+    stype_in = stype_in if isinstance(stype_in, str) else str(stype_in)
+    stype_out = stype_out if isinstance(stype_out, str) else str(stype_out)
+    return stype_in, stype_out, stype_out or stype_in
+
+
 def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     """Map a GLBX/XCME symbology record to canonical schema.
 
@@ -115,14 +135,7 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     holds the numeric instrument id instead, so stype_in_symbol is the only
     reliable symbol text in that case.
     """
-    stype_in = row.get("stype_in_symbol", "") or row.get("stype_in", "")
-    stype_out = row.get("stype_out_symbol", "") or row.get("stype_out", "")
-    if row.get("stype_out") == "instrument_id":
-        stype_out = ""
-    stype_in = stype_in if isinstance(stype_in, str) else str(stype_in)
-    stype_out = stype_out if isinstance(stype_out, str) else str(stype_out)
-
-    symbol = stype_out or stype_in
+    stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
         "script": symbol,
         "scriptToken": row.get("instrument_id", 0),
@@ -155,18 +168,21 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     return _fill_missing(result)
 
 
-def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
-    """Map an OPRA/XCBO symbology record to canonical schema.
-
-    XCBO's symbol text (OCC format) is carried the same way regardless of
-    stype_out -- unlike XCME, OPRA never resolves to a bare numeric id here.
+def _session_close_ns(expiry_date, is_index: bool) -> int:
+    """Epoch ns UTC for an option's actual expiration moment: the expiry
+    date's own session close -- options expire intraday at market close, not
+    at UTC midnight. expiry_date is the OCC/Databento expiry date, which is
+    an ET calendar date, not UTC -- see session.xcbo_session_close_utc for
+    why this can't be done by re-anchoring a formatted "HHMM" string to
+    expiry_date in UTC.
     """
-    stype_in = row.get("stype_in_symbol", "") or row.get("stype_in", "")
-    stype_out = row.get("stype_out_symbol", "") or row.get("stype_out", "")
-    stype_in = stype_in if isinstance(stype_in, str) else str(stype_in)
-    stype_out = stype_out if isinstance(stype_out, str) else str(stype_out)
+    dt = session.xcbo_session_close_utc(expiry_date, is_index)
+    return int(dt.timestamp()) * 10**9
 
-    symbol = stype_out or stype_in
+
+def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
+    """Map an OPRA/XCBO symbology record to canonical schema."""
+    stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
         "script": symbol,
         "scriptToken": row.get("instrument_id", 0),
@@ -181,12 +197,15 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
 
     parsed = parse_occ_symbol(symbol)
     underlying = parsed.get("underlying", "") if parsed else ""
+    is_index = underlying.upper() in ("SPX", "SPXW", "VIX", "RUT")
+
     if parsed:
         result["underlying"] = underlying
         result["underlying_root"] = underlying.upper()
         result["strike"] = price.scale_price(parsed.get("strike", 0), US_PRICE_SCALE)
         result["optionType"] = parsed.get("option_type", "")
-        result["expiration"] = int(datetime.strptime(parsed.get("expiration", "20240101"), "%Y%m%d").timestamp()) * 10**9
+        expiry_date = datetime.strptime(parsed.get("expiration", "20240101"), "%Y%m%d").date()
+        result["expiration"] = _session_close_ns(expiry_date, is_index)
     else:
         result["underlying"] = ""
         result["underlying_root"] = ""
@@ -194,7 +213,6 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         result["optionType"] = ""
         result["expiration"] = 0
 
-    is_index = underlying.upper() in ("SPX", "SPXW", "VIX", "RUT")
     result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
     result["tradingSessionUTC"] = (
         session.trading_session_for_xcbo_index(ref_date) if is_index else session.trading_session_for_xcbo_equity(ref_date)
@@ -208,13 +226,13 @@ def map_xnas_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
 
     Equities have no strike/expiration/option fields at all -- kept separate
     from the option venues rather than branching those fields to empty.
-    """
-    stype_in = row.get("stype_in_symbol", "") or row.get("stype_in", "")
-    stype_out = row.get("stype_out_symbol", "") or row.get("stype_out", "")
-    stype_in = stype_in if isinstance(stype_in, str) else str(stype_in)
-    stype_out = stype_out if isinstance(stype_out, str) else str(stype_out)
 
-    symbol = stype_out or stype_in
+    Like XCME (see map_xcme_row), EQUS resolves raw_symbol -> instrument_id,
+    so stype_out_symbol ("s") is a bare numeric id here, not a ticker --
+    must fall back to stype_in or "script" ends up numeric instead of the
+    symbol string.
+    """
+    stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
         "script": symbol,
         "scriptToken": row.get("instrument_id", 0),
@@ -224,7 +242,7 @@ def map_xnas_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         "scriptInstrumentType": "EQUITY",
         "scriptInstrumentType2": "EQUITY",
         "underlying_root": underlying_root_from_stype_in(stype_in),
-        "underlying": stype_in,
+        "underlying": symbol,
         "strike": 0,
         "optionType": "",
         "multiplier": US_PRICE_SCALE,  # matches Databento's 1e-9 fixed-point wire price scale

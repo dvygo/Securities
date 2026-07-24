@@ -1,5 +1,5 @@
 """Fyers normalization: map raw rows to 16-column canonical schema."""
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -48,7 +48,7 @@ def _expiration_ns(raw: str) -> int:
         ts = int(float(s))
     except ValueError:
         try:
-            dt = datetime.strptime(s, "%Y%m%d")
+            dt = datetime.strptime(s, "%Y%m%d").replace(tzinfo=timezone.utc)
             return int(dt.timestamp()) * 10**9
         except ValueError:
             return 0

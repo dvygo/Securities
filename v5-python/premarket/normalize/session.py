@@ -108,6 +108,26 @@ def trading_session_for_xcbo_index(ref: Optional[date] = None) -> str:
     return _session_utc(ref or date.today(), _XCBO_INDEX_SESSION)
 
 
+def xcbo_session_close_utc(expiry_date: date, is_index: bool) -> datetime:
+    """UTC-aware datetime of an OPRA option's actual expiration moment: the
+    last session segment's close, for expiry_date expressed in US Eastern
+    (the OCC/Databento expiry-date convention -- NOT UTC calendar date).
+
+    Converts the ET close directly via zoneinfo rather than formatting to a
+    "HHMM-HHMM" string and re-parsing it against expiry_date's Y/M/D in UTC:
+    that string has no date component, so re-anchoring it to expiry_date in
+    UTC silently assumes the ET close never crosses a UTC calendar-day
+    boundary. It usually doesn't for the equity/index close hours here, but
+    astimezone() handles it correctly regardless (e.g. it would matter for
+    a session profile like XNAS's whose 20:00 ET after-hours close crosses
+    into the next UTC day under EDT).
+    """
+    profile = _XCBO_INDEX_SESSION if is_index else _XCBO_EQUITY_SESSION
+    end_h, end_m = profile[-1][2], profile[-1][3]
+    end_et = datetime(expiry_date.year, expiry_date.month, expiry_date.day, end_h, end_m, tzinfo=US_EASTERN)
+    return end_et.astimezone(UTC)
+
+
 def trading_session_for_xcme(ref: Optional[date] = None) -> str:
     """XCME/GLBX 3-part Globex session in UTC, DST-aware (excludes daily maintenance halt)."""
     return _session_utc(ref or date.today(), _XCME_GLOBEX_SESSION)
