@@ -25,6 +25,12 @@ EQ_TAIL_REGEX = re.compile(r"^[^:]+:(.+)-EQ$")
 FUT_TAIL_REGEX = re.compile(
     r"^[^:]+:(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))FUT$"
 )
+# "MCX:CRUDEOIL26AUG10000CE" -> "CRUDEOIL" (root non-greedy up to the first MONYY,
+# then strike digits, then CE/PE). Strike may be fractional (e.g. "...100.25PE").
+OPT_TAIL_REGEX = re.compile(
+    r"^[^:]+:(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))"
+    r"\d+(?:\.\d+)?(CE|PE)$"
+)
 
 
 def _load_basket_scripts(basket_file: Path) -> List[str]:
@@ -51,11 +57,26 @@ def _parse_fut_root(script: str) -> str:
     return m.group(1).upper() if m else ""
 
 
+def _parse_opt_root(script: str) -> str:
+    m = OPT_TAIL_REGEX.match(script.strip())
+    return m.group(1).upper() if m else ""
+
+
 def _is_future_row(row: dict) -> bool:
     t = (row.get("scriptInstrumentType") or "").strip().upper()
     if t.startswith("FUT"):
         return True
     return (row.get("script") or "").strip().upper().endswith("FUT")
+
+
+def _is_option_row(row: dict) -> bool:
+    if (row.get("optionType") or "").strip():
+        return True
+    t = (row.get("scriptInstrumentType") or "").strip().upper()
+    if t.startswith("OPT"):
+        return True
+    s = (row.get("script") or "").strip().upper()
+    return s.endswith("CE") or s.endswith("PE")
 
 
 def _int_field(row: dict, key: str) -> int:
@@ -76,6 +97,7 @@ class SymIndex:
         self.exchange_mic = exchange_mic
         self.by_script: Dict[str, dict] = {}
         self.futures_by_root: Dict[str, List[dict]] = {}
+        self.options_by_root: Dict[str, List[dict]] = {}
 
         if not normalized_csv.exists():
             return
@@ -85,13 +107,17 @@ class SymIndex:
             script = (row.get("script") or "").strip()
             if script:
                 self.by_script[script] = row
-            if _is_future_row(row):
-                root = (row.get("underlying_root") or "").strip().upper()
-                if root:
-                    self.futures_by_root.setdefault(root, []).append(row)
+            root = (row.get("underlying_root") or "").strip().upper()
+            if root and _is_future_row(row):
+                self.futures_by_root.setdefault(root, []).append(row)
+            elif root and _is_option_row(row):
+                self.options_by_root.setdefault(root, []).append(row)
 
     def live_futures(self, root: str, as_of_ns: int) -> List[dict]:
         return [r for r in self.futures_by_root.get(root.upper(), []) if _int_field(r, "expiration") >= as_of_ns]
+
+    def live_options(self, root: str, as_of_ns: int) -> List[dict]:
+        return [r for r in self.options_by_root.get(root.upper(), []) if _int_field(r, "expiration") >= as_of_ns]
 
     def to_contract_row(self, row: dict, as_of: str) -> dict:
         out = {"date": as_of, "exchange": self.exchange_mic}
@@ -188,6 +214,35 @@ def _resolve_index_futures(name: str, template: Path, idx: SymIndex, as_of: str,
     return rows
 
 
+def _resolve_option_chain(name: str, template: Path, idx: SymIndex, as_of: str, num_expiries: int) -> List[dict]:
+    """Roll an option-chain basket to its N nearest still-live expiries. The template
+    only supplies the underlying root(s) (parsed from any option script in it); the
+    concrete strikes/expiries in the file go stale and are ignored -- we re-pick the
+    num_expiries nearest distinct expiries from today's data and emit their full chains
+    (every CE/PE at every strike). Mirrors the futures roll, but keeps N expiries deep
+    and all strikes instead of collapsing to one contract per root."""
+    scripts = _load_basket_scripts(template)
+    as_of_ns = _as_of_start_ns(as_of)
+    rows, no_opt, seen = [], 0, set()
+    for script in scripts:
+        root = _parse_opt_root(script)
+        if not root or root in seen:
+            continue
+        seen.add(root)
+
+        live = idx.live_options(root, as_of_ns)
+        if not live:
+            no_opt += 1
+            continue
+        keep = set(sorted({_int_field(r, "expiration") for r in live})[:num_expiries])
+        for r in sorted(live, key=lambda r: (_int_field(r, "expiration"), r.get("script", ""))):
+            if _int_field(r, "expiration") in keep:
+                rows.append(idx.to_contract_row(r, as_of))
+    if no_opt:
+        print(f"    {name}: {no_opt}/{len(seen)} roots have no live option today")
+    return rows
+
+
 def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
     """Resolve one basket's constituent rows, matching v4-golang's RefreshBasket switch.
     Basket names are standardized to {MIC}_{purpose} and match their definition CSV's
@@ -223,6 +278,10 @@ def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
     if name == "XIMC_FUTURES_ALL":
         idx = _sym_index(as_of, "XIMC", cache)
         return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
+
+    if name in ("XIMC_CRUDE_NEAREST_NXTNEAREST", "XIMC_BULLDEX_NEAREST_NXTNEAREST"):
+        idx = _sym_index(as_of, "XIMC", cache)
+        return _resolve_option_chain(name, baskets_dir / f"{name}.csv", idx, as_of, num_expiries=2)
 
     if name == "ALL_INDEX_FUTURES":
         nse_rows = _resolve_index_futures(
