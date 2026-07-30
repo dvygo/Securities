@@ -96,6 +96,11 @@ def normalized_dir(as_of: str) -> Path:
     return day_dir(as_of) / "normalized"
 
 
+def plugin_dir(as_of: str) -> Path:
+    """Plugin-format data directory: YYYYMMDD/plugin/ (sibling of normalized/)."""
+    return day_dir(as_of) / "plugin"
+
+
 def databento_raw_csv(as_of: str, venue: str) -> Path:
     """Raw Databento CSV path: YYYYMMDD/raw/{VENUE}-DATABENTO.csv (matches v4-golang naming)."""
     return raw_dir(as_of) / f"{venue.upper()}-DATABENTO.csv"

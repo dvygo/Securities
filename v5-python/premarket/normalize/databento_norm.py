@@ -142,8 +142,6 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         "scriptDetails": symbol,
         "currency": "USD",
         "exchange": "XCME",
-        "underlying_root": underlying_root_from_stype_in(stype_in),
-        "underlying": underlying_root_from_stype_in(stype_in),
         "multiplier": US_PRICE_SCALE,  # matches Databento's 1e-9 fixed-point wire price scale
         "tickSize": "",  # NULL: tickSize is exclusive to the interactive layer, Nexus doesn't depend on it
         "lotSize": 1,
@@ -159,11 +157,15 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         result["strike"] = price.scale_price(float(opt_match.group(2)), US_PRICE_SCALE)
         result["expiration"] = glbx_expiration_ns(base, ref_date)
     else:
+        base = symbol
         result["scriptInstrumentType"] = "FUTIDX"
         result["scriptInstrumentType2"] = "FUTURE"
         result["strike"] = 0
         result["optionType"] = ""
         result["expiration"] = glbx_expiration_ns(symbol, ref_date)
+
+    result["underlying_root"] = base
+    result["underlying"] = base
 
     return _fill_missing(result)
 

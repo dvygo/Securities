@@ -113,12 +113,17 @@ def create_parser() -> argparse.ArgumentParser:
         "--only",
         action="append",
         default=[],
-        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, strip, baskets, csv-export, postgres)",
+        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, strip, baskets, csv-export, plugin, postgres-plugin, postgres)",
     )
     normalize_parser.add_argument(
         "--postgres-push",
         action="store_true",
         help="Push to Postgres after normalization",
+    )
+    normalize_parser.add_argument(
+        "--plugin",
+        action="store_true",
+        help="Build plugin-format CSVs (legacy pg symbol-master schema) in data/YYYYMMDD/plugin/",
     )
     normalize_parser.add_argument(
         "--database-url",
@@ -196,11 +201,14 @@ def run_normalize(args: argparse.Namespace) -> int:
         )
 
         only = getattr(args, "only", []) or []
-        # Asking for the postgres step by name is itself the request to push;
-        # --postgres-push only matters for a full run with no --only filter.
+        # Asking for the postgres/plugin step by name is itself the request to
+        # run it; --postgres-push/--plugin only matter for a full run with no
+        # --only filter. postgres-plugin has no flag of its own -- it rides
+        # along with --plugin (or is targeted directly via --only).
         postgres_push = args.postgres_push or "postgres" in only
+        plugin = args.plugin or "plugin" in only or "postgres-plugin" in only
 
-        steps = runner.build_normalizer_steps(only, postgres_push=postgres_push)
+        steps = runner.build_normalizer_steps(only, postgres_push=postgres_push, plugin=plugin)
 
         return runner.run(steps, opts)
     finally:

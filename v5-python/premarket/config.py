@@ -1,9 +1,9 @@
 """Configuration loading from config.ini and environment variables."""
 import configparser
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from . import paths
 
@@ -161,6 +161,39 @@ def load_normalizer() -> NormalizerCfg:
                         cfg_dict[key] = value
 
     return NormalizerCfg(**cfg_dict)
+
+
+@dataclass
+class PostgresPluginCfg:
+    """[postgres-plugin] config: the appender's own DSN/schema/table, plus an
+    exchange (MIC prefix) allow-list -- empty allow-list means push every
+    plugin CSV, not none."""
+    database_url: str = ""
+    schema: str = ""
+    table: str = ""
+    exchanges: List[str] = field(default_factory=list)
+
+
+def load_postgres_plugin() -> PostgresPluginCfg:
+    """Load [postgres-plugin] config from config.ini, DATABASE_URL_PLUGIN env for the DSN."""
+    database_url = os.getenv("DATABASE_URL_PLUGIN", "")
+    schema = ""
+    table = ""
+    exchanges: List[str] = []
+
+    config_file = paths.config_ini()
+    if config_file.exists():
+        cfg = configparser.ConfigParser()
+        cfg.read(config_file)
+        if "postgres-plugin" in cfg:
+            section = cfg["postgres-plugin"]
+            if not database_url:
+                database_url = section.get("database_url", "")
+            schema = section.get("schema", "")
+            table = section.get("table", "")
+            exchanges = [x.strip().upper() for x in section.get("exchanges", "").split(",") if x.strip()]
+
+    return PostgresPluginCfg(database_url=database_url, schema=schema, table=table, exchanges=exchanges)
 
 
 def database_url(override: Optional[str] = None) -> str:

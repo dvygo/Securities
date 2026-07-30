@@ -42,3 +42,12 @@ retry_delay_sec = 2
 
 [postgres]
 database_url = postgres://contract:contract@127.0.0.1:6006/contractdb?sslmode=disable
+
+[postgres-plugin]
+# Appender only -- table/schema must already exist (see docs/plugin/pg_data_types.txt).
+database_url = postgres://plugin:plugin@127.0.0.1:6006/plugindb?sslmode=disable
+schema = public
+table = contracts
+# Comma-separated MIC allow-list (matches the plugin CSV's filename prefix).
+# Empty = push every plugin CSV.
+exchanges = XCME,XCBO

@@ -105,13 +105,13 @@ def run(steps: List[Step], opts: Opts) -> int:
     return 0
 
 
-def build_normalizer_steps(only: List[str], postgres_push: bool = False) -> List[Step]:
+def build_normalizer_steps(only: List[str], postgres_push: bool = False, plugin: bool = False) -> List[Step]:
     """
     Build the normalizer pipeline steps.
     Returns Step list filtered by --only.
     """
-    from . import postgres_export, baskets, export
-    from .normalize import fields, databento_norm, nse_norm
+    from . import postgres_export, postgres_export_plugin, baskets, export
+    from .normalize import fields, databento_norm, nse_norm, plugin as plugin_norm
 
     all_steps = [
         Step("normalize-fyers", fields.run),
@@ -121,6 +121,11 @@ def build_normalizer_steps(only: List[str], postgres_push: bool = False) -> List
         Step("baskets", baskets.run),
         Step("csv-export", export.run),
     ]
+
+    if plugin:
+        all_steps.append(Step("plugin", plugin_norm.run))
+        # No separate flag: building plugin CSVs always pushes them too.
+        all_steps.append(Step("postgres-plugin", postgres_export_plugin.run))
 
     if postgres_push:
         all_steps.append(Step("postgres", postgres_export.run))
