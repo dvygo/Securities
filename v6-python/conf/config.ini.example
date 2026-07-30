@@ -1,0 +1,53 @@
+# Template — copy to config.ini and edit
+
+[paths]
+# All relative to repo root (v6-python/) unless absolute. Shared data_dir
+# with v4-golang so both pipelines read/write the same dated dirs.
+data_dir = ../data
+baskets_dir = constituents/baskets
+contracts_dir = constituents/contracts
+bin_dir = bin
+logs_dir = bin/LOGS
+
+[databento]
+# API keys now live in conf/keys.ini (per-exchange, per-environment: key_XNAS/key_XCBO/key_XCME).
+live_seconds = 10
+live_retries = 3
+live_retry_delay_sec = 2
+max_maps = 100000
+hist_lookback_days = 7
+
+[normalizer]
+glbx_underlying = ES
+glbx_multiplier = 100000
+glbx_exchange = XCME
+opra_exchange = XCBO
+opra_multiplier = 100000
+equs_exchange = XNAS
+equs_multiplier = 1
+xnse_exchange = XNSE
+xnfo_exchange = XNFO
+xncd_exchange = XNCD
+xbse_exchange = XBSE
+xbfo_exchange = XBFO
+xmcx_exchange = XIMC
+
+[fyers]
+base_url = https://public.fyers.in/sym_details
+# Quote required: semicolons in UA are INI comments otherwise.
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+timeout_sec = 120
+retries = 3
+retry_delay_sec = 2
+
+[postgres]
+database_url = postgres://contract:contract@127.0.0.1:6006/contractdb?sslmode=disable
+
+[postgres-plugin]
+# Appender only -- table/schema must already exist (see docs/plugin/pg_data_types.txt).
+database_url = postgres://plugin:plugin@127.0.0.1:6006/plugindb?sslmode=disable
+schema = public
+table = contracts
+# Comma-separated MIC allow-list (matches the plugin CSV's filename prefix).
+# Empty = push every plugin CSV.
+exchanges = XCME,XCBO

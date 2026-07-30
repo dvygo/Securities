@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "premarketv6"
+version = "6.0.0"
+description = "Pre-market symbology/instrument data pipeline for financial markets"
+requires-python = ">=3.9"
+dependencies = [
+    "databento>=1.0.0",
+    "psycopg[binary]>=3.1.0",
+    "pandas>=2.0.0",
+    "requests>=2.31.0",
+    "exchange-calendars>=4.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]

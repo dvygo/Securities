@@ -26,9 +26,9 @@ __________v3_EquityAlgoV20260519-0/output_matrix_*/
 **/normalized/
 v4/**/20[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
 v4/constituents/contracts/
-v5-python/constituents/contracts/
+v*-python/constituents/contracts/
 data/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
-v5-python/strategies/*/data/
+v*-python/strategies*/*/data/
 
 # Binaries, archives, local DBs
 *.exe
