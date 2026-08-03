@@ -163,6 +163,53 @@ class TestFyersNormalization:
         assert result["lotSize"] == 15
 
 
+class TestVenueTokenPrefix:
+    """scriptToken venue prefixing (databento_norm.prefixed_token)."""
+
+    def test_prefix_per_venue(self):
+        assert databento_norm.prefixed_token("XNAS", 38) == "11138"
+        assert databento_norm.prefixed_token("XCBO", 637543226) == "222637543226"
+        assert databento_norm.prefixed_token("XCME", 2544437) == "3332544437"
+
+    def test_result_is_still_all_digits(self):
+        """No separator: a prefixed token must keep passing an is-numeric test."""
+        assert databento_norm.prefixed_token("XCBO", 637543226).isdigit()
+
+    def test_pandas_float_widening_is_stripped(self):
+        """pandas renders an int column as float when any value is missing."""
+        assert databento_norm.prefixed_token("XNAS", "38.0") == "11138"
+
+    def test_unknown_venue_passes_through(self):
+        assert databento_norm.prefixed_token("XNSE", 12345) == "12345"
+
+    def test_non_numeric_id_is_not_prefixed(self):
+        """Better a bare bad id than a prefix glued to garbage."""
+        assert databento_norm.prefixed_token("XNAS", "not-an-id") == "not-an-id"
+
+    def test_prefixed_tokens_exceed_int32(self):
+        """Pins the range change: XCBO/XCME tokens no longer fit a 32-bit field,
+        so any consumer must hold scriptToken as int64 or text."""
+        token = int(databento_norm.prefixed_token("XCBO", 1509950237))
+        assert token == 2221509950237
+        assert token > 2**31 - 1
+        assert token < 2**63 - 1
+
+    def test_venues_stay_disjoint_for_a_shared_instrument_id(self):
+        """The whole point: the same Databento id on two venues must not collide."""
+        ids = {databento_norm.prefixed_token(v, 12345) for v in ("XNAS", "XCBO", "XCME")}
+        assert len(ids) == 3
+
+    def test_mappers_emit_prefixed_tokens(self):
+        common = {"stype_out": "instrument_id"}
+        xnas = databento_norm.map_xnas_row({**common, "stype_in_symbol": "AAPL", "instrument_id": 38}, date(2026, 8, 3))
+        xcbo = databento_norm.map_xcbo_row(
+            {**common, "stype_in_symbol": "META  260918C00705000", "instrument_id": 637543226}, date(2026, 8, 3))
+        xcme = databento_norm.map_xcme_row({**common, "stype_in_symbol": "ESZ6", "instrument_id": 10252}, date(2026, 8, 3))
+        assert xnas["scriptToken"] == "11138"
+        assert xcbo["scriptToken"] == "222637543226"
+        assert xcme["scriptToken"] == "33310252"
+
+
 class TestBrokerScript:
     """brokerScript1 derivation (normalize/broker_script.py)."""
 

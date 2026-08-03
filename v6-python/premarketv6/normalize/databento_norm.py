@@ -32,6 +32,43 @@ GLBX_OPTION_REGEX = re.compile(r"\s+([CP])(\d+(?:\.\d+)?)\s*$")
 # India's INDIA_PRICE_SCALE (1e5) for the Fyers/rupee path, not this one.
 US_PRICE_SCALE = 10**9
 
+# Venue token prefix, concatenated onto the Databento instrument_id to make
+# scriptToken globally unique across venues: XNAS 38 -> 11138, XCBO 637543226
+# -> 222637543226. Databento only guarantees instrument_id is unique within a
+# dataset, so the same id can name different contracts on two venues.
+#
+# The prefix is part of the key, not decoration: nothing downstream should strip
+# it to recover the raw id. Digits only, so a prefixed token still passes any
+# "is numeric" test.
+#
+# NOTE: prefixing pushes tokens past int32. Max observed today is XCBO
+# 1509950237 -> 2221509950237 (13 digits, 2.2e12) and XCME 43049829 ->
+# 33343049829; int32 tops out at 2147483647. Postgres scriptToken is already
+# BIGINT and SQLite is TEXT, so both are fine -- but any consumer holding this
+# in a 32-bit field will overflow.
+VENUE_TOKEN_PREFIX = {
+    "XNAS": "111",
+    "XCBO": "222",
+    "XCME": "333",
+}
+
+
+def prefixed_token(venue: str, instrument_id: Any) -> str:
+    """Concatenate the venue prefix onto a Databento instrument_id.
+
+    Returns the raw value unchanged for an unknown venue or a non-numeric id,
+    rather than emitting a prefix glued to garbage.
+    """
+    raw = str(instrument_id).strip()
+    # pandas widens an int column to float when any value is missing, which
+    # renders ids as "637543226.0".
+    if raw.endswith(".0"):
+        raw = raw[:-2]
+    prefix = VENUE_TOKEN_PREFIX.get(venue, "")
+    if not prefix or not raw.isdigit():
+        return raw
+    return f"{prefix}{raw}"
+
 
 def parse_occ_symbol(symbol: str) -> Dict[str, Any]:
     """Parse OCC option symbol format: AAAA YYMMDD C/P 8-digit-strike."""
@@ -138,7 +175,7 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
         "script": symbol,
-        "scriptToken": row.get("instrument_id", 0),
+        "scriptToken": prefixed_token("XCME", row.get("instrument_id", 0)),
         "scriptDetails": symbol,
         "currency": "USD",
         "exchange": "XCME",
@@ -192,7 +229,7 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
         "script": symbol,
-        "scriptToken": row.get("instrument_id", 0),
+        "scriptToken": prefixed_token("XCBO", row.get("instrument_id", 0)),
         "scriptDetails": symbol,
         "currency": "USD",
         "exchange": "XCBO",
@@ -247,7 +284,7 @@ def map_xnas_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
         "script": symbol,
-        "scriptToken": row.get("instrument_id", 0),
+        "scriptToken": prefixed_token("XNAS", row.get("instrument_id", 0)),
         "scriptDetails": symbol,
         "currency": "USD",
         "exchange": "XNAS",
