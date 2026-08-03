@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from .. import config, paths, runner
-from . import price, session
+from . import broker_script, price, session
 
 
 # CME month character to month number mapping (for weekly expiries)
@@ -167,6 +167,11 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     result["underlying_root"] = base
     result["underlying"] = base
 
+    # Derived from the resolved expiration above, so the year in brokerScript1
+    # always agrees with the expiration column.
+    result["brokerScript1"] = broker_script.from_glbx(symbol, result["expiration"])
+    broker_script.fill_unspecified(result)
+
     return _fill_missing(result)
 
 
@@ -215,6 +220,11 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         result["optionType"] = ""
         result["expiration"] = 0
 
+    # Uses the OCC-embedded date, not result["expiration"] -- the latter is the
+    # session close in UTC and can fall on the next calendar day.
+    result["brokerScript1"] = broker_script.from_occ(symbol, parsed)
+    broker_script.fill_unspecified(result)
+
     result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
     result["tradingSessionUTC"] = (
         session.trading_session_for_xcbo_index(ref_date) if is_index else session.trading_session_for_xcbo_equity(ref_date)
@@ -252,7 +262,9 @@ def map_xnas_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         "lotSize": 1,
         "expiration": 0,  # No expiration for equities
         "tradingSessionUTC": session.trading_session_for_xnas(ref_date),
+        "brokerScript1": broker_script.from_equity(symbol),
     }
+    broker_script.fill_unspecified(result)
 
     return _fill_missing(result)
 

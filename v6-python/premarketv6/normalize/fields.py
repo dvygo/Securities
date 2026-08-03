@@ -7,7 +7,7 @@ import pandas as pd
 
 from .. import config, paths, runner
 from ..sources import fyers_src
-from . import price, session
+from . import broker_script, price, session
 
 
 # Broad category for scriptInstrumentType2, matching v4-golang's instrumentType2().
@@ -134,6 +134,12 @@ def map_fyers_row(row: Dict[str, str], cfg: config.NormalizerCfg) -> Dict[str, A
 
     # Expiration (Unix seconds/ms or YYYYMMDD -> nanoseconds UTC)
     result["expiration"] = _expiration_ns(row.get("expiryDate", ""))
+
+    # Broker symbology: no India broker format is defined yet, so brokerScript1
+    # takes the same exact-copy-of-script fallback the US venues use for rows
+    # they cannot decompose.
+    result["brokerScript1"] = broker_script.from_equity(result["script"])
+    broker_script.fill_unspecified(result)
 
     return result
 

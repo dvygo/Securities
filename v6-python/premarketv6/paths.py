@@ -201,6 +201,13 @@ NORMALIZED_COLUMNS = [
     "strike",
     "optionType",
     "currency",
+    # Broker symbology (see normalize/broker_script.py). Appended rather than
+    # inserted so any consumer reading these CSVs positionally keeps working.
+    # Only brokerScript1 is derived today; 2-4 are reserved and always blank.
+    "brokerScript1",
+    "brokerScript2",
+    "brokerScript3",
+    "brokerScript4",
 ]
 
 # Contract columns = date + exchange + normalized columns

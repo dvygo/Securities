@@ -34,6 +34,9 @@ from . import config, export, paths, runner
 NULLABLE_CONTRACT_COLUMNS = {
     "scriptInstrumentType2", "lotSize", "tickSize", "ISIN",
     "expiration", "strike", "optionType",
+    # Reserved broker columns: always blank until their formats are defined,
+    # so they must land as NULL rather than "".
+    "brokerScript2", "brokerScript3", "brokerScript4",
 }
 
 CONTRACT_COLUMN_DDL = [
@@ -55,6 +58,12 @@ CONTRACT_COLUMN_DDL = [
     ('"strike"', "BIGINT"),
     ('"optionType"', "TEXT"),
     ('"currency"', "TEXT NOT NULL"),
+    # brokerScript1 is NOT NULL for the same reason "script" is: it falls back
+    # to a copy of script, and rows without a script are dropped upstream.
+    ('"brokerScript1"', "TEXT NOT NULL"),
+    ('"brokerScript2"', "TEXT"),
+    ('"brokerScript3"', "TEXT"),
+    ('"brokerScript4"', "TEXT"),
 ]
 
 # One row per basket: name + a JSONB array of constituent script strings.

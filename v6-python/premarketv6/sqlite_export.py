@@ -32,7 +32,11 @@ def create_tables(conn: sqlite3.Connection) -> None:
         underlying TEXT,
         strike TEXT,
         optionType TEXT,
-        currency TEXT
+        currency TEXT,
+        brokerScript1 TEXT,
+        brokerScript2 TEXT,
+        brokerScript3 TEXT,
+        brokerScript4 TEXT
     )
     """)
 
