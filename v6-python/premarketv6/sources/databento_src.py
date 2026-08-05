@@ -8,7 +8,9 @@ Matches v4-golang's internal/databento exactly:
   - output: YYYYMMDD/raw/{VENUE}-DATABENTO.csv with columns matching
     internal/databento/mapping.go's MappingColumns
 """
+import csv
 import datetime as dt
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -16,11 +18,17 @@ from pathlib import Path
 from typing import Optional
 
 import databento as db
-import pandas as pd
 
 from .. import config, paths, runner
 
 ALL_SYMBOLS_SENTINEL = "ALL_SYMBOLS"
+
+# Symbols per symbology.resolve() call. The gateway answers per request, not per
+# symbol, so a whole basket in one call times out once it expands far enough --
+# 506 OPRA parents (~840 contracts each) returns 504 every time.
+HIST_RESOLVE_BATCH = 5
+HIST_RESOLVE_RETRIES = 3
+HIST_RESOLVE_RETRY_DELAY_SEC = 4
 
 MAPPING_COLUMNS = [
     "instrument_id",
@@ -205,38 +213,65 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     output_csv = paths.databento_raw_csv(opts.date_dir, venue)
-    temp_csv = output_csv.with_suffix(".tmp.csv")
+    # PID-scoped so two runs of the same venue cannot share a staging file. A
+    # fixed ".tmp.csv" made concurrent runs fight over one path: whichever
+    # finished first renamed it away, and the other died at its own rename with
+    # "No such file or directory" after resolving the whole basket.
+    temp_csv = output_csv.with_suffix(f".tmp.{os.getpid()}.csv")
 
+    if mode == "hist":
+        client = db.Historical(key=api_key)
+        batches = _iter_hist_batches(
+            client, venue_cfg, symbols, stype_in, opts.date_dir,
+            cfg.hist_lookback_days, opts.hist_range,
+        )
+    elif mode == "live":
+        batches = _iter_live_batches(
+            api_key, venue_cfg, symbols, stype_in, opts.live_start,
+            cfg.live_seconds, cfg.max_maps, cfg.live_retries, cfg.live_retry_delay_sec,
+        )
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    # Stage into .tmp.csv, appending each gateway response as it arrives, then
+    # rename onto the real name once the whole basket is in. Nothing is held in
+    # memory: a 506-parent OPRA basket resolves to ~500k rows, which used to be
+    # kept as dicts and again as a DataFrame before a single write at the end.
+    #
+    # Staging keeps the output atomic -- readers only ever see a complete basket,
+    # never a run in progress. The staging path is unique per process, so there
+    # is nothing stale to clear here: deleting a fixed temp path at startup would
+    # itself destroy a concurrent run's work in progress.
+    total = 0
     try:
-        if mode == "hist":
-            client = db.Historical(key=api_key)
-            rows = _fetch_hist(
-                client, venue_cfg, symbols, stype_in, opts.date_dir,
-                cfg.hist_lookback_days, opts.hist_range,
-            )
-        elif mode == "live":
-            rows = _fetch_live(
-                api_key, venue_cfg, symbols, stype_in, opts.live_start,
-                cfg.live_seconds, cfg.max_maps, cfg.live_retries, cfg.live_retry_delay_sec,
-            )
-        else:
-            raise ValueError(f"Unknown mode: {mode}")
-
-        if rows:
-            df = pd.DataFrame(rows, columns=MAPPING_COLUMNS)
-            df.to_csv(temp_csv, index=False, encoding="utf-8-sig")
-            temp_csv.rename(output_csv)
-            print(f"Wrote {len(df)} rows to {output_csv}")
-        else:
-            print(f"No data retrieved for {venue} {mode}")
-
+        with open(temp_csv, "w", newline="", encoding="utf-8-sig") as fh:
+            writer = csv.DictWriter(fh, fieldnames=MAPPING_COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            fh.flush()
+            for batch_rows in batches:
+                if not batch_rows:
+                    continue
+                writer.writerows(batch_rows)
+                fh.flush()  # every response is durable before the next request
+                total += len(batch_rows)
     except Exception:
-        if temp_csv.exists():
-            temp_csv.unlink()
+        # Keep the partial .tmp.csv rather than deleting it: with one request per
+        # symbol a late failure can be an hour of work, and the real output is
+        # untouched anyway because the rename below never runs.
+        if total:
+            print(f"  Failed after {total} row(s); partial output kept at {temp_csv}")
         raise
 
+    if total:
+        temp_csv.replace(output_csv)
+        print(f"Wrote {total} rows to {output_csv}")
+    else:
+        # A header-only file would look like a valid empty basket downstream.
+        temp_csv.unlink(missing_ok=True)
+        print(f"No data retrieved for {venue} {mode}")
 
-def _fetch_hist(
+
+def _iter_hist_batches(
     client: db.Historical,
     venue_cfg: VenueConfig,
     symbols: list[str],
@@ -244,8 +279,15 @@ def _fetch_hist(
     as_of: str,
     lookback_days: int,
     explicit_range: Optional[str] = None,
-) -> list[dict]:
-    """Single batch symbology.resolve() call, matching HistoricalSymbolMappings in v4-golang."""
+):
+    """Batched symbology.resolve(), yielding each response's rows as it arrives.
+
+    Resolving a large basket in a single call times out: 506 OPRA parents
+    (each expanding to ~840 contracts) reliably returns
+    "504 The remote gateway timed out". Batching keeps each request small
+    enough to answer; yielding rather than accumulating keeps the caller free
+    to append them to the CSV without ever holding the full basket in memory.
+    """
     pinned = venue_cfg.hist_pin_latest_session and not explicit_range
     start_date, end_date = resolve_hist_range(
         client, venue_cfg.dataset, as_of, lookback_days, explicit_range,
@@ -253,39 +295,86 @@ def _fetch_hist(
     )
 
     window = "pinned to latest session" if pinned else f"lookback {lookback_days}d"
-    print(f"  Resolving {venue_cfg.venue_name} hist: {len(symbols)} symbol(s), "
-          f"stype_in={stype_in}, start={start_date} ({window}; no end_date, defaults to latest available)")
+    batches = [symbols[i:i + HIST_RESOLVE_BATCH] for i in range(0, len(symbols), HIST_RESOLVE_BATCH)]
+    print(f"  Resolving {venue_cfg.venue_name} hist: {len(symbols)} symbol(s) in {len(batches)} batch(es) "
+          f"of {HIST_RESOLVE_BATCH}, stype_in={stype_in}, start={start_date} "
+          f"({window}; no end_date, defaults to latest available)")
 
-    result = client.symbology.resolve(
-        dataset=venue_cfg.dataset,
-        symbols=symbols,
-        stype_in=stype_in,
-        stype_out="instrument_id",
-        start_date=start_date,
-    )
+    total = 0
+    not_found: list[str] = []
+    for i, batch in enumerate(batches, 1):
+        batch_rows, batch_nf = _resolve_batch(
+            client, venue_cfg, batch, stype_in, start_date,
+        )
+        total += len(batch_rows)
+        not_found.extend(batch_nf)
+        print(f"    batch {i}/{len(batches)}: {len(batch)} symbol(s) -> "
+              f"{len(batch_rows)} contract(s), running total {total}", flush=True)
+        yield batch_rows
 
-    rows = []
-    mappings = result.get("result", {})
-    for stype_in_symbol, entries in mappings.items():
-        for entry in entries:
-            rows.append({
-                "instrument_id": entry.get("s", ""),
-                "stype_in_symbol": stype_in_symbol,
-                "stype_out_symbol": entry.get("s", ""),
-                "stype_in": stype_in,
-                "stype_out": "instrument_id",
-                "start_ts": entry.get("d0", ""),
-                "end_ts": entry.get("d1", ""),
-            })
-
-    not_found = result.get("not_found", [])
     if not_found:
         print(f"    Warning: not found: {not_found}")
 
-    return rows
+
+def _resolve_batch(
+    client: db.Historical,
+    venue_cfg: VenueConfig,
+    batch: list[str],
+    stype_in: str,
+    start_date: str,
+) -> tuple[list[dict], list[str]]:
+    """Resolve one batch, retrying then halving on failure.
+
+    A 504 is a function of how much the batch expands, not how many symbols it
+    holds -- a handful of mega-cap option parents can time out where a hundred
+    thin ones do not. Retrying the same batch often works; when it doesn't,
+    halving isolates the heavy symbol instead of losing the whole batch. Only a
+    single symbol that still fails is given up on, and it is reported.
+    """
+    last_err: Optional[Exception] = None
+    for attempt in range(1, HIST_RESOLVE_RETRIES + 1):
+        try:
+            result = client.symbology.resolve(
+                dataset=venue_cfg.dataset,
+                symbols=batch,
+                stype_in=stype_in,
+                stype_out="instrument_id",
+                start_date=start_date,
+            )
+            rows = []
+            for stype_in_symbol, entries in result.get("result", {}).items():
+                for entry in entries:
+                    rows.append({
+                        "instrument_id": entry.get("s", ""),
+                        "stype_in_symbol": stype_in_symbol,
+                        "stype_out_symbol": entry.get("s", ""),
+                        "stype_in": stype_in,
+                        "stype_out": "instrument_id",
+                        "start_ts": entry.get("d0", ""),
+                        "end_ts": entry.get("d1", ""),
+                    })
+            return rows, list(result.get("not_found", []))
+        except Exception as e:
+            last_err = e
+            if attempt < HIST_RESOLVE_RETRIES:
+                print(f"      attempt {attempt}/{HIST_RESOLVE_RETRIES} failed for "
+                      f"{len(batch)} symbol(s): {str(e)[:80]}; retrying in "
+                      f"{HIST_RESOLVE_RETRY_DELAY_SEC}s")
+                time.sleep(HIST_RESOLVE_RETRY_DELAY_SEC)
+
+    if len(batch) == 1:
+        print(f"      Warning: giving up on {batch[0]}: {str(last_err)[:100]}")
+        return [], list(batch)
+
+    mid = len(batch) // 2
+    print(f"      splitting {len(batch)} symbol(s) into {mid}/{len(batch) - mid} after "
+          f"{HIST_RESOLVE_RETRIES} failed attempts")
+    left_rows, left_nf = _resolve_batch(client, venue_cfg, batch[:mid], stype_in, start_date)
+    right_rows, right_nf = _resolve_batch(client, venue_cfg, batch[mid:], stype_in, start_date)
+    return left_rows + right_rows, left_nf + right_nf
 
 
-def _fetch_live(
+def _iter_live_batches(
     api_key: str,
     venue_cfg: VenueConfig,
     symbols: list[str],
@@ -295,15 +384,17 @@ def _fetch_live(
     max_maps: int,
     retries: int,
     retry_delay_sec: float,
-) -> list[dict]:
+):
     """
     Subscribe one symbol at a time (separate db.Live session per symbol) so a single
     symbol that Databento can't resolve (e.g. no live contract right now) doesn't kill
     the whole batch. Each symbol gets its own retry budget; failures are logged and
     skipped rather than aborting the run.
+
+    Yields each symbol's rows so the caller can append them to the CSV as they
+    arrive instead of holding every symbol's mappings in memory.
     """
     retries = max(retries, 1)
-    all_rows: list[dict] = []
 
     for symbol in symbols:
         sym_rows: list[dict] = []
@@ -325,10 +416,8 @@ def _fetch_live(
             print(f"    Warning: {venue_cfg.venue_name} live failed for {symbol}: {last_err}")
             continue
 
-        print(f"    {symbol}: {len(sym_rows)} mapping(s)")
-        all_rows.extend(sym_rows)
-
-    return all_rows
+        print(f"    {symbol}: {len(sym_rows)} mapping(s)", flush=True)
+        yield sym_rows
 
 
 def _fetch_live_once(
