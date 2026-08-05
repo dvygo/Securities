@@ -1,6 +1,7 @@
 """Databento normalization: GLBX/OPRA/EQUS symbol parsing and row mapping."""
 import re
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -70,6 +71,43 @@ def prefixed_token(venue: str, instrument_id: Any) -> str:
     return f"{prefix}{raw}"
 
 
+@lru_cache(maxsize=1)
+def _dotted_root_map() -> Dict[str, str]:
+    """Map dot-stripped OCC roots back to their real tickers, e.g. BRKB -> BRK.B.
+
+    OPRA symbology has no room for a dot: the class-share tickers BRK.B and BF.B
+    are subscribed as BRKB.OPT / BFB.OPT and come back in OCC symbols as "BRKB",
+    "BFB". Only the baskets know the real ticker, so they are the source here.
+
+    A stripped form that could come from more than one basket entry is dropped
+    rather than guessed -- an ambiguous mapping is worse than none.
+    """
+    out: Dict[str, str] = {}
+    clashes: set[str] = set()
+    for venue in ("XCBO", "XNAS"):
+        path = paths.baskets_dir() / f"{venue}.csv"
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
+            ticker = line.strip().upper()
+            if not ticker or "." not in ticker:
+                continue
+            stripped = ticker.replace(".", "")
+            if out.get(stripped, ticker) != ticker:
+                clashes.add(stripped)
+            out[stripped] = ticker
+    for c in clashes:
+        out.pop(c, None)
+    return out
+
+
+def dotted_underlying(root: str) -> str:
+    """Restore the dot in a class-share root; pass anything else through."""
+    if not root:
+        return root
+    return _dotted_root_map().get(root.upper(), root)
+
+
 def parse_occ_symbol(symbol: str) -> Dict[str, Any]:
     """Parse OCC option symbol format: AAAA YYMMDD C/P 8-digit-strike."""
     s = symbol.strip()
@@ -134,7 +172,11 @@ def underlying_root_from_stype_in(symbol: str) -> str:
     # For SPX options, root is "SPX"
     if symbol.startswith("."):
         return symbol[1:]  # Remove leading dot for index symbols
-    return re.match(r"^[A-Z]+", symbol).group(0) if re.match(r"^[A-Z]+", symbol) else symbol
+    # Interior dots are part of the ticker, not a separator: BRK.B and BF.B are
+    # class-share tickers whose root is the whole thing. A bare ^[A-Z]+ stopped
+    # at the dot and emitted "BRK" as the root of BRK.B.
+    m = re.match(r"^[A-Z]+(?:\.[A-Z]+)*", symbol)
+    return m.group(0) if m else symbol
 
 
 def _fill_missing(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -244,8 +286,12 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     is_index = underlying.upper() in ("SPX", "SPXW", "VIX", "RUT")
 
     if parsed:
-        result["underlying"] = underlying
-        result["underlying_root"] = underlying.upper()
+        # OCC symbols cannot carry a dot, so BRK.B trades as root "BRKB". Map it
+        # back for the underlying columns only -- brokerScript1 is built from
+        # `parsed` further down and must stay dotless (BRKB/280121/410C), which
+        # is why `parsed` is deliberately not mutated here.
+        result["underlying"] = dotted_underlying(underlying)
+        result["underlying_root"] = dotted_underlying(underlying).upper()
         result["strike"] = price.scale_price(parsed.get("strike", 0), US_PRICE_SCALE)
         result["optionType"] = parsed.get("option_type", "")
         expiry_date = datetime.strptime(parsed.get("expiration", "20240101"), "%Y%m%d").date()
