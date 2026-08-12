@@ -164,50 +164,62 @@ class TestFyersNormalization:
 
 
 class TestVenueTokenPrefix:
-    """scriptToken venue prefixing (databento_norm.prefixed_token)."""
+    """scriptToken is the bare Databento instrument_id (databento_norm.prefixed_token).
 
-    def test_prefix_per_venue(self):
-        assert databento_norm.prefixed_token("XNAS", 38) == "11138"
-        assert databento_norm.prefixed_token("XCBO", 637543226) == "222637543226"
-        assert databento_norm.prefixed_token("XCME", 2544437) == "3332544437"
+    Venue prefixing (XNAS 111 / XCBO 222 / XCME 333) was removed by request. These
+    tests are inverted from their original form on purpose: they now pin the
+    unprefixed contract, and in particular pin the collision it reintroduces, so
+    that behaviour is asserted rather than discovered in production.
+    """
+
+    def test_token_is_the_bare_instrument_id(self):
+        assert databento_norm.prefixed_token("XNAS", 38) == "38"
+        assert databento_norm.prefixed_token("XCBO", 637543226) == "637543226"
+        assert databento_norm.prefixed_token("XCME", 2544437) == "2544437"
 
     def test_result_is_still_all_digits(self):
-        """No separator: a prefixed token must keep passing an is-numeric test."""
+        """A token must keep passing an is-numeric test."""
         assert databento_norm.prefixed_token("XCBO", 637543226).isdigit()
 
     def test_pandas_float_widening_is_stripped(self):
-        """pandas renders an int column as float when any value is missing."""
-        assert databento_norm.prefixed_token("XNAS", "38.0") == "11138"
+        """pandas renders an int column as float when any value is missing.
+
+        Unrelated to prefixing, so it survives the removal.
+        """
+        assert databento_norm.prefixed_token("XNAS", "38.0") == "38"
 
     def test_unknown_venue_passes_through(self):
         assert databento_norm.prefixed_token("XNSE", 12345) == "12345"
 
-    def test_non_numeric_id_is_not_prefixed(self):
-        """Better a bare bad id than a prefix glued to garbage."""
+    def test_non_numeric_id_passes_through(self):
         assert databento_norm.prefixed_token("XNAS", "not-an-id") == "not-an-id"
 
-    def test_prefixed_tokens_exceed_int32(self):
-        """Pins the range change: XCBO/XCME tokens no longer fit a 32-bit field,
-        so any consumer must hold scriptToken as int64 or text."""
+    def test_tokens_fit_int32_again(self):
+        """Without a prefix, ids are back inside a 32-bit field."""
         token = int(databento_norm.prefixed_token("XCBO", 1509950237))
-        assert token == 2221509950237
-        assert token > 2**31 - 1
-        assert token < 2**63 - 1
+        assert token == 1509950237
+        assert token < 2**31 - 1
 
-    def test_venues_stay_disjoint_for_a_shared_instrument_id(self):
-        """The whole point: the same Databento id on two venues must not collide."""
+    def test_venues_now_collide_for_a_shared_instrument_id(self):
+        """Documents the cost of removing the prefix.
+
+        Databento only guarantees instrument_id is unique within a dataset, so the
+        same id on three venues now yields one token, not three. Anything keying on
+        (token, trade_date) without an exchange column -- which is exactly the pg
+        symbol-master table postgres_export_plugin appends to -- can collide.
+        """
         ids = {databento_norm.prefixed_token(v, 12345) for v in ("XNAS", "XCBO", "XCME")}
-        assert len(ids) == 3
+        assert ids == {"12345"}
 
-    def test_mappers_emit_prefixed_tokens(self):
+    def test_mappers_emit_bare_tokens(self):
         common = {"stype_out": "instrument_id"}
         xnas = databento_norm.map_xnas_row({**common, "stype_in_symbol": "AAPL", "instrument_id": 38}, date(2026, 8, 3))
         xcbo = databento_norm.map_xcbo_row(
             {**common, "stype_in_symbol": "META  260918C00705000", "instrument_id": 637543226}, date(2026, 8, 3))
         xcme = databento_norm.map_xcme_row({**common, "stype_in_symbol": "ESZ6", "instrument_id": 10252}, date(2026, 8, 3))
-        assert xnas["scriptToken"] == "11138"
-        assert xcbo["scriptToken"] == "222637543226"
-        assert xcme["scriptToken"] == "33310252"
+        assert xnas["scriptToken"] == "38"
+        assert xcbo["scriptToken"] == "637543226"
+        assert xcme["scriptToken"] == "10252"
 
 
 class TestBrokerScript:

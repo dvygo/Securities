@@ -105,42 +105,25 @@ US_PRICE_SCALE = 10**9
 # Raw rows read and mapped before the normalizer appends a batch to the output.
 NORMALIZE_CHUNK_ROWS = 50_000
 
-# Venue token prefix, concatenated onto the Databento instrument_id to make
-# scriptToken globally unique across venues: XNAS 38 -> 11138, XCBO 637543226
-# -> 222637543226. Databento only guarantees instrument_id is unique within a
-# dataset, so the same id can name different contracts on two venues.
-#
-# The prefix is part of the key, not decoration: nothing downstream should strip
-# it to recover the raw id. Digits only, so a prefixed token still passes any
-# "is numeric" test.
-#
-# NOTE: prefixing pushes tokens past int32. Max observed today is XCBO
-# 1509950237 -> 2221509950237 (13 digits, 2.2e12) and XCME 43049829 ->
-# 33343049829; int32 tops out at 2147483647. Postgres scriptToken is already
-# BIGINT and SQLite is TEXT, so both are fine -- but any consumer holding this
-# in a 32-bit field will overflow.
-VENUE_TOKEN_PREFIX = {
-    "XNAS": "111",
-    "XCBO": "222",
-    "XCME": "333",
-}
-
-
 def prefixed_token(venue: str, instrument_id: Any) -> str:
-    """Concatenate the venue prefix onto a Databento instrument_id.
+    """Return the Databento instrument_id as scriptToken, unprefixed.
 
-    Returns the raw value unchanged for an unknown venue or a non-numeric id,
-    rather than emitting a prefix glued to garbage.
+    This used to namespace the id with a per-venue prefix (XNAS 111, XCBO 222,
+    XCME 333) because Databento only guarantees instrument_id is unique WITHIN a
+    dataset -- the same id can name different contracts on two venues -- and the
+    downstream pg symbol-master table keys on (token, trade_date) with no
+    exchange column. That prefixing is removed by request; the venue argument is
+    kept so call sites and the CSV schema are unchanged.
+
+    Consequence, stated plainly: tokens are once again only unique per venue, so
+    two venues pushed to the same table on the same trade_date can collide.
     """
     raw = str(instrument_id).strip()
     # pandas widens an int column to float when any value is missing, which
-    # renders ids as "637543226.0".
+    # renders ids as "637543226.0". Unrelated to prefixing, so it stays.
     if raw.endswith(".0"):
         raw = raw[:-2]
-    prefix = VENUE_TOKEN_PREFIX.get(venue, "")
-    if not prefix or not raw.isdigit():
-        return raw
-    return f"{prefix}{raw}"
+    return raw
 
 
 @lru_cache(maxsize=1)
@@ -499,7 +482,13 @@ def run(opts: runner.Opts) -> None:
         output_path = normalized_dir / f"{venue.upper()}-DATABENTO-normalized.csv"
         # PID-scoped staging, same rationale as the download side: two runs must
         # not share one temp path, and readers must never see a partial file.
-        temp_path = output_path.with_suffix(f".tmp.{os.getpid()}.csv")
+        #
+        # The name deliberately does NOT end in .csv. export.normalized_csv_files()
+        # globs normalized/*.csv, so a ".tmp.<pid>.csv" left behind by a killed run
+        # is picked up as if it were a finished venue file -- it gets mapped into
+        # plugin/ as a second XCME input and pushed, and since its rows are a prefix
+        # of the real file's, the append dies on the (token, trade_date) primary key.
+        temp_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
 
         total = 0
         try:

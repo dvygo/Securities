@@ -250,7 +250,10 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     # fixed ".tmp.csv" made concurrent runs fight over one path: whichever
     # finished first renamed it away, and the other died at its own rename with
     # "No such file or directory" after resolving the whole basket.
-    temp_csv = output_csv.with_suffix(f".tmp.{os.getpid()}.csv")
+    # Not ".tmp.<pid>.csv": a staging file that still ends in .csv is indistinguishable
+    # from a finished venue file to anything globbing the directory, so a killed run
+    # leaves something downstream will happily read.
+    temp_csv = output_csv.with_name(f"{output_csv.name}.tmp.{os.getpid()}")
 
     if mode == "hist":
         client = db.Historical(key=api_key)

@@ -10,8 +10,12 @@ allow-list (MIC filename prefix, e.g. XNSE/XIMC/XBOM/XNAS).
 The target table's primary key is (token, trade_date) with no exchange
 column, so a Databento instrument_id can collide with an unrelated token
 already sitting in that table (seen live: XCME token 81352 collided with a
-pre-existing row). TOKEN_PREFIX namespaces every token we push so it can't
-collide with anything not pushed by this pipeline.
+pre-existing row). This used to be handled by prepending a namespace prefix to
+every pushed token; that prefixing has been removed by request, so tokens are
+pushed as the bare instrument_id and that collision is possible again --
+both against pre-existing rows and between two venues pushed on the same
+trade_date, since Databento only guarantees instrument_id is unique within a
+dataset.
 """
 import csv
 import io
@@ -23,9 +27,9 @@ import psycopg
 from . import config, paths, runner
 from .normalize import plugin as plugin_norm
 
-# Namespaces every pushed token against the target table's pre-existing rows
-# (see module docstring) -- 4 digits, prepended as a string, e.g. 81352 -> "101081352".
-TOKEN_PREFIX = "1010"
+# Token namespacing removed by request. Tokens are now pushed as the bare
+# Databento instrument_id, so they can collide with pre-existing rows in the
+# externally-managed table again (see module docstring for the observed case).
 
 
 def _copy_append(conn: psycopg.connection.Connection, schema: str, table: str, columns: List[str], rows: List[dict]) -> int:
@@ -82,7 +86,6 @@ def run(opts: runner.Opts) -> None:
         with psycopg.connect(cfg.database_url) as conn:
             for csv_path in csv_files:
                 df = pd.read_csv(csv_path, keep_default_na=False, dtype=str)
-                df["token"] = TOKEN_PREFIX + df["token"]
                 rows = df.to_dict("records")
                 n = _copy_append(conn, cfg.schema, cfg.table, plugin_norm.PLUGIN_COLUMNS, rows)
                 print(f"    Appended {n} rows from {csv_path.name}")

@@ -23,6 +23,26 @@ SEGMENT_BY_TYPE2 = {
     "EQUITY": "CM",
 }
 
+# Plugin tokens for the Databento venues are a per-venue counter, not the
+# Databento instrument_id.
+#
+# The target pg symbol-master table keys on (token, trade_date) with no exchange
+# column, and instrument_id is only unique WITHIN a dataset -- on 2026-08-12 the
+# raw ids collide 932 times between XCME and XNAS, because EQUS ids start at 1 and
+# run straight into GLBX's low ids. Numbering each venue into its own block makes
+# that impossible by construction: the base digit keeps the venues apart and the
+# 35000 floor keeps us clear of the ids already sitting in that externally-managed
+# table.
+#
+# Databento venues only. Files from other sources (XNSE/XIMC/XBOM/...) keep the
+# token their own pipeline assigned -- this does not renumber them.
+#
+# These tokens are positional and therefore per-day: the same contract gets a
+# different number tomorrow if the universe shifts. That is intended, since the
+# primary key includes trade_date. Nothing may join on token across dates.
+PLUGIN_TOKEN_BASE = {"XNAS": "1", "XCBO": "2", "XCME": "3"}
+PLUGIN_TOKEN_START = 35000
+
 
 def _expiry_seconds(expiration) -> int:
     """Canonical `expiration` is nanoseconds since epoch UTC; pg's expirydate is seconds."""
@@ -117,6 +137,13 @@ def run(opts: runner.Opts) -> None:
             for _, row in df.iterrows()
             if row.get("scriptToken")
         ]
+
+        # Renumber the Databento venues into their own block (see PLUGIN_TOKEN_BASE).
+        # Done after the scriptToken filter so the counter has no gaps.
+        base = PLUGIN_TOKEN_BASE.get(exchange)
+        if base:
+            for i, r in enumerate(rows):
+                r["token"] = f"{base}{PLUGIN_TOKEN_START + i}"
 
         output_path = plugin_dir / csv_path.name
         out_df = pd.DataFrame(rows, columns=PLUGIN_COLUMNS) if rows else pd.DataFrame(columns=PLUGIN_COLUMNS)
