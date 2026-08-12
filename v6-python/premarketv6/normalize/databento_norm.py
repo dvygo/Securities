@@ -1,4 +1,6 @@
 """Databento normalization: GLBX/OPRA/EQUS symbol parsing and row mapping."""
+import csv
+import os
 import re
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -27,9 +29,10 @@ OCC_REGEX = re.compile(r"(\d{6})([CP])(\d{8})\s*$")
 # match this, so its absence is what identifies a plain future.
 GLBX_OPTION_REGEX = re.compile(r"\s+([CP])(\d+(?:\.\d+)?)\s*$")
 
-# TODO(xcme, next round): the symbol-string regexes below under-parse the full
-# GLBX universe. Measured on a real --all-symbols definition pull (2026-08-12,
-# 961,438 unique instruments): 349,140 rows (36%) normalize to expiration == 0.
+# TODO(xcme, still open): expiration. Measured on a real --all-symbols definition
+# pull (2026-08-12, 961,438 unique instruments): 349,140 rows (36.3%) normalize to
+# expiration == 0. Carrying instrument_class fixed classification but NOT this --
+# expiration still comes from the regex below, and the count is unchanged.
 #
 # Root cause: GLBX_MONTH_YEAR_REGEX requires a SINGLE-digit year, but a large
 # slice of GLBX uses two digits -- "BCXF27", "BCXQ26". "F27" fails to match
@@ -61,30 +64,33 @@ GLBX_OPTION_REGEX = re.compile(r"\s+([CP])(\d+(?:\.\d+)?)\s*$")
 # Same caveat applies to OPRA: parse_occ_symbol is a regex over the OCC tail,
 # and the definition path carries strike_price/expiration explicitly.
 #
-# SECOND defect, same function, independent of the year regex: map_xcme_row
-# classifies by asking "does GLBX_OPTION_REGEX match?" and calling everything
-# else a future. GLBX.MDP3 is not two-valued. It carries outright futures,
-# options on futures, exchange-listed calendar spreads, user-defined spreads
-# (UDS), and FX/commodity spots, across CME/CBOT/NYMEX/COMEX -- 650k+ symbols.
-# So today every spread, every UDS and every FX spot silently normalizes to
-# scriptInstrumentType=FUTIDX / scriptInstrumentType2=FUTURE, which is wrong,
-# and spreads/spots carry no contract month in the position the regex wants,
-# so they are also part of the 349,140 expiration==0 rows above.
+# The SECOND defect -- classifying everything as future-or-option -- is now
+# fixed: map_xcme_row prefers instrument_class (see GLBX_CLASS_TYPES) and only
+# falls back to the regex when the column is empty, which is every
+# symbology.resolve row. Measured on the same pull, that moved 154,970 rows
+# (16.1%) out of FUTURE and into FUTURE_SPREAD / OPTION_SPREAD / MIXED_SPREAD.
 #
-# InstrumentDefMsg.instrument_class settles this without any regex --
-# databento_dbn.InstrumentClass has 11 variants:
-#   BOND, CALL, COMMODITY_SPOT, FUTURE, FUTURE_SPREAD, FX_SPOT, INDEX,
-#   MIXED_SPREAD, OPTION_SPREAD, PUT, STOCK
-# That maps cleanly onto the option/future/spread/spot split we actually want,
-# and it arrives free on the definition path. Decide the canonical
-# scriptInstrumentType/scriptInstrumentType2 values for spreads and spots
-# before wiring it -- Nexus consumes these strings.
+# Observed class histogram for GLBX.MDP3, 2026-08-11, all 961,438 instruments:
+#   C CALL 380,056   P PUT 380,056   S FUTURE_SPREAD 91,981
+#   T OPTION_SPREAD 46,968   F FUTURE 46,356   M MIXED_SPREAD 16,021
+#
+# Note what is NOT there: no X (FX_SPOT), no Y (COMMODITY_SPOT), and no B/K/I.
+# GLBX.MDP3 carries no spot instruments at all on this session, so those
+# GLBX_CLASS_TYPES entries are defensive, not load-bearing -- do not treat them
+# as evidence that spots flow through this venue.
+#
+# The scriptInstrumentType/scriptInstrumentType2 strings chosen for the spread
+# classes are a guess at the house convention and want confirming: Nexus
+# consumes them.
 
 # US venues (XCME/XCBO) mirror Databento's own wire format: prices are
 # fixed-point with a 1e-9 scale (e.g. a $1 price is the int64 1_000_000_000).
 # Must be passed explicitly to price.scale_price -- its default scale is
 # India's INDIA_PRICE_SCALE (1e5) for the Fyers/rupee path, not this one.
 US_PRICE_SCALE = 10**9
+
+# Raw rows read and mapped before the normalizer appends a batch to the output.
+NORMALIZE_CHUNK_ROWS = 50_000
 
 # Venue token prefix, concatenated onto the Databento instrument_id to make
 # scriptToken globally unique across venues: XNAS 38 -> 11138, XCBO 637543226
@@ -259,6 +265,22 @@ def _resolve_symbol_id_fallback(row: Dict[str, Any]) -> tuple[str, str, str]:
     return stype_in, stype_out, stype_out or stype_in
 
 
+GLBX_CLASS_TYPES = {
+    # instrument_class -> (scriptInstrumentType, scriptInstrumentType2)
+    "F": ("FUTIDX", "FUTURE"),
+    "C": ("OPTIDX", "OPTION"),
+    "P": ("OPTIDX", "OPTION"),
+    "S": ("FUTIDX", "FUTURE_SPREAD"),
+    "T": ("OPTIDX", "OPTION_SPREAD"),
+    "M": ("FUTIDX", "MIXED_SPREAD"),
+    "X": ("FXSPOT", "SPOT"),
+    "Y": ("COMSPOT", "SPOT"),
+    "B": ("BOND", "BOND"),
+    "K": ("EQUITY", "EQUITY"),
+    "I": ("INDEX", "INDEX"),
+}
+
+
 def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     """Map a GLBX/XCME symbology record to canonical schema.
 
@@ -266,6 +288,14 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     space (e.g. "raw_symbol"); when stype_out is "instrument_id" that column
     holds the numeric instrument id instead, so stype_in_symbol is the only
     reliable symbol text in that case.
+
+    Classification prefers instrument_class, which only the definition path can
+    supply. GLBX is not the two-valued future/option universe the symbol regex
+    assumes -- it also carries calendar spreads, user-defined spreads, FX and
+    commodity spots. Those have no C/P suffix, so regex-only classification
+    calls every one of them a plain future. When the column is absent (any
+    symbology.resolve row) the old regex branch still decides, so basket runs
+    are unaffected.
     """
     stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
@@ -280,21 +310,35 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         "tradingSessionUTC": session.trading_session_for_xcme(ref_date),
     }
 
+    instrument_class = str(row.get("instrument_class", "") or "").strip().upper()
+
+    # Strike and option type still come from the symbol: the C/P suffix carries
+    # both, and it is present on exactly the rows instrument_class calls an
+    # option. Only the future-or-not decision moves to instrument_class.
     opt_match = GLBX_OPTION_REGEX.search(symbol)
     if opt_match:
         base = symbol[: opt_match.start()].strip()
-        result["scriptInstrumentType"] = "OPTIDX"
-        result["scriptInstrumentType2"] = "OPTION"
         result["optionType"] = "CALL" if opt_match.group(1) == "C" else "PUT"
         result["strike"] = price.scale_price(float(opt_match.group(2)), US_PRICE_SCALE)
-        result["expiration"] = glbx_expiration_ns(base, ref_date)
     else:
         base = symbol
+        result["optionType"] = ""
+        result["strike"] = 0
+
+    if instrument_class in GLBX_CLASS_TYPES:
+        result["scriptInstrumentType"], result["scriptInstrumentType2"] = GLBX_CLASS_TYPES[instrument_class]
+        # instrument_class is authoritative about being an option even when the
+        # symbol carries no C/P suffix, so take the side from it in that case.
+        if instrument_class in ("C", "P") and not result["optionType"]:
+            result["optionType"] = "CALL" if instrument_class == "C" else "PUT"
+    elif opt_match:
+        result["scriptInstrumentType"] = "OPTIDX"
+        result["scriptInstrumentType2"] = "OPTION"
+    else:
         result["scriptInstrumentType"] = "FUTIDX"
         result["scriptInstrumentType2"] = "FUTURE"
-        result["strike"] = 0
-        result["optionType"] = ""
-        result["expiration"] = glbx_expiration_ns(symbol, ref_date)
+
+    result["expiration"] = glbx_expiration_ns(base, ref_date)
 
     result["underlying_root"] = base
     result["underlying"] = base
@@ -413,14 +457,20 @@ VENUE_MAPPERS = {
 
 
 def run(opts: runner.Opts) -> None:
-    """Normalize Databento data: read CSV, map symbols, write normalized CSVs."""
+    """Normalize Databento data: stream each raw CSV, map symbols, append output.
+
+    Reads and writes in chunks rather than whole files. An --all-symbols GLBX
+    pull is ~961k rows, which the old read_csv/iterrows/DataFrame path held
+    three times over -- as a source frame, as a list of mapped dicts, and again
+    as an output frame -- before writing anything. Mirrors the streaming the
+    download side already does, for the same reason.
+    """
     if opts.dry_run:
         print("DRY RUN: Would normalize Databento data")
         return
 
     print("  Normalizing Databento data...")
     normalized_dir = paths.normalized_dir(opts.date_dir)
-    raw_dir = paths.raw_dir(opts.date_dir)
     ref_date = datetime.strptime(opts.date_dir, "%Y%m%d").date()
 
     normalized_dir.mkdir(parents=True, exist_ok=True)
@@ -433,22 +483,44 @@ def run(opts: runner.Opts) -> None:
             continue
 
         print(f"    Processing {venue}...")
+        output_path = normalized_dir / f"{venue.upper()}-DATABENTO-normalized.csv"
+        # PID-scoped staging, same rationale as the download side: two runs must
+        # not share one temp path, and readers must never see a partial file.
+        temp_path = output_path.with_suffix(f".tmp.{os.getpid()}.csv")
 
+        total = 0
         try:
-            df = pd.read_csv(csv_path)
-            rows = []
-
-            for _, row in df.iterrows():
-                norm_row = mapper(row.to_dict(), ref_date)
-                if norm_row.get("script"):
-                    rows.append(norm_row)
-
-            # Write normalized CSV
-            output_path = normalized_dir / f"{venue.upper()}-DATABENTO-normalized.csv"
-            if rows:
-                out_df = pd.DataFrame(rows)
-                out_df = out_df[paths.NORMALIZED_COLUMNS]
-                out_df.to_csv(output_path, index=False, encoding="utf-8-sig")
-                print(f"      Wrote {len(out_df)} rows")
+            with open(temp_path, "w", newline="", encoding="utf-8-sig") as fh:
+                writer = csv.DictWriter(
+                    fh, fieldnames=paths.NORMALIZED_COLUMNS, extrasaction="ignore", restval=""
+                )
+                writer.writeheader()
+                # dtype=str keeps ids and symbols verbatim: pandas otherwise widens
+                # an int column to float wherever a value is missing, which is what
+                # turned instrument ids into "637543226.0".
+                for frame in pd.read_csv(
+                    csv_path, chunksize=NORMALIZE_CHUNK_ROWS, dtype=str, keep_default_na=False
+                ):
+                    batch = []
+                    for row in frame.to_dict("records"):
+                        norm_row = mapper(row, ref_date)
+                        if norm_row.get("script"):
+                            batch.append(norm_row)
+                    if not batch:
+                        continue
+                    writer.writerows(batch)
+                    fh.flush()
+                    total += len(batch)
+                    print(f"      {total} row(s)...", flush=True)
         except Exception as e:
             print(f"      Error processing {csv_path}: {e}")
+            temp_path.unlink(missing_ok=True)
+            continue
+
+        if total:
+            temp_path.replace(output_path)
+            print(f"      Wrote {total} rows")
+        else:
+            # A header-only file would look like a valid empty venue downstream.
+            temp_path.unlink(missing_ok=True)
+            print(f"      No rows for {venue}")

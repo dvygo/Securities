@@ -51,6 +51,10 @@ MAPPING_COLUMNS = [
     "stype_out",
     "start_ts",
     "end_ts",
+    # Only the definition path can fill this -- symbology.resolve returns ids and
+    # dates, never an instrument's class. Left empty on the resolve path, which is
+    # what tells the normalizer to fall back to parsing the symbol string.
+    "instrument_class",
 ]
 
 
@@ -277,7 +281,9 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     total = 0
     try:
         with open(temp_csv, "w", newline="", encoding="utf-8-sig") as fh:
-            writer = csv.DictWriter(fh, fieldnames=MAPPING_COLUMNS, extrasaction="ignore")
+            # restval="" so the resolve path, which cannot fill instrument_class,
+            # writes it empty instead of raising on the missing key.
+            writer = csv.DictWriter(fh, fieldnames=MAPPING_COLUMNS, extrasaction="ignore", restval="")
             writer.writeheader()
             fh.flush()
             for batch_rows in batches:
@@ -449,39 +455,65 @@ def _iter_definition_batches(
     size = client.metadata.get_billable_size(**meta_args)
     print(f"    {count:,} record(s), {size / 1e6:.1f} MB to download...", flush=True)
 
-    store = client.timeseries.get_range(
-        dataset=venue_cfg.dataset,
-        symbols=ALL_SYMBOLS_SENTINEL,
-        stype_in=stype_in,
-        schema="definition",
-        start=start_s,
-    )
-
     # Definitions restate the same instrument intraday, so dedupe on instrument_id.
     # Keeping ids only (not rows) is what lets this stream: ~1M ints, not ~1M dicts.
+    #
+    # The set doubles as the resume marker. This request is a single ~600 MB
+    # transfer and the gateway does 504 on it, so it gets the same retry budget the
+    # resolve path has. A retry re-reads the day from the start, but every id
+    # already emitted is in `seen` by then, so only rows the caller has not been
+    # given yet are yielded -- the restart cannot duplicate what is already on disk.
     seen: set[int] = set()
-    chunk: list[dict] = []
     total = 0
-    for record in store:
-        if not isinstance(record, db.InstrumentDefMsg):
-            continue
-        if record.instrument_id in seen:
-            continue
-        seen.add(record.instrument_id)
-        chunk.append({
-            "instrument_id": record.instrument_id,
-            "stype_in_symbol": record.raw_symbol,
-            "stype_out_symbol": record.instrument_id,
-            "stype_in": stype_in,
-            "stype_out": "instrument_id",
-            "start_ts": record.pretty_activation,
-            "end_ts": record.pretty_expiration,
-        })
-        if len(chunk) >= DEFINITION_CHUNK_ROWS:
-            total += len(chunk)
-            print(f"    {total:,} unique instrument(s)...", flush=True)
-            yield chunk
-            chunk = []
+
+    for attempt in range(1, HIST_RESOLVE_RETRIES + 1):
+        chunk: list[dict] = []
+        try:
+            store = client.timeseries.get_range(
+                dataset=venue_cfg.dataset,
+                symbols=ALL_SYMBOLS_SENTINEL,
+                stype_in=stype_in,
+                schema="definition",
+                start=start_s,
+            )
+            for record in store:
+                if not isinstance(record, db.InstrumentDefMsg):
+                    continue
+                if record.instrument_id in seen:
+                    continue
+                seen.add(record.instrument_id)
+                chunk.append({
+                    "instrument_id": record.instrument_id,
+                    "stype_in_symbol": record.raw_symbol,
+                    "stype_out_symbol": record.instrument_id,
+                    "stype_in": stype_in,
+                    "stype_out": "instrument_id",
+                    "start_ts": record.pretty_activation,
+                    "end_ts": record.pretty_expiration,
+                    # An InstrumentClass enum, not a str -- str() it explicitly so
+                    # the CSV carries the one-char code ("S") and never the repr
+                    # ("<InstrumentClass.FUTURE_SPREAD: 'S'>"). Codes: F future,
+                    # C call, P put, S/T/M spreads, X FX spot, Y commodity spot,
+                    # B bond, K stock, I index.
+                    "instrument_class": str(record.instrument_class),
+                })
+                if len(chunk) >= DEFINITION_CHUNK_ROWS:
+                    total += len(chunk)
+                    print(f"    {total:,} unique instrument(s)...", flush=True)
+                    yield chunk
+                    chunk = []
+            break
+        except Exception as e:
+            # Hand over whatever this attempt completed before failing; it is
+            # deduped and valid, and dropping it would only mean re-fetching it.
+            if chunk:
+                total += len(chunk)
+                yield chunk
+            if attempt == HIST_RESOLVE_RETRIES:
+                raise
+            print(f"    attempt {attempt}/{HIST_RESOLVE_RETRIES} failed after {total:,} row(s): "
+                  f"{str(e)[:80]}; retrying in {HIST_RESOLVE_RETRY_DELAY_SEC}s", flush=True)
+            time.sleep(HIST_RESOLVE_RETRY_DELAY_SEC)
 
     if chunk:
         total += len(chunk)
