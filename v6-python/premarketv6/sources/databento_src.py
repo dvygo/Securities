@@ -3,6 +3,8 @@
 Matches v4-golang's internal/databento exactly:
   - dataset names: GLBX.MDP3 (XCME), OPRA.PILLAR (XCBO), EQUS.MINI (XNAS)
   - stype_in defaults: XCME=parent (raw_symbol if --all-symbols), XCBO=parent, XNAS=raw_symbol
+  - --all-symbols in hist mode only works on EQUS.MINI (XNAS); GLBX.MDP3 and
+    OPRA.PILLAR reject ALL_SYMBOLS at symbology.resolve
   - stype_out sent to API is always instrument_id
   - date range computed from metadata.get_dataset_range() minus a lookback window
   - output: YYYYMMDD/raw/{VENUE}-DATABENTO.csv with columns matching
@@ -21,6 +23,13 @@ import pandas as pd
 from .. import config, paths, runner
 
 ALL_SYMBOLS_SENTINEL = "ALL_SYMBOLS"
+
+# symbology.resolve rejects ALL_SYMBOLS on most datasets with
+# 422 symbology_all_symbols_with_incompatible_dataset -- the response is a single
+# JSON blob and GLBX/OPRA carry ~1-2M instruments a day, so only EQUS.MINI (~13k)
+# is accepted. Datasets listed here take the cheap resolve path for --all-symbols;
+# everything else falls back to the definition schema (see _fetch_hist_definitions).
+ALL_SYMBOLS_HIST_DATASETS = {"EQUS.MINI"}
 
 MAPPING_COLUMNS = [
     "instrument_id",
@@ -164,8 +173,24 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     )
     stype_in = opts.stype_in or default_stype_in(venue, opts.all_symbols)
 
+    # symbology.resolve only accepts ALL_SYMBOLS on small datasets; elsewhere the
+    # definition schema is the supported route to the full instrument universe.
+    use_definitions = (
+        opts.all_symbols
+        and mode == "hist"
+        and venue_cfg.dataset not in ALL_SYMBOLS_HIST_DATASETS
+    )
+    if use_definitions:
+        # The definition path writes record.raw_symbol into stype_in_symbol, so the
+        # stype_in column has to say raw_symbol or the CSV mislabels its own contents
+        # (xcbo would otherwise carry the "parent" default). ALL_SYMBOLS bypasses
+        # symbol resolution anyway -- raw_symbol and parent return identical records.
+        stype_in = "raw_symbol"
+
     if opts.dry_run:
-        print(f"DRY RUN: Would download {venue} {mode} stype_in={stype_in} for symbols: {symbols}")
+        route = "definition schema" if use_definitions else "symbology.resolve"
+        print(f"DRY RUN: Would download {venue} {mode} via {route} "
+              f"stype_in={stype_in} for symbols: {symbols}")
         return
 
     raw_dir = paths.raw_dir(opts.date_dir)
@@ -177,10 +202,18 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     try:
         if mode == "hist":
             client = db.Historical(key=api_key)
-            rows = _fetch_hist(
-                client, venue_cfg, symbols, stype_in, opts.date_dir,
-                cfg.hist_lookback_days, opts.hist_range,
-            )
+            if use_definitions:
+                rows = _fetch_definitions(
+                    client, venue_cfg, stype_in, opts.date_dir,
+                    cfg.hist_lookback_days, opts.hist_range,
+                )
+            else:
+                batch_size = cfg.hist_batch_size if opts.batch_size is None else opts.batch_size
+                rows = _fetch_hist(
+                    client, venue_cfg, symbols, stype_in, opts.date_dir,
+                    cfg.hist_lookback_days, opts.hist_range, batch_size,
+                    cfg.hist_retries, cfg.hist_retry_delay_sec,
+                )
         elif mode == "live":
             rows = _fetch_live(
                 api_key, venue_cfg, symbols, stype_in, opts.live_start,
@@ -192,7 +225,7 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
         if rows:
             df = pd.DataFrame(rows, columns=MAPPING_COLUMNS)
             df.to_csv(temp_csv, index=False, encoding="utf-8-sig")
-            temp_csv.rename(output_csv)
+            temp_csv.replace(output_csv)  # replace, not rename: rename fails on Windows if target exists
             print(f"Wrote {len(df)} rows to {output_csv}")
         else:
             print(f"No data retrieved for {venue} {mode}")
@@ -211,40 +244,170 @@ def _fetch_hist(
     as_of: str,
     lookback_days: int,
     explicit_range: Optional[str] = None,
+    batch_size: int = 5,
+    retries: int = 3,
+    retry_delay_sec: float = 5.0,
 ) -> list[dict]:
-    """Single batch symbology.resolve() call, matching HistoricalSymbolMappings in v4-golang."""
+    """
+    Chunked symbology.resolve() calls, batch_size symbols per request.
+
+    One request for the whole basket stalls on parent symbology: a single OPRA/GLBX
+    parent expands to thousands of contracts, so a whole basket in one call is a
+    multi-hundred-thousand-row response the gateway will 504 on. Chunking keeps each
+    request bounded; batch_size <= 0 sends everything in one request (the old
+    behaviour).
+
+    Each batch also retries independently: the 504s are load-dependent, not purely
+    size-dependent (a 5-parent batch has been seen to succeed while a 3-parent one
+    timed out), so a smaller batch alone is not enough to make this reliable.
+    """
     start_date, end_date = resolve_hist_range(client, venue_cfg.dataset, as_of, lookback_days, explicit_range)
 
-    print(f"  Resolving {venue_cfg.venue_name} hist: {len(symbols)} symbol(s), "
+    if batch_size > 0:
+        chunks = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+    else:
+        chunks = [symbols]
+
+    print(f"  Resolving {venue_cfg.venue_name} hist: {len(symbols)} symbol(s) in {len(chunks)} batch(es) "
+          f"of up to {batch_size if batch_size > 0 else len(symbols)}, "
           f"stype_in={stype_in}, start={start_date} (no end_date, defaults to latest available)")
 
-    result = client.symbology.resolve(
-        dataset=venue_cfg.dataset,
-        symbols=symbols,
-        stype_in=stype_in,
-        stype_out="instrument_id",
-        start_date=start_date,
-    )
+    rows: list[dict] = []
+    not_found: list[str] = []
+    failed: list[tuple[list[str], Exception]] = []
 
-    rows = []
-    mappings = result.get("result", {})
-    for stype_in_symbol, entries in mappings.items():
-        for entry in entries:
-            rows.append({
-                "instrument_id": entry.get("s", ""),
-                "stype_in_symbol": stype_in_symbol,
-                "stype_out_symbol": entry.get("s", ""),
-                "stype_in": stype_in,
-                "stype_out": "instrument_id",
-                "start_ts": entry.get("d0", ""),
-                "end_ts": entry.get("d1", ""),
-            })
+    attempts = max(retries, 1)
+    for i, chunk in enumerate(chunks, 1):
+        result = None
+        last_err: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                result = client.symbology.resolve(
+                    dataset=venue_cfg.dataset,
+                    symbols=chunk,
+                    stype_in=stype_in,
+                    stype_out="instrument_id",
+                    start_date=start_date,
+                )
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < attempts:
+                    delay = retry_delay_sec * attempt  # linear backoff
+                    print(f"    batch {i}/{len(chunks)} attempt {attempt}/{attempts} failed: {e}; "
+                          f"retry in {delay:.0f}s")
+                    time.sleep(delay)
 
-    not_found = result.get("not_found", [])
+        if last_err is not None or result is None:
+            print(f"    batch {i}/{len(chunks)} {chunk}: FAILED after {attempts} attempt(s): {last_err}")
+            failed.append((chunk, last_err))
+            continue
+
+        chunk_rows = []
+        mappings = result.get("result", {})
+        for stype_in_symbol, entries in mappings.items():
+            for entry in entries:
+                chunk_rows.append({
+                    "instrument_id": entry.get("s", ""),
+                    "stype_in_symbol": stype_in_symbol,
+                    "stype_out_symbol": entry.get("s", ""),
+                    "stype_in": stype_in,
+                    "stype_out": "instrument_id",
+                    "start_ts": entry.get("d0", ""),
+                    "end_ts": entry.get("d1", ""),
+                })
+
+        rows.extend(chunk_rows)
+        not_found.extend(result.get("not_found", []))
+        print(f"    batch {i}/{len(chunks)} {chunk}: {len(chunk_rows)} row(s) "
+              f"(running total {len(rows)})")
+
     if not_found:
         print(f"    Warning: not found: {not_found}")
 
+    # Every batch failing is a hard error: writing an empty CSV over a good one
+    # would look like a clean run that legitimately found nothing.
+    if failed and not rows:
+        raise RuntimeError(
+            f"all {len(chunks)} symbology.resolve batch(es) failed; first error: {failed[0][1]}"
+        )
+    if failed:
+        print(f"    Warning: {len(failed)}/{len(chunks)} batch(es) failed, output is partial: "
+              f"{[c for c, _ in failed]}")
+
     return rows
+
+
+def _fetch_definitions(
+    client: db.Historical,
+    venue_cfg: VenueConfig,
+    stype_in: str,
+    as_of: str,
+    lookback_days: int,
+    explicit_range: Optional[str] = None,
+) -> list[dict]:
+    """
+    ALL_SYMBOLS via the `definition` schema, for datasets symbology.resolve refuses.
+
+    Emits the same MAPPING_COLUMNS shape resolve() produces, so normalize-databento
+    consumes it unchanged: stype_in_symbol carries the ticker text and
+    stype_out_symbol the numeric id, which is what _resolve_symbol_id_fallback
+    expects for a stype_out="instrument_id" row.
+
+    Only the single most recent session is requested, not the full lookback window:
+    definitions are a daily snapshot of the instrument universe, so N days would be
+    N copies of the same instruments (GLBX alone is ~1.1M records / ~577 MB a day).
+    Records are deduped on instrument_id since definitions restate intraday.
+    """
+    # No `end` on purpose: the API forward-fills it from `start` at the request's
+    # resolution, so a day-resolution start with no end is exactly one session.
+    # The forward-filled end is still bounds-checked though, so `start` has to be the
+    # last *complete* session or the implied end lands past what's published and the
+    # request 422s with data_end_after_available_end. The dataset's available end is a
+    # timestamp (e.g. 2026-08-12 05:20Z, mid-session), so its own date is incomplete --
+    # step back one day, which also holds when the end is exactly midnight since the
+    # forward-filled end is exclusive.
+    available_end = pd.Timestamp(client.metadata.get_dataset_range(dataset=venue_cfg.dataset)["end"])
+    start_s = str(available_end.date() - dt.timedelta(days=1))
+
+    print(f"  Resolving {venue_cfg.venue_name} hist: ALL_SYMBOLS via definition schema, "
+          f"stype_in={stype_in}, start={start_s} (no end, one session)")
+
+    count = client.metadata.get_record_count(
+        dataset=venue_cfg.dataset, symbols=ALL_SYMBOLS_SENTINEL, stype_in=stype_in,
+        schema="definition", start=start_s,
+    )
+    size = client.metadata.get_billable_size(
+        dataset=venue_cfg.dataset, symbols=ALL_SYMBOLS_SENTINEL, stype_in=stype_in,
+        schema="definition", start=start_s,
+    )
+    print(f"    {count:,} record(s), {size / 1e6:.1f} MB to download...")
+
+    store = client.timeseries.get_range(
+        dataset=venue_cfg.dataset,
+        symbols=ALL_SYMBOLS_SENTINEL,
+        stype_in=stype_in,
+        schema="definition",
+        start=start_s,
+    )
+
+    by_id: dict[int, dict] = {}
+    for record in store:
+        if not isinstance(record, db.InstrumentDefMsg):
+            continue
+        by_id[record.instrument_id] = {
+            "instrument_id": record.instrument_id,
+            "stype_in_symbol": record.raw_symbol,
+            "stype_out_symbol": record.instrument_id,
+            "stype_in": stype_in,
+            "stype_out": "instrument_id",
+            "start_ts": record.pretty_activation,
+            "end_ts": record.pretty_expiration,
+        }
+
+    print(f"    {len(by_id):,} unique instrument(s) after dedupe on instrument_id")
+    return list(by_id.values())
 
 
 def _fetch_live(

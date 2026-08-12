@@ -27,6 +27,7 @@ class Opts:
     stype_in: Optional[str] = None
     live_start: Optional[str] = None
     hist_range: Optional[str] = None  # raw 16-digit YYYYMMDDYYYYMMDD, unparsed
+    batch_size: Optional[int] = None  # symbols per symbology.resolve call; None = config default
 
 
 _RANGE_RE = re.compile(r"^(\d{8})(\d{8})$")

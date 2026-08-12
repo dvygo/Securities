@@ -26,6 +26,59 @@ OCC_REGEX = re.compile(r"(\d{6})([CP])(\d{8})\s*$")
 # match this, so its absence is what identifies a plain future.
 GLBX_OPTION_REGEX = re.compile(r"\s+([CP])(\d+(?:\.\d+)?)\s*$")
 
+# TODO(xcme, next round): the symbol-string regexes below under-parse the full
+# GLBX universe. Measured on a real --all-symbols definition pull (2026-08-12,
+# 961,438 unique instruments): 349,140 rows (36%) normalize to expiration == 0.
+#
+# Root cause: GLBX_MONTH_YEAR_REGEX requires a SINGLE-digit year, but a large
+# slice of GLBX uses two digits -- "BCXF27", "BCXQ26". "F27" fails to match
+# (the regex wants one digit after the month code), so glbx_expiration_ns
+# returns its no-match 0 and the contract lands with no expiration at all.
+# This was invisible before because the basket path only ever fed it ~28
+# hand-picked front-month roots, which all happen to be single-digit.
+#
+# Two ways out, in increasing order of correctness:
+#
+#  1. Widen to ([FGHJKMNQUVXZ])(\d{1,2})$ and extend the decade-rollover logic
+#     in glbx_expiration_ns to treat a 2-digit group as an absolute year rather
+#     than a decade offset. Cheap, but still *deriving* what we were handed.
+#
+#  2. Stop deriving. The --all-symbols definition path already carries the
+#     authoritative values -- every one of those 349,140 rows has a real
+#     expiration sitting in the raw CSV's end_ts (from record.pretty_expiration),
+#     e.g. BCXF27 -> 2027-01-14 18:01Z. Widen MAPPING_COLUMNS to carry
+#     instrument_class / strike_price / expiration through from InstrumentDefMsg
+#     and have the mappers prefer them.
+#
+# Option 2 cannot be done by blindly reading end_ts here: the column is
+# overloaded. On the definition path it is the contract's expiration; on the
+# symbology.resolve path (which EQUS still uses, and which every basket run
+# uses) it is d1, the mapping VALIDITY window end -- an unrelated date. Any fix
+# has to distinguish the two sources before trusting the column, otherwise it
+# corrupts the resolve venues to fix the definition one.
+#
+# Same caveat applies to OPRA: parse_occ_symbol is a regex over the OCC tail,
+# and the definition path carries strike_price/expiration explicitly.
+#
+# SECOND defect, same function, independent of the year regex: map_xcme_row
+# classifies by asking "does GLBX_OPTION_REGEX match?" and calling everything
+# else a future. GLBX.MDP3 is not two-valued. It carries outright futures,
+# options on futures, exchange-listed calendar spreads, user-defined spreads
+# (UDS), and FX/commodity spots, across CME/CBOT/NYMEX/COMEX -- 650k+ symbols.
+# So today every spread, every UDS and every FX spot silently normalizes to
+# scriptInstrumentType=FUTIDX / scriptInstrumentType2=FUTURE, which is wrong,
+# and spreads/spots carry no contract month in the position the regex wants,
+# so they are also part of the 349,140 expiration==0 rows above.
+#
+# InstrumentDefMsg.instrument_class settles this without any regex --
+# databento_dbn.InstrumentClass has 11 variants:
+#   BOND, CALL, COMMODITY_SPOT, FUTURE, FUTURE_SPREAD, FX_SPOT, INDEX,
+#   MIXED_SPREAD, OPTION_SPREAD, PUT, STOCK
+# That maps cleanly onto the option/future/spread/spot split we actually want,
+# and it arrives free on the definition path. Decide the canonical
+# scriptInstrumentType/scriptInstrumentType2 values for spreads and spots
+# before wiring it -- Nexus consumes these strings.
+
 # US venues (XCME/XCBO) mirror Databento's own wire format: prices are
 # fixed-point with a 1e-9 scale (e.g. a $1 price is the int64 1_000_000_000).
 # Must be passed explicitly to price.scale_price -- its default scale is

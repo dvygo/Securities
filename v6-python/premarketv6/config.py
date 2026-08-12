@@ -20,6 +20,14 @@ class DatabentoCfg:
     live_retry_delay_sec: int = 2
     max_maps: int = 100000
     hist_lookback_days: int = 7
+    # symbology.resolve is chunked this many symbols per request: a parent symbol
+    # expands to tens of thousands of contracts on OPRA/GLBX, so one big call
+    # stalls. 0 or less means "one request, all symbols".
+    hist_batch_size: int = 5
+    # Parent resolves draw a 504 from the gateway even at small batch sizes, and
+    # it is load-dependent rather than size-dependent, so each batch retries.
+    hist_retries: int = 3
+    hist_retry_delay_sec: int = 5
 
 
 @dataclass
@@ -74,7 +82,8 @@ def load_databento() -> DatabentoCfg:
             keys[exchange] = override
 
     live_seconds, live_retries, live_retry_delay_sec = 10, 3, 2
-    max_maps, hist_lookback_days = 100000, 7
+    max_maps, hist_lookback_days, hist_batch_size = 100000, 7, 5
+    hist_retries, hist_retry_delay_sec = 3, 5
 
     config_file = paths.config_ini()
     if config_file.exists():
@@ -87,6 +96,9 @@ def load_databento() -> DatabentoCfg:
             live_retry_delay_sec = section.getint("live_retry_delay_sec", live_retry_delay_sec)
             max_maps = section.getint("max_maps", max_maps)
             hist_lookback_days = section.getint("hist_lookback_days", hist_lookback_days)
+            hist_batch_size = section.getint("hist_batch_size", hist_batch_size)
+            hist_retries = section.getint("hist_retries", hist_retries)
+            hist_retry_delay_sec = section.getint("hist_retry_delay_sec", hist_retry_delay_sec)
 
     return DatabentoCfg(
         keys=keys,
@@ -95,6 +107,9 @@ def load_databento() -> DatabentoCfg:
         live_retry_delay_sec=live_retry_delay_sec,
         max_maps=max_maps,
         hist_lookback_days=hist_lookback_days,
+        hist_batch_size=hist_batch_size,
+        hist_retries=hist_retries,
+        hist_retry_delay_sec=hist_retry_delay_sec,
     )
 
 
