@@ -74,10 +74,23 @@ GLBX_OPTION_REGEX = re.compile(r"\s+([CP])(\d+(?:\.\d+)?)\s*$")
 #   C CALL 380,056   P PUT 380,056   S FUTURE_SPREAD 91,981
 #   T OPTION_SPREAD 46,968   F FUTURE 46,356   M MIXED_SPREAD 16,021
 #
-# Note what is NOT there: no X (FX_SPOT), no Y (COMMODITY_SPOT), and no B/K/I.
-# GLBX.MDP3 carries no spot instruments at all on this session, so those
-# GLBX_CLASS_TYPES entries are defensive, not load-bearing -- do not treat them
-# as evidence that spots flow through this venue.
+# Note what is NOT there on this session: no X (FX_SPOT), no Y, no B/K/I.
+#
+# That absence is NOT a reason to drop the X entry from GLBX_CLASS_TYPES. Databento
+# split FX spots out of the futures class into instrument_class=X in the CME
+# normalization change that reached production 2026-08-08, and this feed is already
+# serving that normalization -- confirmed on 2026-08-11 data, where spread records
+# carry the per-leg fields introduced by the same rollout (ESH7-ESM7 has
+# leg_count=2, leg_raw_symbol='ESH7'). So X is the correct and current place to
+# look; CME simply listed no FX spot instruments in this session's definitions, or
+# they sit outside this key's entitlement. Keep the mapping: when a spot does
+# appear it must not silently fall through to FUTURE, which is the exact bug the
+# 2026-08-08 change was made to prevent.
+#
+# The same rollout also added leg_count / leg_raw_symbol / leg_instrument_class /
+# leg_side / leg_ratio_*, which describe a spread's legs directly. Nothing here
+# reads them yet -- a spread's underlying is still the symbol text -- but they are
+# the authoritative source if spread legs ever need modelling.
 #
 # The scriptInstrumentType/scriptInstrumentType2 strings chosen for the spread
 # classes are a guess at the house convention and want confirming: Nexus
