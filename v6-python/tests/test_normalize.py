@@ -1,7 +1,10 @@
 """Unit tests for normalization modules."""
+from datetime import date, datetime, timezone
+
 import pytest
 
-from premarketv6.normalize import databento_norm, fields, price, session
+from premarketv6 import paths
+from premarketv6.normalize import broker_script, databento_norm, fields, price, session
 from premarketv6.sources import fyers_src
 
 
@@ -158,6 +161,134 @@ class TestFyersNormalization:
         assert result["script"] == "BANKNIFTY-JAN25FUT"
         assert result["scriptInstrumentType"] == "FUTURE"
         assert result["lotSize"] == 15
+
+
+class TestVenueTokenPrefix:
+    """scriptToken venue prefixing (databento_norm.prefixed_token)."""
+
+    def test_prefix_per_venue(self):
+        assert databento_norm.prefixed_token("XNAS", 38) == "11138"
+        assert databento_norm.prefixed_token("XCBO", 637543226) == "222637543226"
+        assert databento_norm.prefixed_token("XCME", 2544437) == "3332544437"
+
+    def test_result_is_still_all_digits(self):
+        """No separator: a prefixed token must keep passing an is-numeric test."""
+        assert databento_norm.prefixed_token("XCBO", 637543226).isdigit()
+
+    def test_pandas_float_widening_is_stripped(self):
+        """pandas renders an int column as float when any value is missing."""
+        assert databento_norm.prefixed_token("XNAS", "38.0") == "11138"
+
+    def test_unknown_venue_passes_through(self):
+        assert databento_norm.prefixed_token("XNSE", 12345) == "12345"
+
+    def test_non_numeric_id_is_not_prefixed(self):
+        """Better a bare bad id than a prefix glued to garbage."""
+        assert databento_norm.prefixed_token("XNAS", "not-an-id") == "not-an-id"
+
+    def test_prefixed_tokens_exceed_int32(self):
+        """Pins the range change: XCBO/XCME tokens no longer fit a 32-bit field,
+        so any consumer must hold scriptToken as int64 or text."""
+        token = int(databento_norm.prefixed_token("XCBO", 1509950237))
+        assert token == 2221509950237
+        assert token > 2**31 - 1
+        assert token < 2**63 - 1
+
+    def test_venues_stay_disjoint_for_a_shared_instrument_id(self):
+        """The whole point: the same Databento id on two venues must not collide."""
+        ids = {databento_norm.prefixed_token(v, 12345) for v in ("XNAS", "XCBO", "XCME")}
+        assert len(ids) == 3
+
+    def test_mappers_emit_prefixed_tokens(self):
+        common = {"stype_out": "instrument_id"}
+        xnas = databento_norm.map_xnas_row({**common, "stype_in_symbol": "AAPL", "instrument_id": 38}, date(2026, 8, 3))
+        xcbo = databento_norm.map_xcbo_row(
+            {**common, "stype_in_symbol": "META  260918C00705000", "instrument_id": 637543226}, date(2026, 8, 3))
+        xcme = databento_norm.map_xcme_row({**common, "stype_in_symbol": "ESZ6", "instrument_id": 10252}, date(2026, 8, 3))
+        assert xnas["scriptToken"] == "11138"
+        assert xcbo["scriptToken"] == "222637543226"
+        assert xcme["scriptToken"] == "33310252"
+
+
+class TestBrokerScript:
+    """brokerScript1 derivation (normalize/broker_script.py)."""
+
+    # 2026-09-01 and 2026-08-01 UTC, the resolved expirations for a *U6 / *Q6 contract.
+    EXP_2026_09 = 1788220800 * 10**9
+    EXP_2026_08 = 1785542400 * 10**9
+
+    def test_equity_is_exact_copy_of_script(self):
+        assert broker_script.from_equity("AAPL") == "AAPL"
+
+    def test_glbx_future(self):
+        assert broker_script.from_glbx("ESU6", self.EXP_2026_09) == "ES/U26"
+
+    def test_glbx_option(self):
+        assert broker_script.from_glbx("E1AQ6 C7545", self.EXP_2026_08) == "E1A/Q26/7545C"
+
+    def test_occ_option_keeps_fractional_strike(self):
+        symbol = "AAPL  260803C00302500"
+        parsed = databento_norm.parse_occ_symbol(symbol)
+        assert broker_script.from_occ(symbol, parsed) == "AAPL/260803/302.5C"
+
+    def test_occ_option_drops_trailing_zeros(self):
+        symbol = "META  260918C00705000"
+        parsed = databento_norm.parse_occ_symbol(symbol)
+        assert broker_script.from_occ(symbol, parsed) == "META/260918/705C"
+
+    def test_occ_put(self):
+        symbol = "META  271217P00650000"
+        parsed = databento_norm.parse_occ_symbol(symbol)
+        assert broker_script.from_occ(symbol, parsed) == "META/271217/650P"
+
+    def test_year_comes_from_expiration_not_the_symbol_digit(self):
+        """ESZ0 is 2030, not 2020 -- the single digit alone is ambiguous, so the
+        decade must come from the already-resolved expiration column."""
+        exp_2030 = 1922486400 * 10**9  # 2030-12-01 UTC
+        assert broker_script.from_glbx("ESZ0", exp_2030) == "ES/Z30"
+
+    def test_calendar_spread_copies_script(self):
+        """Without the combo guard this parses as root "ESH7-ES" + Z + 7."""
+        assert broker_script.from_glbx("ESH7-ESZ7", self.EXP_2026_09) == "ESH7-ESZ7"
+
+    def test_exchange_defined_combo_copies_script(self):
+        assert broker_script.from_glbx("UD:1V: GN 2533155", 0) == "UD:1V: GN 2533155"
+
+    def test_missing_expiration_copies_script(self):
+        """Decade is unresolvable without an expiration, so do not guess."""
+        assert broker_script.from_glbx("ESZ6", 0) == "ESZ6"
+
+    def test_unparseable_occ_copies_script(self):
+        assert broker_script.from_occ("NOT_AN_OCC_SYMBOL", {}) == "NOT_AN_OCC_SYMBOL"
+
+    def test_reserved_columns_are_blank(self):
+        result = broker_script.fill_unspecified({})
+        assert result == {"brokerScript2": "", "brokerScript3": "", "brokerScript4": ""}
+
+    def test_all_four_columns_present_in_canonical_schema(self):
+        for col in broker_script.BROKER_SCRIPT_COLUMNS:
+            assert col in paths.NORMALIZED_COLUMNS
+
+    def test_xnas_mapper_populates_broker_script1(self):
+        row = {"stype_in_symbol": "AAPL", "stype_out": "instrument_id", "instrument_id": 38}
+        result = databento_norm.map_xnas_row(row, date(2026, 8, 3))
+        assert result["brokerScript1"] == "AAPL"
+        assert result["brokerScript2"] == ""
+
+    def test_xcbo_mapper_populates_broker_script1(self):
+        row = {
+            "stype_in_symbol": "META  260918C00705000",
+            "stype_out": "instrument_id",
+            "instrument_id": 637543226,
+        }
+        result = databento_norm.map_xcbo_row(row, date(2026, 8, 3))
+        assert result["brokerScript1"] == "META/260918/705C"
+
+    def test_xcme_mapper_broker_script1_agrees_with_expiration(self):
+        row = {"stype_in_symbol": "ESZ6", "stype_out": "instrument_id", "instrument_id": 10252}
+        result = databento_norm.map_xcme_row(row, date(2026, 8, 3))
+        year = datetime.fromtimestamp(result["expiration"] / 1e9, tz=timezone.utc).year
+        assert result["brokerScript1"] == f"ES/Z{year % 100:02d}"
 
 
 if __name__ == "__main__":

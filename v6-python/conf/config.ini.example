@@ -16,12 +16,6 @@ live_retries = 3
 live_retry_delay_sec = 2
 max_maps = 100000
 hist_lookback_days = 7
-# Symbols per symbology.resolve request. Parent symbols expand to thousands of
-# contracts on OPRA/GLBX, so keep this small. 0 = one request for everything.
-hist_batch_size = 5
-# The gateway 504s on parent resolves under load, so each batch retries.
-hist_retries = 3
-hist_retry_delay_sec = 5
 
 [normalizer]
 glbx_underlying = ES

@@ -58,11 +58,6 @@ def create_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="Include CSV header in output",
         )
-        subparser.add_argument(
-            "--batch-size",
-            type=int,
-            help="Symbols per hist symbology.resolve call (default from config.ini, 5). 0 = single request.",
-        )
 
     # India (Fyers) subcommand
     india_parser = subparsers.add_parser("india", help="Download Fyers Indian exchange data")
@@ -174,7 +169,6 @@ def run_download(venue: str, args: argparse.Namespace) -> int:
             stype_in=getattr(args, "stype_in", None),
             live_start=getattr(args, "live_start", None),
             hist_range=getattr(args, "hist_range", None),
-            batch_size=getattr(args, "batch_size", None),
         )
 
         # Determine mode from flags; default to hist if neither specified

@@ -1,12 +1,13 @@
 """Databento normalization: GLBX/OPRA/EQUS symbol parsing and row mapping."""
 import re
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from .. import config, paths, runner
-from . import price, session
+from . import broker_script, price, session
 
 
 # CME month character to month number mapping (for weekly expiries)
@@ -85,6 +86,80 @@ GLBX_OPTION_REGEX = re.compile(r"\s+([CP])(\d+(?:\.\d+)?)\s*$")
 # India's INDIA_PRICE_SCALE (1e5) for the Fyers/rupee path, not this one.
 US_PRICE_SCALE = 10**9
 
+# Venue token prefix, concatenated onto the Databento instrument_id to make
+# scriptToken globally unique across venues: XNAS 38 -> 11138, XCBO 637543226
+# -> 222637543226. Databento only guarantees instrument_id is unique within a
+# dataset, so the same id can name different contracts on two venues.
+#
+# The prefix is part of the key, not decoration: nothing downstream should strip
+# it to recover the raw id. Digits only, so a prefixed token still passes any
+# "is numeric" test.
+#
+# NOTE: prefixing pushes tokens past int32. Max observed today is XCBO
+# 1509950237 -> 2221509950237 (13 digits, 2.2e12) and XCME 43049829 ->
+# 33343049829; int32 tops out at 2147483647. Postgres scriptToken is already
+# BIGINT and SQLite is TEXT, so both are fine -- but any consumer holding this
+# in a 32-bit field will overflow.
+VENUE_TOKEN_PREFIX = {
+    "XNAS": "111",
+    "XCBO": "222",
+    "XCME": "333",
+}
+
+
+def prefixed_token(venue: str, instrument_id: Any) -> str:
+    """Concatenate the venue prefix onto a Databento instrument_id.
+
+    Returns the raw value unchanged for an unknown venue or a non-numeric id,
+    rather than emitting a prefix glued to garbage.
+    """
+    raw = str(instrument_id).strip()
+    # pandas widens an int column to float when any value is missing, which
+    # renders ids as "637543226.0".
+    if raw.endswith(".0"):
+        raw = raw[:-2]
+    prefix = VENUE_TOKEN_PREFIX.get(venue, "")
+    if not prefix or not raw.isdigit():
+        return raw
+    return f"{prefix}{raw}"
+
+
+@lru_cache(maxsize=1)
+def _dotted_root_map() -> Dict[str, str]:
+    """Map dot-stripped OCC roots back to their real tickers, e.g. BRKB -> BRK.B.
+
+    OPRA symbology has no room for a dot: the class-share tickers BRK.B and BF.B
+    are subscribed as BRKB.OPT / BFB.OPT and come back in OCC symbols as "BRKB",
+    "BFB". Only the baskets know the real ticker, so they are the source here.
+
+    A stripped form that could come from more than one basket entry is dropped
+    rather than guessed -- an ambiguous mapping is worse than none.
+    """
+    out: Dict[str, str] = {}
+    clashes: set[str] = set()
+    for venue in ("XCBO", "XNAS"):
+        path = paths.baskets_dir() / f"{venue}.csv"
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
+            ticker = line.strip().upper()
+            if not ticker or "." not in ticker:
+                continue
+            stripped = ticker.replace(".", "")
+            if out.get(stripped, ticker) != ticker:
+                clashes.add(stripped)
+            out[stripped] = ticker
+    for c in clashes:
+        out.pop(c, None)
+    return out
+
+
+def dotted_underlying(root: str) -> str:
+    """Restore the dot in a class-share root; pass anything else through."""
+    if not root:
+        return root
+    return _dotted_root_map().get(root.upper(), root)
+
 
 def parse_occ_symbol(symbol: str) -> Dict[str, Any]:
     """Parse OCC option symbol format: AAAA YYMMDD C/P 8-digit-strike."""
@@ -150,7 +225,11 @@ def underlying_root_from_stype_in(symbol: str) -> str:
     # For SPX options, root is "SPX"
     if symbol.startswith("."):
         return symbol[1:]  # Remove leading dot for index symbols
-    return re.match(r"^[A-Z]+", symbol).group(0) if re.match(r"^[A-Z]+", symbol) else symbol
+    # Interior dots are part of the ticker, not a separator: BRK.B and BF.B are
+    # class-share tickers whose root is the whole thing. A bare ^[A-Z]+ stopped
+    # at the dot and emitted "BRK" as the root of BRK.B.
+    m = re.match(r"^[A-Z]+(?:\.[A-Z]+)*", symbol)
+    return m.group(0) if m else symbol
 
 
 def _fill_missing(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -191,7 +270,7 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
         "script": symbol,
-        "scriptToken": row.get("instrument_id", 0),
+        "scriptToken": prefixed_token("XCME", row.get("instrument_id", 0)),
         "scriptDetails": symbol,
         "currency": "USD",
         "exchange": "XCME",
@@ -220,6 +299,11 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     result["underlying_root"] = base
     result["underlying"] = base
 
+    # Derived from the resolved expiration above, so the year in brokerScript1
+    # always agrees with the expiration column.
+    result["brokerScript1"] = broker_script.from_glbx(symbol, result["expiration"])
+    broker_script.fill_unspecified(result)
+
     return _fill_missing(result)
 
 
@@ -240,7 +324,7 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
         "script": symbol,
-        "scriptToken": row.get("instrument_id", 0),
+        "scriptToken": prefixed_token("XCBO", row.get("instrument_id", 0)),
         "scriptDetails": symbol,
         "currency": "USD",
         "exchange": "XCBO",
@@ -255,8 +339,12 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     is_index = underlying.upper() in ("SPX", "SPXW", "VIX", "RUT")
 
     if parsed:
-        result["underlying"] = underlying
-        result["underlying_root"] = underlying.upper()
+        # OCC symbols cannot carry a dot, so BRK.B trades as root "BRKB". Map it
+        # back for the underlying columns only -- brokerScript1 is built from
+        # `parsed` further down and must stay dotless (BRKB/280121/410C), which
+        # is why `parsed` is deliberately not mutated here.
+        result["underlying"] = dotted_underlying(underlying)
+        result["underlying_root"] = dotted_underlying(underlying).upper()
         result["strike"] = price.scale_price(parsed.get("strike", 0), US_PRICE_SCALE)
         result["optionType"] = parsed.get("option_type", "")
         expiry_date = datetime.strptime(parsed.get("expiration", "20240101"), "%Y%m%d").date()
@@ -267,6 +355,11 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         result["strike"] = 0
         result["optionType"] = ""
         result["expiration"] = 0
+
+    # Uses the OCC-embedded date, not result["expiration"] -- the latter is the
+    # session close in UTC and can fall on the next calendar day.
+    result["brokerScript1"] = broker_script.from_occ(symbol, parsed)
+    broker_script.fill_unspecified(result)
 
     result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
     result["tradingSessionUTC"] = (
@@ -290,7 +383,7 @@ def map_xnas_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
     result = {
         "script": symbol,
-        "scriptToken": row.get("instrument_id", 0),
+        "scriptToken": prefixed_token("XNAS", row.get("instrument_id", 0)),
         "scriptDetails": symbol,
         "currency": "USD",
         "exchange": "XNAS",
@@ -305,7 +398,9 @@ def map_xnas_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         "lotSize": 1,
         "expiration": 0,  # No expiration for equities
         "tradingSessionUTC": session.trading_session_for_xnas(ref_date),
+        "brokerScript1": broker_script.from_equity(symbol),
     }
+    broker_script.fill_unspecified(result)
 
     return _fill_missing(result)
 
