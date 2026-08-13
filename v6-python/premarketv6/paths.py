@@ -260,3 +260,23 @@ BASKET_NAMES = [
     "XNSE_NIFTY500_EQUITY",
     "XNSE_NIFTY500_FUTURES",
 ]
+
+
+def promote_staging(temp_path, output_path) -> None:
+    """Rename a completed staging file onto its real name.
+
+    Windows refuses the rename with WinError 5 while anything holds the target
+    open -- Excel takes an exclusive lock on a CSV, so simply having the previous
+    day's output open in a spreadsheet aborts the step after all the work is done.
+    The staging file is deliberately left in place when that happens: it is
+    complete, and re-running only to hit the same lock wastes the whole pass.
+    """
+    try:
+        temp_path.replace(output_path)
+    except PermissionError as e:
+        raise PermissionError(
+            f"cannot replace {output_path.name}: it is open in another program "
+            f"(Excel locks CSVs exclusively). Close it and re-run; the finished "
+            f"output is already staged at {temp_path.name} -- moving that file over "
+            f"{output_path.name} by hand is equivalent. Original error: {e}"
+        ) from e

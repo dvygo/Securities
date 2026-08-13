@@ -1,6 +1,8 @@
 """Plugin normalization: map each canonical normalized CSV to the legacy pg
 symbol-master schema (docs/plugin/pg_data_types.txt), one output file per
 input file, written to data/YYYYMMDD/v6/plugin/ (sibling of normalized/)."""
+import csv
+import os
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -29,10 +31,28 @@ SEGMENT_BY_TYPE2 = {
 # The target pg symbol-master table keys on (token, trade_date) with no exchange
 # column, and instrument_id is only unique WITHIN a dataset -- on 2026-08-12 the
 # raw ids collide 932 times between XCME and XNAS, because EQUS ids start at 1 and
-# run straight into GLBX's low ids. Numbering each venue into its own block makes
-# that impossible by construction: the base digit keeps the venues apart and the
-# 35000 floor keeps us clear of the ids already sitting in that externally-managed
-# table.
+# run straight into GLBX's low ids. Giving each venue its own numeric block makes
+# that impossible by construction.
+#
+# token = base * PLUGIN_TOKEN_BLOCK + n, counting n from 1 inside the block. This
+# is arithmetic, not string concatenation: an earlier version glued the base digit
+# onto the counter, which made the token's width follow the counter's, so
+# "1"+"35000" and "1"+"1" gave 135000 and 11 -- same nominal base, wildly different
+# magnitudes, and no correct text ordering. Fixed-size blocks give every token the
+# same 9 digits and sort correctly as text or number.
+#
+# Each venue owns TWO consecutive blocks, not one, and spills into the second when
+# the first fills. That doubles the per-venue ceiling to 200M rows while keeping
+# the worst-case token (base 6 full) at 700,000,000 -- 33% of int32, so a 32-bit
+# consumer is still safe. Filling both is a hard error rather than a silent wrap,
+# because a wrapped counter would collide inside the venue's own trade_date.
+#
+#   XCBO  bases 1,2  ->  100000001 .. 102033608 today
+#   XCME  bases 3,4  ->  300000001 .. 300961438 today
+#   XNAS  bases 5,6  ->  500000001 .. 500013138 today
+#
+# Today's largest venue (OPRA, 2.03M) uses 1% of its first block. The whole scheme
+# also clears the India venues, whose plugin tokens max out at 999,064.
 #
 # Databento venues only. Files from other sources (XNSE/XIMC/XBOM/...) keep the
 # token their own pipeline assigned -- this does not renumber them.
@@ -40,8 +60,23 @@ SEGMENT_BY_TYPE2 = {
 # These tokens are positional and therefore per-day: the same contract gets a
 # different number tomorrow if the universe shifts. That is intended, since the
 # primary key includes trade_date. Nothing may join on token across dates.
-PLUGIN_TOKEN_BASE = {"XNAS": "1", "XCBO": "2", "XCME": "3"}
-PLUGIN_TOKEN_START = 35000
+PLUGIN_TOKEN_BASE = {"XCBO": (1, 2), "XCME": (3, 4), "XNAS": (5, 6)}
+PLUGIN_TOKEN_BLOCK = 100_000_000
+
+
+def plugin_token(bases, n: int) -> str:
+    """Token for the n-th row (1-based) of a venue owning `bases` blocks."""
+    block_index, offset = divmod(n - 1, PLUGIN_TOKEN_BLOCK)
+    if block_index >= len(bases):
+        raise ValueError(
+            f"plugin token blocks exhausted: row {n:,} needs block {block_index + 1} "
+            f"but only {len(bases)} are allocated ({bases}). Widen PLUGIN_TOKEN_BASE "
+            f"for this venue -- do not wrap, the tokens would collide."
+        )
+    return str(bases[block_index] * PLUGIN_TOKEN_BLOCK + offset + 1)
+
+# Normalized rows read and mapped before a batch is appended to the plugin CSV.
+PLUGIN_CHUNK_ROWS = 50_000
 
 
 def _expiry_seconds(expiration) -> int:
@@ -126,26 +161,48 @@ def run(opts: runner.Opts) -> None:
 
     for csv_path in csv_files:
         exchange = csv_path.name.split("-", 1)[0]
+        output_path = plugin_dir / csv_path.name
+        # Staged the same way as the normalizer and the download side: PID-scoped so
+        # concurrent runs cannot share a path, and NOT ending in .csv, because
+        # postgres_export_plugin globs plugin/*.csv -- a leftover that still looked
+        # like a finished file is what got pushed twice and broke the (token,
+        # trade_date) primary key.
+        temp_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
+
+        # Chunked read + append, so an --all-symbols venue is never held whole:
+        # XCME is 961k rows and OPRA 2.03M, which previously became a source frame,
+        # a list of mapped dicts and an output frame before a single write.
+        base = PLUGIN_TOKEN_BASE.get(exchange)
+        total = 0
         try:
-            df = pd.read_csv(csv_path, keep_default_na=False, dtype=str)
+            with open(temp_path, "w", newline="", encoding="utf-8-sig") as fh:
+                writer = csv.DictWriter(fh, fieldnames=PLUGIN_COLUMNS, extrasaction="ignore", restval="")
+                writer.writeheader()
+                for frame in pd.read_csv(
+                    csv_path, keep_default_na=False, dtype=str, chunksize=PLUGIN_CHUNK_ROWS
+                ):
+                    batch = [
+                        map_row(row, trade_date, exchange)
+                        for row in frame.to_dict("records")
+                        if row.get("scriptToken")
+                    ]
+                    # Renumber the Databento venues into their own block (see
+                    # PLUGIN_TOKEN_BASE). `total` carries the counter across chunks so
+                    # the sequence stays gapless and unique for the whole venue.
+                    if base is not None:
+                        for n, r in enumerate(batch, total + 1):
+                            r["token"] = plugin_token(base, n)
+                    if not batch:
+                        continue
+                    writer.writerows(batch)
+                    fh.flush()
+                    total += len(batch)
         except Exception as e:
-            print(f"    Error reading {csv_path}: {e}")
+            print(f"    Error processing {csv_path}: {e}")
+            temp_path.unlink(missing_ok=True)
             continue
 
-        rows = [
-            map_row(row.to_dict(), trade_date, exchange)
-            for _, row in df.iterrows()
-            if row.get("scriptToken")
-        ]
-
-        # Renumber the Databento venues into their own block (see PLUGIN_TOKEN_BASE).
-        # Done after the scriptToken filter so the counter has no gaps.
-        base = PLUGIN_TOKEN_BASE.get(exchange)
-        if base:
-            for i, r in enumerate(rows):
-                r["token"] = f"{base}{PLUGIN_TOKEN_START + i}"
-
-        output_path = plugin_dir / csv_path.name
-        out_df = pd.DataFrame(rows, columns=PLUGIN_COLUMNS) if rows else pd.DataFrame(columns=PLUGIN_COLUMNS)
-        out_df.to_csv(output_path, index=False, encoding="utf-8-sig")
-        print(f"    Wrote {len(out_df)} rows to {output_path}")
+        # An empty venue still gets a header-only file: unlike the raw/normalized
+        # stages, a plugin CSV with no rows is a valid "nothing to push today".
+        paths.promote_staging(temp_path, output_path)
+        print(f"    Wrote {total} rows to {output_path}")

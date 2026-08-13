@@ -105,10 +105,25 @@ def run(steps: List[Step], opts: Opts) -> int:
     return 0
 
 
-def build_normalizer_steps(only: List[str], postgres_push: bool = False, plugin: bool = False) -> List[Step]:
+def build_normalizer_steps(
+    only: List[str],
+    postgres_push_only: bool = False,
+    plugin: bool = False,
+    csv_only: bool = False,
+) -> List[Step]:
     """
     Build the normalizer pipeline steps.
     Returns Step list filtered by --only.
+
+    postgres_push_only adds the Postgres push to an otherwise normal run -- the
+    CSVs are still normalized and written first. It does not narrow the pipeline
+    to the writers.
+
+    csv_only is its opposite and wins over it: it drops every step that writes to
+    a database, so a run can produce the CSVs for inspection without touching
+    Postgres. That is a veto rather than a preference, and it also beats naming a
+    db step in --only, because the failure it prevents (an unwanted write to a
+    live table) cannot be undone by re-running.
     """
     from . import postgres_export, postgres_export_plugin, baskets, export
     from .normalize import fields, databento_norm, nse_norm, plugin as plugin_norm
@@ -124,13 +139,25 @@ def build_normalizer_steps(only: List[str], postgres_push: bool = False, plugin:
 
     if plugin:
         all_steps.append(Step("plugin", plugin_norm.run))
-        # No separate flag: building plugin CSVs always pushes them too.
-        all_steps.append(Step("postgres-plugin", postgres_export_plugin.run))
+        # Building plugin CSVs otherwise pushes them too -- --csv-only is the
+        # opt-out.
+        if not csv_only:
+            all_steps.append(Step("postgres-plugin", postgres_export_plugin.run))
 
-    if postgres_push:
+    if postgres_push_only and not csv_only:
         all_steps.append(Step("postgres", postgres_export.run))
 
-    return expand_only(only, all_steps)
+    steps = expand_only(only, all_steps)
+
+    if csv_only:
+        # Say what was suppressed rather than silently returning fewer steps: a
+        # user who typed "--only postgres --csv-only" needs to know the push did
+        # not merely succeed quietly.
+        asked = {s for s in only if s in ("postgres", "postgres-plugin")}
+        if asked:
+            print(f"--csv-only: skipping {', '.join(sorted(asked))}", file=sys.stderr)
+
+    return steps
 
 
 def build_download_steps(

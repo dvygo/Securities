@@ -304,7 +304,7 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
         raise
 
     if total:
-        temp_csv.replace(output_csv)
+        paths.promote_staging(temp_csv, output_csv)
         print(f"Wrote {total} rows to {output_csv}")
     else:
         # A header-only file would look like a valid empty basket downstream.

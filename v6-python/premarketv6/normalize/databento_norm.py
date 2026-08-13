@@ -105,6 +105,11 @@ US_PRICE_SCALE = 10**9
 # Raw rows read and mapped before the normalizer appends a batch to the output.
 NORMALIZE_CHUNK_ROWS = 50_000
 
+# OPRA returns the underlying spots alongside the options on an --all-symbols
+# pull, classed STOCK. They are typed SPOT here rather than EQUITY: the equity
+# listing is XNAS's, and this row is only OPRA's reference leg for it.
+XCBO_SPOT_CLASS = "K"
+
 def prefixed_token(venue: str, instrument_id: Any) -> str:
     """Return the Databento instrument_id as scriptToken, unprefixed.
 
@@ -360,8 +365,23 @@ def _session_close_ns(expiry_date, is_index: bool) -> int:
 
 
 def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
-    """Map an OPRA/XCBO symbology record to canonical schema."""
+    """Map an OPRA/XCBO symbology record to canonical schema.
+
+    OPRA is not options-only. An --all-symbols pull also returns the underlying
+    spots, which arrive as instrument_class=K with a bare ticker and no OCC tail
+    -- 6,323 of them against ~2.03M options on 2026-08-13 (QQQ, AMD, MU, ...).
+    parse_occ_symbol cannot match those, which left underlying empty, is_index
+    False, and every one of them typed OPTSTK: an option row with no strike, no
+    expiry and no option type.
+
+    They are typed SPOT/SPOT instead, deliberately not EQUITY -- equities are
+    XNAS's job, and these exist here only as the reference leg for OPRA options.
+
+    Only the definition path carries instrument_class; on a symbology.resolve row
+    the column is empty and the OCC-regex path below decides exactly as before.
+    """
     stype_in, stype_out, symbol = _resolve_symbol_id_fallback(row)
+    instrument_class = str(row.get("instrument_class", "") or "").strip().upper()
     result = {
         "script": symbol,
         "scriptToken": prefixed_token("XCBO", row.get("instrument_id", 0)),
@@ -396,12 +416,25 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         result["optionType"] = ""
         result["expiration"] = 0
 
-    # Uses the OCC-embedded date, not result["expiration"] -- the latter is the
-    # session close in UTC and can fall on the next calendar day.
-    result["brokerScript1"] = broker_script.from_occ(symbol, parsed)
+    if instrument_class == XCBO_SPOT_CLASS:
+        # The symbol IS the ticker here -- there is no OCC tail to strip, and no
+        # dot to restore either, since a spot is listed under its real ticker.
+        result["scriptInstrumentType"] = "SPOT"
+        result["scriptInstrumentType2"] = "SPOT"
+        result["underlying"] = symbol
+        result["underlying_root"] = symbol.upper()
+        result["strike"] = 0
+        result["optionType"] = ""
+        result["expiration"] = 0  # a spot never expires
+        result["brokerScript1"] = broker_script.from_equity(symbol)
+    else:
+        # Uses the OCC-embedded date, not result["expiration"] -- the latter is the
+        # session close in UTC and can fall on the next calendar day.
+        result["brokerScript1"] = broker_script.from_occ(symbol, parsed)
+        result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
+
     broker_script.fill_unspecified(result)
 
-    result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
     result["tradingSessionUTC"] = (
         session.trading_session_for_xcbo_index(ref_date) if is_index else session.trading_session_for_xcbo_equity(ref_date)
     )
@@ -520,7 +553,7 @@ def run(opts: runner.Opts) -> None:
             continue
 
         if total:
-            temp_path.replace(output_path)
+            paths.promote_staging(temp_path, output_path)
             print(f"      Wrote {total} rows")
         else:
             # A header-only file would look like a valid empty venue downstream.
