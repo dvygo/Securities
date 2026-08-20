@@ -208,6 +208,12 @@ NORMALIZED_COLUMNS = [
     "brokerScript2",
     "brokerScript3",
     "brokerScript4",
+    # Per-venue positional counter in a reserved numeric block, assigned by
+    # normalize/databento_norm.py. scriptToken stays the Databento instrument_id;
+    # this is the collision-free key the plugin/pg schema pushes as its token.
+    # Blank for non-Databento venues, which keep their own tokens. Appended, like
+    # the broker columns, so positional readers keep working.
+    "counterToken",
 ]
 
 # Contract columns = date + exchange + normalized columns

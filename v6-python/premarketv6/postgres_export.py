@@ -37,6 +37,8 @@ NULLABLE_CONTRACT_COLUMNS = {
     # Reserved broker columns: always blank until their formats are defined,
     # so they must land as NULL rather than "".
     "brokerScript2", "brokerScript3", "brokerScript4",
+    # Blank for every non-Databento venue, which keeps its own token.
+    "counterToken",
 }
 
 CONTRACT_COLUMN_DDL = [
@@ -64,6 +66,7 @@ CONTRACT_COLUMN_DDL = [
     ('"brokerScript2"', "TEXT"),
     ('"brokerScript3"', "TEXT"),
     ('"brokerScript4"', "TEXT"),
+    ('"counterToken"', "BIGINT"),
 ]
 
 # One row per basket: name + a JSONB array of constituent script strings.

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from .. import export, paths, runner
+from .. import bin_export, export, paths, runner
 
 # Column order matches docs/plugin/pg_data_types.txt exactly.
 PLUGIN_COLUMNS = [
@@ -24,56 +24,6 @@ SEGMENT_BY_TYPE2 = {
     "OPTION": "F&O",
     "EQUITY": "CM",
 }
-
-# Plugin tokens for the Databento venues are a per-venue counter, not the
-# Databento instrument_id.
-#
-# The target pg symbol-master table keys on (token, trade_date) with no exchange
-# column, and instrument_id is only unique WITHIN a dataset -- on 2026-08-12 the
-# raw ids collide 932 times between XCME and XNAS, because EQUS ids start at 1 and
-# run straight into GLBX's low ids. Giving each venue its own numeric block makes
-# that impossible by construction.
-#
-# token = base * PLUGIN_TOKEN_BLOCK + n, counting n from 1 inside the block. This
-# is arithmetic, not string concatenation: an earlier version glued the base digit
-# onto the counter, which made the token's width follow the counter's, so
-# "1"+"35000" and "1"+"1" gave 135000 and 11 -- same nominal base, wildly different
-# magnitudes, and no correct text ordering. Fixed-size blocks give every token the
-# same 9 digits and sort correctly as text or number.
-#
-# Each venue owns TWO consecutive blocks, not one, and spills into the second when
-# the first fills. That doubles the per-venue ceiling to 200M rows while keeping
-# the worst-case token (base 6 full) at 700,000,000 -- 33% of int32, so a 32-bit
-# consumer is still safe. Filling both is a hard error rather than a silent wrap,
-# because a wrapped counter would collide inside the venue's own trade_date.
-#
-#   XCBO  bases 1,2  ->  100000001 .. 102033608 today
-#   XCME  bases 3,4  ->  300000001 .. 300961438 today
-#   XNAS  bases 5,6  ->  500000001 .. 500013138 today
-#
-# Today's largest venue (OPRA, 2.03M) uses 1% of its first block. The whole scheme
-# also clears the India venues, whose plugin tokens max out at 999,064.
-#
-# Databento venues only. Files from other sources (XNSE/XIMC/XBOM/...) keep the
-# token their own pipeline assigned -- this does not renumber them.
-#
-# These tokens are positional and therefore per-day: the same contract gets a
-# different number tomorrow if the universe shifts. That is intended, since the
-# primary key includes trade_date. Nothing may join on token across dates.
-PLUGIN_TOKEN_BASE = {"XCBO": (1, 2), "XCME": (3, 4), "XNAS": (5, 6)}
-PLUGIN_TOKEN_BLOCK = 100_000_000
-
-
-def plugin_token(bases, n: int) -> str:
-    """Token for the n-th row (1-based) of a venue owning `bases` blocks."""
-    block_index, offset = divmod(n - 1, PLUGIN_TOKEN_BLOCK)
-    if block_index >= len(bases):
-        raise ValueError(
-            f"plugin token blocks exhausted: row {n:,} needs block {block_index + 1} "
-            f"but only {len(bases)} are allocated ({bases}). Widen PLUGIN_TOKEN_BASE "
-            f"for this venue -- do not wrap, the tokens would collide."
-        )
-    return str(bases[block_index] * PLUGIN_TOKEN_BLOCK + offset + 1)
 
 # Normalized rows read and mapped before a batch is appended to the plugin CSV.
 PLUGIN_CHUNK_ROWS = 50_000
@@ -122,7 +72,11 @@ def map_row(row: dict, trade_date: str, exchange: str) -> dict:
     return {
         "trade_date": trade_date,
         "segment": SEGMENT_BY_TYPE2.get(inst_type2, ""),
-        "token": row.get("scriptToken", ""),
+        # counterToken where the normalizer assigned one (the Databento venues),
+        # otherwise the venue's own scriptToken. It is taken verbatim -- the
+        # collision-free numbering lives in normalize/databento_norm.py now, so
+        # this step no longer renumbers anything.
+        "token": row.get("counterToken") or row.get("scriptToken", ""),
         "symbol": row.get("underlying_root", ""),
         "expirydate": str(expiry_sec),
         "insttype": row.get("scriptInstrumentType", ""),
@@ -172,7 +126,6 @@ def run(opts: runner.Opts) -> None:
         # Chunked read + append, so an --all-symbols venue is never held whole:
         # XCME is 961k rows and OPRA 2.03M, which previously became a source frame,
         # a list of mapped dicts and an output frame before a single write.
-        base = PLUGIN_TOKEN_BASE.get(exchange)
         total = 0
         try:
             with open(temp_path, "w", newline="", encoding="utf-8-sig") as fh:
@@ -186,12 +139,6 @@ def run(opts: runner.Opts) -> None:
                         for row in frame.to_dict("records")
                         if row.get("scriptToken")
                     ]
-                    # Renumber the Databento venues into their own block (see
-                    # PLUGIN_TOKEN_BASE). `total` carries the counter across chunks so
-                    # the sequence stays gapless and unique for the whole venue.
-                    if base is not None:
-                        for n, r in enumerate(batch, total + 1):
-                            r["token"] = plugin_token(base, n)
                     if not batch:
                         continue
                     writer.writerows(batch)
@@ -206,3 +153,4 @@ def run(opts: runner.Opts) -> None:
         # stages, a plugin CSV with no rows is a valid "nothing to push today".
         paths.promote_staging(temp_path, output_path)
         print(f"    Wrote {total} rows to {output_path}")
+        bin_export.write_companion_safe(output_path)

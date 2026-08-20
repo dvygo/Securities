@@ -5,9 +5,9 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from .. import config, paths, runner
+from .. import bin_export, config, paths, runner
 from ..sources import fyers_src
-from . import broker_script, price, session
+from . import broker_script, counter_token, price, session
 
 
 # Broad category for scriptInstrumentType2, matching v4-golang's instrumentType2().
@@ -177,6 +177,15 @@ def run(opts: runner.Opts) -> None:
                 if norm_row.get("script") and norm_row.get("exchange"):
                     all_rows.append(norm_row)
 
+        # Number this MIC's rows into its reserved block, after the script/exchange
+        # filter above so the sequence has no gaps. One counter per output file,
+        # which is what has to be internally unique -- XNSE and XBOM each merge
+        # several source feeds into a single file.
+        bases = counter_token.bases_for(mic)
+        if bases is not None:
+            for n, row in enumerate(all_rows, 1):
+                row["counterToken"] = counter_token.assign(bases, n)
+
         # Write normalized CSV
         output_path = normalized_dir / output_csv
         if all_rows:
@@ -189,6 +198,7 @@ def run(opts: runner.Opts) -> None:
             df = df[paths.NORMALIZED_COLUMNS]
             df.to_csv(output_path, index=False, encoding="utf-8-sig")
             print(f"    Wrote {len(df)} rows to {output_path}")
+            bin_export.write_companion_safe(output_path)
         else:
             # Write empty CSV with headers
             df = pd.DataFrame(columns=paths.NORMALIZED_COLUMNS)

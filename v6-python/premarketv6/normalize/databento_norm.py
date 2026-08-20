@@ -8,8 +8,8 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from .. import config, paths, runner
-from . import broker_script, price, session
+from .. import bin_export, config, paths, runner
+from . import broker_script, counter_token, price, session
 
 
 # CME month character to month number mapping (for weekly expiries)
@@ -109,6 +109,8 @@ NORMALIZE_CHUNK_ROWS = 50_000
 # pull, classed STOCK. They are typed SPOT here rather than EQUITY: the equity
 # listing is XNAS's, and this row is only OPRA's reference leg for it.
 XCBO_SPOT_CLASS = "K"
+
+# counterToken numbering lives in counter_token.py, shared with the Fyers path.
 
 def prefixed_token(venue: str, instrument_id: Any) -> str:
     """Return the Databento instrument_id as scriptToken, unprefixed.
@@ -523,6 +525,7 @@ def run(opts: runner.Opts) -> None:
         # of the real file's, the append dies on the (token, trade_date) primary key.
         temp_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
 
+        bases = counter_token.bases_for(venue)
         total = 0
         try:
             with open(temp_path, "w", newline="", encoding="utf-8-sig") as fh:
@@ -543,6 +546,12 @@ def run(opts: runner.Opts) -> None:
                             batch.append(norm_row)
                     if not batch:
                         continue
+                    # Numbered after the script filter so the sequence has no gaps.
+                    # `total` carries the counter across chunks, keeping it gapless
+                    # and unique for the whole venue rather than per batch.
+                    if bases is not None:
+                        for n, r in enumerate(batch, total + 1):
+                            r["counterToken"] = counter_token.assign(bases, n)
                     writer.writerows(batch)
                     fh.flush()
                     total += len(batch)
@@ -554,6 +563,7 @@ def run(opts: runner.Opts) -> None:
 
         if total:
             paths.promote_staging(temp_path, output_path)
+            bin_export.write_companion_safe(output_path)
             print(f"      Wrote {total} rows")
         else:
             # A header-only file would look like a valid empty venue downstream.
