@@ -1,14 +1,12 @@
 """Databento normalization: GLBX/OPRA/EQUS symbol parsing and row mapping."""
-import csv
-import os
 import re
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import pandas as pd
 
-from .. import bin_export, config, paths, runner
+from .. import parquet_export, paths, runner
 from . import broker_script, counter_token, price, session
 
 
@@ -18,15 +16,14 @@ CME_MONTHS = {
     "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12,
 }
 
-# OCC option symbol regex for parsing. Only the suffix is anchored (matches
-# v4-golang's opraOCCTail): real Databento OPRA symbols space-pad the root
+# OCC option symbol regex for parsing. Only the suffix is anchored: real
+# Databento OPRA symbols space-pad the root
 # to 6 chars (e.g. "NVDA  270115P00090000"), so anchoring the root at "^"
 # with no whitespace allowance silently fails to match every row.
 OCC_REGEX = re.compile(r"(\d{6})([CP])(\d{8})\s*$")
 
 # GLBX weekly-option suffix, e.g. "ESZ7 P8250" / "ESM8 C9700" -> (P, 8250).
-# Matches v4-golang's glbxCPStrike. Futures symbols (e.g. "ESZ7") never
-# match this, so its absence is what identifies a plain future.
+# Futures symbols (e.g. "ESZ7") never match this, so its absence is what identifies a plain future.
 GLBX_OPTION_REGEX = re.compile(r"\s+([CP])(\d+(?:\.\d+)?)\s*$")
 
 # TODO(xcme, still open): expiration. Measured on a real --all-symbols definition
@@ -246,6 +243,24 @@ def _fill_missing(result: Dict[str, Any]) -> Dict[str, Any]:
         if col not in result:
             result[col] = ""
     return result
+
+
+def _copy_definition_fields(row: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Carry the raw definition fields through to the normalized row, prefixed.
+
+    Done here rather than inside each venue mapper because it is the same verbatim
+    copy for all three, and the mappers are about deriving canonical columns.
+
+    Only the ALL_SYMBOLS definition path writes these; a symbology.resolve CSV has
+    no such columns and every one of them stays the "" that _fill_missing already
+    put there. That is also why this cannot use `or ""` on a missing key and be
+    done -- the canonical columns must not be touched, so it only ever writes the
+    prefixed names.
+    """
+    for field_name, column in zip(paths.DEFINITION_FIELDS, paths.DEFINITION_PASSTHROUGH_COLUMNS):
+        value = row.get(field_name)
+        if value not in (None, ""):
+            result[column] = value
 
 
 def _resolve_symbol_id_fallback(row: Dict[str, Any]) -> tuple[str, str, str]:
@@ -514,58 +529,48 @@ def run(opts: runner.Opts) -> None:
             continue
 
         print(f"    Processing {venue}...")
-        output_path = normalized_dir / f"{venue.upper()}-DATABENTO-normalized.csv"
-        # PID-scoped staging, same rationale as the download side: two runs must
-        # not share one temp path, and readers must never see a partial file.
-        #
-        # The name deliberately does NOT end in .csv. export.normalized_csv_files()
-        # globs normalized/*.csv, so a ".tmp.<pid>.csv" left behind by a killed run
-        # is picked up as if it were a finished venue file -- it gets mapped into
-        # plugin/ as a second XCME input and pushed, and since its rows are a prefix
-        # of the real file's, the append dies on the (token, trade_date) primary key.
-        temp_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
+        output_path = normalized_dir / f"{venue.upper()}-DATABENTO-normalized{parquet_export.SUFFIX}"
 
         bases = counter_token.bases_for(venue)
+        # PID-scoped staging and promote-on-close live in RowWriter, for the same
+        # reason the download side stages: two runs must not share one temp path,
+        # and readers must never see a partial file. A staging name that still
+        # looked like a finished venue file is what once got a killed run's prefix
+        # mapped into plugin/ and pushed, dying on the (token, trade_date) key.
+        writer = parquet_export.RowWriter(output_path, paths.NORMALIZED_COLUMNS)
         total = 0
         try:
-            with open(temp_path, "w", newline="", encoding="utf-8-sig") as fh:
-                writer = csv.DictWriter(
-                    fh, fieldnames=paths.NORMALIZED_COLUMNS, extrasaction="ignore", restval=""
-                )
-                writer.writeheader()
-                # dtype=str keeps ids and symbols verbatim: pandas otherwise widens
-                # an int column to float wherever a value is missing, which is what
-                # turned instrument ids into "637543226.0".
-                for frame in pd.read_csv(
-                    csv_path, chunksize=NORMALIZE_CHUNK_ROWS, dtype=str, keep_default_na=False
-                ):
-                    batch = []
-                    for row in frame.to_dict("records"):
-                        norm_row = mapper(row, ref_date)
-                        if norm_row.get("script"):
-                            batch.append(norm_row)
-                    if not batch:
-                        continue
-                    # Numbered after the script filter so the sequence has no gaps.
-                    # `total` carries the counter across chunks, keeping it gapless
-                    # and unique for the whole venue rather than per batch.
-                    if bases is not None:
-                        for n, r in enumerate(batch, total + 1):
-                            r["counterToken"] = counter_token.assign(bases, n)
-                    writer.writerows(batch)
-                    fh.flush()
-                    total += len(batch)
-                    print(f"      {total} row(s)...", flush=True)
+            # The raw file is still vendor CSV. dtype=str keeps ids and symbols
+            # verbatim: pandas otherwise widens an int column to float wherever a
+            # value is missing, which is what turned ids into "637543226.0".
+            for frame in pd.read_csv(
+                csv_path, chunksize=NORMALIZE_CHUNK_ROWS, dtype=str, keep_default_na=False
+            ):
+                batch = []
+                for row in frame.to_dict("records"):
+                    norm_row = mapper(row, ref_date)
+                    if norm_row.get("script"):
+                        _copy_definition_fields(row, norm_row)
+                        batch.append(norm_row)
+                if not batch:
+                    continue
+                # Numbered after the script filter so the sequence has no gaps.
+                # `total` carries the counter across chunks, keeping it gapless
+                # and unique for the whole venue rather than per batch.
+                if bases is not None:
+                    for n, r in enumerate(batch, total + 1):
+                        r["counterToken"] = counter_token.assign(bases, n)
+                writer.write(batch)
+                total += len(batch)
+                print(f"      {total} row(s)...", flush=True)
         except Exception as e:
             print(f"      Error processing {csv_path}: {e}")
-            temp_path.unlink(missing_ok=True)
+            writer.abort()
             continue
 
-        if total:
-            paths.promote_staging(temp_path, output_path)
-            bin_export.write_companion_safe(output_path)
-            print(f"      Wrote {total} rows")
+        # close() writes nothing at all for an empty venue -- a row-group-less
+        # file would look like a valid empty venue downstream.
+        if writer.close():
+            print(f"      Wrote {total} rows to {output_path.name}")
         else:
-            # A header-only file would look like a valid empty venue downstream.
-            temp_path.unlink(missing_ok=True)
             print(f"      No rows for {venue}")

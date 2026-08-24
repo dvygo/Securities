@@ -1,5 +1,5 @@
 """Trading session conversion: IST->UTC, US 3-part (pre/main/after) session windows."""
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -13,9 +13,8 @@ UTC = pytz.UTC
 US_EASTERN = ZoneInfo("America/New_York")
 
 # US session profiles: (pre, main, after) as (start_h, start_m, end_h, end_m) in
-# Eastern local time. Mirrors v4-golang's internal/normalize/us_session.go so
-# both normalizers emit the same 3-segment "HHMM-HHMM|HHMM-HHMM|HHMM-HHMM" UTC
-# string, correctly shifted across DST.
+# Eastern local time. Emitted as a 3-segment "HHMM-HHMM|HHMM-HHMM|HHMM-HHMM"
+# UTC string, correctly shifted across DST.
 _XNAS_SESSION = ((4, 0, 9, 30), (9, 30, 16, 0), (16, 0, 20, 0))
 _XCBO_EQUITY_SESSION = ((7, 30, 9, 25), (9, 30, 16, 0), (16, 0, 16, 15))
 _XCBO_INDEX_SESSION = ((20, 15, 9, 25), (9, 30, 16, 15), (16, 15, 17, 0))
@@ -63,8 +62,8 @@ def ist_hhmm_to_utc(ist_time_str: str) -> str:
 
 def trading_session_ist_to_utc(ist_session: str) -> str:
     """
-    Convert an IST trading session string to UTC, matching v4-golang's
-    TradingSessionISTToUTC. The real Fyers tradingSession field is
+    Convert an IST trading session string to UTC. The real Fyers
+    tradingSession field is
     pipe-separated for multi-segment sessions and has a trailing colon,
     e.g. "0915-1530|1815-1915:" -> "0330-1000|1245-1345".
     """

@@ -1,9 +1,9 @@
 # Template — copy to config.ini and edit
 
 [paths]
-# All relative to repo root (v6-python/) unless absolute. Shared data_dir
-# with v4-golang so both pipelines read/write the same dated dirs.
-data_dir = ../data
+# All relative to repo root (v6-python/) unless absolute. v6 owns its own data
+# tree; the day layout underneath is unchanged (YYYYMMDD/v6/raw, .../normalized).
+data_dir = premarketv6/data
 baskets_dir = constituents/baskets
 contracts_dir = constituents/contracts
 bin_dir = bin
@@ -42,6 +42,19 @@ retry_delay_sec = 2
 
 [postgres]
 database_url = postgres://contract:contract@127.0.0.1:6006/contractdb?sslmode=disable
+
+[clickhouse]
+# Contracts push target. Replaces the old [postgres] contracts push -- that
+# section is dead now; [postgres-plugin] below is untouched and still Postgres.
+host = 127.0.0.1
+# clickhouse-connect speaks the HTTP interface, so `port` is the HTTP one.
+# tcp_port is recorded for the native clients that read this file, not used here.
+port = 8744
+tcp_port = 7744
+database = xdb
+username = xuser
+password = changeme
+secure = false
 
 [postgres-plugin]
 # Appender only -- table/schema must already exist (see docs/plugin/pg_data_types.txt).

@@ -1,8 +1,10 @@
 """Databento market data integration (wraps official databento SDK).
 
-Matches v4-golang's internal/databento exactly:
+Venue wiring:
   - dataset names: GLBX.MDP3 (XCME), OPRA.PILLAR (XCBO), EQUS.MINI (XNAS)
   - stype_in defaults: XCME=parent (raw_symbol if --all-symbols), XCBO=parent, XNAS=raw_symbol
+  - XCME defaults to --all-symbols and so takes the definition path; XCBO/XNAS
+    stay basket-driven unless the flag is passed
   - --all-symbols in hist mode only works on EQUS.MINI (XNAS); GLBX.MDP3 and
     OPRA.PILLAR reject ALL_SYMBOLS at symbology.resolve
   - stype_out sent to API is always instrument_id
@@ -57,6 +59,37 @@ MAPPING_COLUMNS = [
     "instrument_class",
 ]
 
+# The definition path can fill far more than symbology.resolve returns, so it gets
+# its own wider header: the shared columns first, in the same order, then every
+# remaining InstrumentDefMsg field (paths.DEFINITION_FIELDS). Keeping the shared
+# eight in front means anything reading these CSVs positionally sees the old shape
+# unchanged, and the normalizer's mappers need no branch for which path wrote them.
+DEFINITION_COLUMNS = MAPPING_COLUMNS + paths.DEFINITION_FIELDS
+
+
+def _def_value(record, name: str) -> str:
+    """One InstrumentDefMsg field as CSV text.
+
+    Everything is stringified, including the numerics: the CSV is untyped text and
+    the whole pipeline reads it back with dtype=str, so converting here would only
+    create a second opinion about what a blank cell is -- and pandas' inference is
+    what used to render instrument ids as "637543226.0".
+
+    Prices stay in Databento's 1e-9 fixed point rather than using the pretty_*
+    accessors, matching the normalized `strike`/`multiplier` columns, which are
+    fixed-point at the same scale. Timestamps stay as nanoseconds since the epoch;
+    their human-readable forms are already carried in start_ts/end_ts.
+
+    The char enums (security_update_action, match_algorithm, leg_side,
+    leg_instrument_class, user_defined_instrument) stringify to their
+    one-character code, not their repr -- str(SecurityUpdateAction.ADD) is "A",
+    not "<SecurityUpdateAction.ADD: 'A'>". Verified against databento-dbn 0.63.
+    """
+    value = getattr(record, name, None)
+    if value is None:
+        return ""
+    return str(value)
+
 
 @dataclass
 class VenueConfig:
@@ -88,7 +121,7 @@ VENUE_CONFIGS = {
 
 
 def default_stype_in(venue: str, all_symbols: bool = False) -> str:
-    """Per-venue default stype_in, matching Venue.DefaultStypeIn in v4-golang."""
+    """Per-venue default stype_in."""
     if venue == "xcme":
         return "raw_symbol" if all_symbols else "parent"
     elif venue == "xcbo":
@@ -103,10 +136,13 @@ def resolve_symbols(
     all_symbols: bool = False,
     symbols_file: Optional[str] = None,
 ) -> list[str]:
-    """Resolve symbol list for a venue. No hardcoded defaults - basket CSV required."""
-    if all_symbols:
-        return [ALL_SYMBOLS_SENTINEL]
+    """Resolve symbol list for a venue.
 
+    Precedence: an explicit --symbols-file wins, then all_symbols, then the
+    venue's basket CSV. The file has to outrank all_symbols because XCME now
+    defaults all_symbols on -- checking the flag first would make
+    `xcme --symbols-file x.txt` silently download the whole universe instead.
+    """
     # Use explicit symbols file if provided
     if symbols_file:
         path = Path(symbols_file)
@@ -114,6 +150,8 @@ def resolve_symbols(
             raise FileNotFoundError(f"Symbols file not found: {path}")
         with open(path) as f:
             symbols = [line.strip() for line in f if line.strip()]
+    elif all_symbols:
+        return [ALL_SYMBOLS_SENTINEL]
     else:
         # Require basket CSV file
         venue_upper = venue.upper()
@@ -154,7 +192,7 @@ def resolve_hist_range(
     If pin_latest_session, ignore lookback_days and resolve against the latest
     complete session only -- required for OPRA, see VenueConfig.
 
-    Otherwise matches ResolveHistRange in v4-golang: end = asOf+1day (exclusive
+    Otherwise: end = asOf+1day (exclusive
     UTC midnight, clamped to dataset's actual available end), start = end -
     lookback_days (clamped to dataset's actual available start).
 
@@ -214,18 +252,22 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
             f"set key_{venue_cfg.venue_name} in conf/keys.ini"
         )
 
-    # Resolve symbols
+    # Resolve symbols. An explicit --symbols-file turns all_symbols off for the
+    # rest of this function: XCME defaults the flag on, and every decision below
+    # keys off it, so leaving it set would resolve the file and then ignore it --
+    # the definition path downloads the whole universe regardless of `symbols`.
+    all_symbols = opts.all_symbols and not opts.symbols_file
     symbols = resolve_symbols(
         venue,
-        all_symbols=opts.all_symbols,
+        all_symbols=all_symbols,
         symbols_file=opts.symbols_file,
     )
-    stype_in = opts.stype_in or default_stype_in(venue, opts.all_symbols)
+    stype_in = opts.stype_in or default_stype_in(venue, all_symbols)
 
     # symbology.resolve only accepts ALL_SYMBOLS on small datasets; elsewhere the
     # definition schema is the supported route to the full instrument universe.
     use_definitions = (
-        opts.all_symbols
+        all_symbols
         and mode == "hist"
         and venue_cfg.dataset not in ALL_SYMBOLS_HIST_DATASETS
     )
@@ -286,7 +328,11 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
         with open(temp_csv, "w", newline="", encoding="utf-8-sig") as fh:
             # restval="" so the resolve path, which cannot fill instrument_class,
             # writes it empty instead of raising on the missing key.
-            writer = csv.DictWriter(fh, fieldnames=MAPPING_COLUMNS, extrasaction="ignore", restval="")
+            # extrasaction="ignore" makes a too-narrow header silently drop columns
+            # rather than raise, so this has to match the producer: the definition
+            # path fills DEFINITION_COLUMNS, every other path only MAPPING_COLUMNS.
+            fieldnames = DEFINITION_COLUMNS if use_definitions else MAPPING_COLUMNS
+            writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore", restval="")
             writer.writeheader()
             fh.flush()
             for batch_rows in batches:
@@ -499,6 +545,11 @@ def _iter_definition_batches(
                     # C call, P put, S/T/M spreads, X FX spot, Y commodity spot,
                     # B bond, K stock, I index.
                     "instrument_class": str(record.instrument_class),
+                    # Everything else the definition record carries. Only a handful
+                    # of these feed the canonical normalized columns; the rest are
+                    # kept because discarding them at the writer meant re-downloading
+                    # ~600 MB to answer a question about tick rules or lot sizes.
+                    **{f: _def_value(record, f) for f in paths.DEFINITION_FIELDS},
                 })
                 if len(chunk) >= DEFINITION_CHUNK_ROWS:
                     total += len(chunk)

@@ -1,9 +1,8 @@
 """Fyers (Indian broker) symbol master integration."""
 import csv
-import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import requests
 
@@ -11,8 +10,7 @@ from .. import config, paths, runner
 
 
 # Fyers sym_details field names in column order for headerless CSVs.
-# Matches v4-golang's internal/fyers/columns.go JSONColumns exactly -- this
-# is the REAL on-wire column order (verified against a live BSE_CM.csv row);
+# This is the REAL on-wire column order (verified against a live BSE_CM.csv row);
 # a previous, unrelated, fabricated column list here never matched the
 # actual feed and silently misaligned every field.
 FYERS_COLUMNS = [
@@ -23,7 +21,6 @@ FYERS_COLUMNS = [
 ]
 
 # Legacy pre-v2 CSV header names -> canonical FYERS_COLUMNS key.
-# Matches v4-golang's LegacyHeaderAliases.
 LEGACY_HEADER_ALIASES = {
     "fytoken": "fyToken",
     "symbol": "symDetails",
@@ -41,8 +38,7 @@ LEGACY_HEADER_ALIASES = {
     "underexsymbol": "underSym",
 }
 
-# Fyers API v3 appendix codes (https://myapi.fyers.in/docsv3#tag/Appendix),
-# matching v4-golang's internal/fyers/appendix.go.
+# Fyers API v3 appendix codes (https://myapi.fyers.in/docsv3#tag/Appendix).
 EXCHANGE_CODES = {
     10: "NSE",
     11: "MCX",
@@ -191,7 +187,7 @@ def fetch_with_retry(url: str, cfg: config.FyersCfg, max_retries: int = 3) -> st
             )
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as e:
+        except requests.RequestException:
             if attempt < max_retries - 1:
                 time.sleep(cfg.retry_delay_sec)
                 continue

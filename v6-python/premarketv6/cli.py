@@ -3,7 +3,7 @@ import argparse
 import sys
 from datetime import datetime
 
-from . import config, paths, runlog, runner
+from . import runlog, runner
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -66,10 +66,15 @@ def create_parser() -> argparse.ArgumentParser:
     # XCME subcommand
     xcme_parser = subparsers.add_parser("xcme", help="Download XCME Databento data")
     add_download_args(xcme_parser)
+    # ALL_SYMBOLS by default for XCME only: GLBX is the venue we take whole, and the
+    # 28-parent basket was leaving most of the universe undownloaded. XCBO and XNAS
+    # keep their opt-in flag below. --no-all-symbols falls back to the basket CSV;
+    # --symbols-file overrides both (see databento_src.resolve_symbols).
     xcme_parser.add_argument(
         "--all-symbols",
-        action="store_true",
-        help="Subscribe to ALL_SYMBOLS",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Subscribe to ALL_SYMBOLS (default; --no-all-symbols uses the basket CSV)",
     )
     xcme_parser.add_argument(
         "--symbols-file",
@@ -118,27 +123,24 @@ def create_parser() -> argparse.ArgumentParser:
         "--only",
         action="append",
         default=[],
-        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, strip, baskets, csv-export, plugin, postgres-plugin, postgres)",
+        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, baskets, csv-export, plugin, postgres-plugin, clickhouse)",
     )
     normalize_parser.add_argument(
-        "--postgres-push-only",
+        "--clickhouse-push-only",
+        dest="contracts_push_only",
         action="store_true",
-        help="Push to Postgres after normalization (CSVs are still built first)",
+        help="Push contracts/baskets to ClickHouse after normalization (files are still built first)",
     )
     normalize_parser.add_argument(
         "--plugin",
         action="store_true",
-        help="Build plugin-format CSVs (legacy pg symbol-master schema) in data/YYYYMMDD/v6/plugin/",
+        help="Build plugin-format Parquet (legacy pg symbol-master schema) in data/YYYYMMDD/v6/plugin/",
     )
     normalize_parser.add_argument(
         "--csv-only",
         action="store_true",
-        help="Write CSVs only, never touch Postgres. Overrides --postgres-push and "
-             "suppresses the postgres/postgres-plugin steps even if named in --only.",
-    )
-    normalize_parser.add_argument(
-        "--database-url",
-        help="Override DATABASE_URL",
+        help="Write files only, never touch a database. Overrides --clickhouse-push-only "
+             "and suppresses the clickhouse/postgres-plugin steps even if named in --only.",
     )
     normalize_parser.add_argument(
         "--basket",
@@ -148,11 +150,6 @@ def create_parser() -> argparse.ArgumentParser:
         "--csv",
         dest="csv_export_dir",
         help="Export aggregated CSVs to directory",
-    )
-    normalize_parser.add_argument(
-        "--test-db",
-        dest="test_db_file",
-        help="Push to SQLite test database",
     )
 
     return parser
@@ -207,21 +204,20 @@ def run_normalize(args: argparse.Namespace) -> int:
             as_of=args.date_dir,
             date_dir=args.date_dir,
             dry_run=args.dry_run,
-            database_url=args.database_url,
             basket=getattr(args, "basket", None),
         )
 
         only = getattr(args, "only", []) or []
-        # Asking for the postgres/plugin step by name is itself the request to
-        # run it; --postgres-push-only/--plugin only matter for a full run with
+        # Asking for the clickhouse/plugin step by name is itself the request to
+        # run it; --clickhouse-push-only/--plugin only matter for a full run with
         # no --only filter. postgres-plugin has no flag of its own -- it rides
         # along with --plugin (or is targeted directly via --only).
-        postgres_push_only = getattr(args, "postgres_push_only", False) or "postgres" in only
+        contracts_push_only = getattr(args, "contracts_push_only", False) or "clickhouse" in only
         plugin = args.plugin or "plugin" in only or "postgres-plugin" in only
 
         steps = runner.build_normalizer_steps(
             only,
-            postgres_push_only=postgres_push_only,
+            contracts_push_only=contracts_push_only,
             plugin=plugin,
             csv_only=getattr(args, "csv_only", False),
         )

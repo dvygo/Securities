@@ -2,7 +2,6 @@
 import configparser
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import List, Optional
 
 from . import paths
@@ -161,6 +160,61 @@ def load_normalizer() -> NormalizerCfg:
                         cfg_dict[key] = value
 
     return NormalizerCfg(**cfg_dict)
+
+
+@dataclass
+class ClickHouseCfg:
+    """[clickhouse] config: the contracts push target.
+
+    `port` is the HTTP port, because clickhouse-connect speaks the HTTP
+    interface. tcp_port is carried through unused so the one config section
+    still describes the server completely for the native clients that read it.
+    """
+    host: str = "127.0.0.1"
+    port: int = 8123
+    tcp_port: int = 9000
+    database: str = "default"
+    username: str = "default"
+    password: str = ""
+    secure: bool = False
+
+
+def load_clickhouse() -> ClickHouseCfg:
+    """Load [clickhouse] config from config.ini; CLICKHOUSE_* env vars win.
+
+    Env override exists for the same reason DATABASE_URL does on the Postgres
+    side: a scheduled run should be able to point at another server without
+    editing a file that is shared with the interactive one.
+    """
+    defaults = ClickHouseCfg()
+    section = {}
+    config_file = paths.config_ini()
+    if config_file.exists():
+        cfg = configparser.ConfigParser()
+        cfg.read(config_file)
+        if "clickhouse" in cfg:
+            section = cfg["clickhouse"]
+
+    def pick(key: str, fallback):
+        env = os.getenv(f"CLICKHOUSE_{key.upper()}")
+        if env:
+            return env
+        return section.get(key, fallback) if section else fallback
+
+    def as_bool(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    return ClickHouseCfg(
+        host=str(pick("host", defaults.host)),
+        port=int(pick("port", defaults.port)),
+        tcp_port=int(pick("tcp_port", defaults.tcp_port)),
+        database=str(pick("database", defaults.database)),
+        username=str(pick("username", defaults.username)),
+        password=str(pick("password", defaults.password)),
+        secure=as_bool(pick("secure", defaults.secure)),
+    )
 
 
 @dataclass

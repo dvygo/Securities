@@ -1,12 +1,11 @@
 """Basket/constituents resolution: build daily contract lists.
 
-Mirrors v4-golang's internal/baskets/baskets.go: most basket definition
-files are frozen snapshots of a specific expiry month (e.g. "26MAYFUT")
+Most basket definition files are frozen snapshots of a specific expiry month (e.g. "26MAYFUT")
 from whenever they were generated, so an exact-script match against them
 goes stale the moment that month's contracts expire. Futures baskets are
 instead resolved by extracting the underlying_root from each entry and
 rolling to the nearest (or all) still-live contract for that root in
-today's normalized data -- the swap/roll v4-golang already does.
+today's normalized data.
 """
 import re
 from datetime import datetime, timezone
@@ -15,13 +14,13 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from . import paths, runner
+from . import parquet_export, paths, runner
 
 
 # "NSE:360ONE-EQ" -> "360ONE"
 EQ_TAIL_REGEX = re.compile(r"^[^:]+:(.+)-EQ$")
 # "NSE:360ONE26JULFUT" -> "360ONE" (root is non-greedy so it stops at the
-# first valid MONYY it can match, same as v4-golang's futTail).
+# first valid MONYY it can match).
 FUT_TAIL_REGEX = re.compile(
     r"^[^:]+:(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))FUT$"
 )
@@ -101,9 +100,7 @@ class SymIndex:
 
         if not normalized_csv.exists():
             return
-        df = pd.read_csv(normalized_csv, keep_default_na=False, dtype=str)
-        for _, series in df.iterrows():
-            row = series.to_dict()
+        for row in parquet_export.read_rows(normalized_csv):
             script = (row.get("script") or "").strip()
             if script:
                 self.by_script[script] = row
@@ -136,7 +133,7 @@ def _as_of_start_ns(as_of: str) -> int:
     """Nanosecond epoch UTC for the start of as_of's calendar day. Must stay
     UTC to compare against "expiration" (databento_norm.py's
     glbx_expiration_ns/OCC path, fields.py's _expiration_ns), which are
-    themselves UTC -- matches v4-golang's anchor."""
+    themselves UTC."""
     d = datetime.strptime(as_of, "%Y%m%d").replace(tzinfo=timezone.utc)
     return int(d.timestamp()) * 10**9
 
@@ -244,7 +241,7 @@ def _resolve_option_chain(name: str, template: Path, idx: SymIndex, as_of: str, 
 
 
 def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
-    """Resolve one basket's constituent rows, matching v4-golang's RefreshBasket switch.
+    """Resolve one basket's constituent rows.
     Basket names are standardized to {MIC}_{purpose} and match their definition CSV's
     filename 1:1, except where noted (futures-roll baskets derive roots from a spots/
     equity basket rather than their own frozen file, and ALL_INDEX_FUTURES has no file
@@ -332,8 +329,8 @@ def refresh_all(as_of: str, normalized_dir: Path, dry_run: bool = False) -> None
         try:
             rows = _refresh(basket_name, as_of, cache)
             if rows:
-                output_csv = contracts_day_dir / f"{basket_name}.csv"
-                pd.DataFrame(rows).to_csv(output_csv, index=False, encoding="utf-8-sig")
+                output_path = contracts_day_dir / f"{basket_name}{parquet_export.SUFFIX}"
+                parquet_export.write_rows(output_path, list(rows[0].keys()), rows)
                 print(f"    Wrote {basket_name}: {len(rows)} contracts")
         except Exception as e:
             print(f"    Error refreshing {basket_name}: {e}")
@@ -359,8 +356,10 @@ def run(opts: runner.Opts) -> None:
             if df is not None:
                 contracts_dir = paths.contracts_day_dir(opts.date_dir)
                 contracts_dir.mkdir(parents=True, exist_ok=True)
-                output_csv = contracts_dir / f"{opts.basket}.csv"
-                df.to_csv(output_csv, index=False, encoding="utf-8-sig")
+                output_path = contracts_dir / f"{opts.basket}{parquet_export.SUFFIX}"
+                parquet_export.write_rows(
+                    output_path, list(df.columns), df.astype(str).to_dict("records")
+                )
                 print(f"    Wrote {opts.basket}: {len(df)} rows")
         except Exception as e:
             print(f"    Error refreshing {opts.basket}: {e}")

@@ -1,16 +1,14 @@
 """Fyers normalization: map raw rows to 16-column canonical schema."""
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-import pandas as pd
 
-from .. import bin_export, config, paths, runner
+from .. import config, parquet_export, paths, runner
 from ..sources import fyers_src
 from . import broker_script, counter_token, price, session
 
 
-# Broad category for scriptInstrumentType2, matching v4-golang's instrumentType2().
+# Broad category for scriptInstrumentType2.
 def instrument_type2(inst_type: str) -> str:
     t = (inst_type or "").upper()
     if t == "EQ":
@@ -23,8 +21,8 @@ def instrument_type2(inst_type: str) -> str:
 
 
 def classify_instrument(ex_inst_type: str) -> str:
-    """exInstType appendix code -> instrument type name (EQ, FUTIDX, OPTSTK, ...), matching
-    v4-golang's InstrumentTypeNameFromRow. Unknown codes fall back to UNKNOWN_<code>."""
+    """exInstType appendix code -> instrument type name (EQ, FUTIDX, OPTSTK, ...).
+    Unknown codes fall back to UNKNOWN_<code>."""
     code = (ex_inst_type or "").strip()
     name = fyers_src.INSTRUMENT_CODES.get(_safe_int(code))
     if name:
@@ -64,7 +62,7 @@ def _expiration_ns(raw: str) -> int:
 def map_fyers_row(row: Dict[str, str], cfg: config.NormalizerCfg) -> Dict[str, Any]:
     """
     Map a single Fyers raw row to the 16-column canonical schema.
-    Field keys here match the real feed (v4-golang's JSONColumns), e.g.
+    Field keys here match the real feed, e.g.
     row["symTicker"] is the ticker, row["symDetails"] is the description --
     NOT "symbol"/"description", which never existed on the actual wire.
     Returns dict with canonical columns (may be sparse).
@@ -186,29 +184,15 @@ def run(opts: runner.Opts) -> None:
             for n, row in enumerate(all_rows, 1):
                 row["counterToken"] = counter_token.assign(bases, n)
 
-        # Write normalized CSV
+        # Write normalized Parquet
         output_path = normalized_dir / output_csv
         if all_rows:
-            df = pd.DataFrame(all_rows)
-            # Ensure all columns exist (fill missing with defaults)
-            for col in paths.NORMALIZED_COLUMNS:
-                if col not in df.columns:
-                    df[col] = ""
-            # Reorder to canonical columns
-            df = df[paths.NORMALIZED_COLUMNS]
-            df.to_csv(output_path, index=False, encoding="utf-8-sig")
-            print(f"    Wrote {len(df)} rows to {output_path}")
-            bin_export.write_companion_safe(output_path)
+            # RowWriter fills a missing key with "" and orders by the column list,
+            # so the frame-shaping the CSV path needed is gone.
+            parquet_export.write_rows(output_path, paths.NORMALIZED_COLUMNS, all_rows)
+            print(f"    Wrote {len(all_rows)} rows to {output_path}")
         else:
-            # Write empty CSV with headers
-            df = pd.DataFrame(columns=paths.NORMALIZED_COLUMNS)
-            df.to_csv(output_path, index=False, encoding="utf-8-sig")
-            print(f"    No data for {output_path}")
-
-
-def run_strip(opts: runner.Opts) -> None:
-    """
-    Strip/filter normalized data (e.g., near-term OPRA contracts).
-    Placeholder for now; actual implementation in strip.py.
-    """
-    print("  Running strip filter...")
+            # Nothing is written for an empty MIC. A schema-only file would look
+            # like a valid empty venue to everything downstream; an absent one
+            # is skipped by the glob, which is what "no data" should look like.
+            print(f"    No rows for {mic}")

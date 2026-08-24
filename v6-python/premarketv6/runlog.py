@@ -1,10 +1,9 @@
 """Run logging: tee stderr to a timestamped log file."""
-import os
 import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from . import paths
 

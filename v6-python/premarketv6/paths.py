@@ -3,7 +3,7 @@ import configparser
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 
 
 def repo_root() -> Path:
@@ -104,7 +104,7 @@ def plugin_dir(as_of: str) -> Path:
 
 
 def databento_raw_csv(as_of: str, venue: str) -> Path:
-    """Raw Databento CSV path: YYYYMMDD/raw/{VENUE}-DATABENTO.csv (matches v4-golang naming)."""
+    """Raw Databento CSV path: YYYYMMDD/raw/{VENUE}-DATABENTO.csv."""
     return raw_dir(as_of) / f"{venue.upper()}-DATABENTO.csv"
 
 
@@ -143,34 +143,30 @@ def ensure_bin_dirs() -> None:
     logs_dir().mkdir(parents=True, exist_ok=True)
 
 
-def postgres_schema(date_dir: str) -> str:
+def dated_schema(date_dir: str) -> str:
     """
-    Dated schema name: v4_YYYYMMDD. Holds a single "contracts" table (all
-    exchanges) and a convenience merged "baskets" table. Must stay exactly
-    "v4_" + YYYYMMDD (no extra suffix) -- Nexus's own IsV4Schema/
-    FormatContractsSchema (internal/contract-db/pool/contracts_config.go)
-    hard-require this shape and derive the baskets schema from it.
+    Dated snapshot name: v6_YYYYMMDD. Holds the day's contracts and baskets.
+
+    This is v6's own namespace. It was "v4_" while the contracts push targeted
+    the Postgres schema Nexus reads -- Nexus's IsV4Schema
+    (internal/contract-db/pool/contracts_config.go) tests for that literal
+    prefix plus exactly 8 digits. The push is ClickHouse now and Nexus does not
+    read ClickHouse, so nothing downstream of this pipeline depends on the old
+    name. Reviving a Postgres contracts push means changing Nexus to match, not
+    changing this back.
     """
     if not re.match(r"^\d{8}$", date_dir):
         raise ValueError(f"Invalid date_dir format (must be YYYYMMDD): {date_dir}")
-    return f"v4_{date_dir}"
+    return f"v6_{date_dir}"
 
 
-def postgres_baskets_schema(date_dir: str) -> str:
-    """
-    Dated Nexus-compatible baskets schema: v4_YYYYMMDD_baskets, holding a
-    single "baskets" table (one row per basket name, scripts as a JSONB
-    array). Fixed by Nexus's FormatBasketsSchema (contractsSchema +
-    "_baskets") and internal/contract-db/baskets/load.go, which resolves
-    each script against its own contracts index.
-    """
-    return f"{postgres_schema(date_dir)}_baskets"
+def dated_baskets_schema(date_dir: str) -> str:
+    """Dated baskets namespace: v6_YYYYMMDD_baskets."""
+    return f"{dated_schema(date_dir)}_baskets"
 
 
-# Static, always-current mirror of the dated schema (single "contracts" and
-# "baskets" tables), overwritten on every push. Postgres's built-in default
-# schema -- Nexus never reads it, so its shape is ours to decide freely.
-POSTGRES_STATIC_SCHEMA = "public"
+# Static, always-current mirror of the dated snapshot, overwritten every push.
+STATIC_SCHEMA = "public"
 
 # Full per-contract fields kept in the flat CSV/SQLite basket exports
 # (export.py's aggregate_basket_rows, sqlite_export.py) -- the Postgres
@@ -181,6 +177,60 @@ NEXUS_BASKET_COLUMNS = [
     "underlying_root", "underlying", "strike", "expiration", "multiplier",
     "currency", "exchange",
 ]
+
+
+# Databento `definition` schema passthrough.
+#
+# The ALL_SYMBOLS path downloads InstrumentDefMsg records, which carry the venue's
+# full instrument definition -- tick rules, limit prices, lot sizes, spread legs,
+# CFI/security_type, the lot. Only a handful of those fields feed the canonical
+# columns above, and the rest used to be discarded at the CSV writer. They are now
+# kept verbatim, in both the raw and the normalized CSV.
+#
+# These are the InstrumentDefMsg attribute names, which are also the raw CSV's
+# column names. Deliberately NOT here: instrument_id, raw_symbol and
+# instrument_class, which the raw CSV already carries under its own
+# MAPPING_COLUMNS names (instrument_id / stype_in_symbol / instrument_class).
+DEFINITION_FIELDS = [
+    # record + identity
+    "ts_recv", "ts_event", "rtype", "publisher_id", "security_update_action",
+    "raw_instrument_id", "underlying_id",
+    # prices, all 1e-9 fixed point on the wire and kept that way
+    "min_price_increment", "display_factor", "high_limit_price", "low_limit_price",
+    "max_price_variation", "unit_of_measure_qty", "min_price_increment_amount",
+    "price_ratio", "strike_price",
+    # lifecycle timestamps, nanoseconds since epoch
+    "expiration", "activation",
+    # sizes and depth
+    "inst_attrib_value", "market_depth_implied", "market_depth", "market_segment_id",
+    "max_trade_vol", "min_lot_size", "min_lot_size_block", "min_lot_size_round_lot",
+    "min_trade_vol", "contract_multiplier", "decay_quantity", "original_contract_size",
+    # calendar
+    "appl_id", "maturity_year", "maturity_month", "maturity_day", "maturity_week",
+    "decay_start_date", "channel_id",
+    # text / classification
+    "currency", "settl_currency", "secsubtype", "group", "exchange", "asset", "cfi",
+    "security_type", "unit_of_measure", "underlying", "strike_price_currency",
+    # single-char enums, written as their one-character code
+    "match_algorithm", "user_defined_instrument",
+    # display and tick rules
+    "main_fraction", "price_display_format", "sub_fraction", "underlying_product",
+    "contract_multiplier_unit", "flow_schedule_type", "tick_rule",
+    # spread legs
+    "leg_count", "leg_index", "leg_instrument_id", "leg_raw_symbol",
+    "leg_instrument_class", "leg_side", "leg_price", "leg_delta",
+    "leg_ratio_price_numerator", "leg_ratio_price_denominator",
+    "leg_ratio_qty_numerator", "leg_ratio_qty_denominator", "leg_underlying_id",
+]
+
+# The same fields in the normalized CSV, prefixed. The prefix is not decoration:
+# currency, expiration, exchange, underlying and strike_price all collide with a
+# canonical column that means something different -- normalized "expiration" is a
+# session close in UTC, definition "expiration" is the venue's last eligible trade
+# time. Prefixing every field rather than only the four that clash keeps one rule
+# instead of a list of exceptions.
+DEFINITION_COLUMN_PREFIX = "def_"
+DEFINITION_PASSTHROUGH_COLUMNS = [DEFINITION_COLUMN_PREFIX + f for f in DEFINITION_FIELDS]
 
 
 # Canonical normalized column schema (16 columns)
@@ -214,7 +264,7 @@ NORMALIZED_COLUMNS = [
     # Blank for non-Databento venues, which keep their own tokens. Appended, like
     # the broker columns, so positional readers keep working.
     "counterToken",
-]
+] + DEFINITION_PASSTHROUGH_COLUMNS
 
 # Contract columns = date + exchange + normalized columns
 CONTRACT_COLUMNS = ["date", "exchange"] + NORMALIZED_COLUMNS
@@ -231,9 +281,11 @@ FYERS_RAW_SEGMENTS = {
 
 # Fyers MIC bundles: MIC -> (output_csv_name, postgres_table, source_csv_list)
 FYERS_MIC_BUNDLES = {
-    "XNSE": ("XNSE-FYERS.csv", "xnse", ["XNSE-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv"]),
-    "XBOM": ("XBOM-FYERS.csv", "xbom", ["XBSE-FYERS.csv", "XBFO-FYERS.csv"]),  # BSE -> XBOM MIC
-    "XIMC": ("XIMC-FYERS.csv", "ximc", ["XMCX-FYERS.csv"]),
+    # First element is the NORMALIZED output (Parquet); the list is the RAW Fyers
+    # CSVs it is built from, which stay CSV because that is what the vendor ships.
+    "XNSE": ("XNSE-FYERS.parquet", "xnse", ["XNSE-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv"]),
+    "XBOM": ("XBOM-FYERS.parquet", "xbom", ["XBSE-FYERS.csv", "XBFO-FYERS.csv"]),  # BSE -> XBOM MIC
+    "XIMC": ("XIMC-FYERS.parquet", "ximc", ["XMCX-FYERS.csv"]),
 }
 
 # NSE segments

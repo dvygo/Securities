@@ -13,8 +13,11 @@ dependencies = [
     "pandas>=2.0.0",
     "requests>=2.31.0",
     "exchange-calendars>=4.5",
-    # Parquet writer for the .bin companions (premarketv6/bin_export.py).
+    # Parquet is the on-disk format for normalized/plugin output
+    # (premarketv6/parquet_export.py).
     "pyarrow>=15.0",
+    # ClickHouse HTTP client for the contracts push (premarketv6/clickhouse_export.py).
+    "clickhouse-connect>=0.7",
 ]
 
 [project.optional-dependencies]

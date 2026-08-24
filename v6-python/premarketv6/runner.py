@@ -19,7 +19,6 @@ class Opts:
     date_dir: str  # YYYYMMDD
     dry_run: bool = False
     input_path: Optional[str] = None
-    database_url: Optional[str] = None
     basket: Optional[str] = None
     include_csv_header: bool = False
     all_symbols: bool = False
@@ -67,7 +66,6 @@ def expand_only(only: List[str], all_steps: List[Step]) -> List[Step]:
             "normalize-fyers",
             "normalize-nse",
             "normalize-databento",
-            "strip",
             "baskets",
         ],
     }
@@ -107,7 +105,7 @@ def run(steps: List[Step], opts: Opts) -> int:
 
 def build_normalizer_steps(
     only: List[str],
-    postgres_push_only: bool = False,
+    contracts_push_only: bool = False,
     plugin: bool = False,
     csv_only: bool = False,
 ) -> List[Step]:
@@ -115,24 +113,23 @@ def build_normalizer_steps(
     Build the normalizer pipeline steps.
     Returns Step list filtered by --only.
 
-    postgres_push_only adds the Postgres push to an otherwise normal run -- the
-    CSVs are still normalized and written first. It does not narrow the pipeline
-    to the writers.
+    contracts_push_only adds the ClickHouse contracts push to an otherwise normal
+    run -- the CSVs are still normalized and written first. It does not narrow the
+    pipeline to the writers.
 
     csv_only is its opposite and wins over it: it drops every step that writes to
     a database, so a run can produce the CSVs for inspection without touching
-    Postgres. That is a veto rather than a preference, and it also beats naming a
-    db step in --only, because the failure it prevents (an unwanted write to a
-    live table) cannot be undone by re-running.
+    ClickHouse or Postgres. That is a veto rather than a preference, and it also
+    beats naming a db step in --only, because the failure it prevents (an unwanted
+    write to a live table) cannot be undone by re-running.
     """
-    from . import postgres_export, postgres_export_plugin, baskets, export
+    from . import clickhouse_export, postgres_export_plugin, baskets, export
     from .normalize import fields, databento_norm, nse_norm, plugin as plugin_norm
 
     all_steps = [
         Step("normalize-fyers", fields.run),
         Step("normalize-nse", nse_norm.run),
         Step("normalize-databento", databento_norm.run),
-        Step("strip", fields.run_strip),  # placeholder, may be separate
         Step("baskets", baskets.run),
         Step("csv-export", export.run),
     ]
@@ -144,8 +141,10 @@ def build_normalizer_steps(
         if not csv_only:
             all_steps.append(Step("postgres-plugin", postgres_export_plugin.run))
 
-    if postgres_push_only and not csv_only:
-        all_steps.append(Step("postgres", postgres_export.run))
+    # The contracts push is ClickHouse now (see clickhouse_export). postgres-plugin
+    # above is unaffected and still writes to Postgres.
+    if contracts_push_only and not csv_only:
+        all_steps.append(Step("clickhouse", clickhouse_export.run))
 
     steps = expand_only(only, all_steps)
 
@@ -153,7 +152,7 @@ def build_normalizer_steps(
         # Say what was suppressed rather than silently returning fewer steps: a
         # user who typed "--only postgres --csv-only" needs to know the push did
         # not merely succeed quietly.
-        asked = {s for s in only if s in ("postgres", "postgres-plugin")}
+        asked = {s for s in only if s in ("clickhouse", "postgres-plugin")}
         if asked:
             print(f"--csv-only: skipping {', '.join(sorted(asked))}", file=sys.stderr)
 

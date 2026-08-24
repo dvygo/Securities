@@ -21,10 +21,9 @@ import csv
 import io
 from typing import List
 
-import pandas as pd
 import psycopg
 
-from . import config, paths, runner
+from . import config, parquet_export, paths, runner
 from .normalize import plugin as plugin_norm
 
 # Token namespacing removed by request. Tokens are now pushed as the bare
@@ -73,22 +72,21 @@ def run(opts: runner.Opts) -> None:
         print(f"  No plugin dir for {opts.date_dir} -- run normalize --plugin first")
         return
 
-    csv_files = sorted(plugin_dir.glob("*.csv"))
+    plugin_files = sorted(plugin_dir.glob(f"*{parquet_export.SUFFIX}"))
     if cfg.exchanges:
-        csv_files = [p for p in csv_files if p.name.split("-", 1)[0] in cfg.exchanges]
+        plugin_files = [p for p in plugin_files if p.name.split("-", 1)[0] in cfg.exchanges]
 
-    if not csv_files:
-        print("  No plugin CSVs matched the configured exchange allow-list")
+    if not plugin_files:
+        print("  No plugin files matched the configured exchange allow-list")
         return
 
     print(f"  Appending to {cfg.schema}.{cfg.table}...")
     try:
         with psycopg.connect(cfg.database_url) as conn:
-            for csv_path in csv_files:
-                df = pd.read_csv(csv_path, keep_default_na=False, dtype=str)
-                rows = df.to_dict("records")
+            for path in plugin_files:
+                rows = parquet_export.read_rows(path)
                 n = _copy_append(conn, cfg.schema, cfg.table, plugin_norm.PLUGIN_COLUMNS, rows)
-                print(f"    Appended {n} rows from {csv_path.name}")
+                print(f"    Appended {n} rows from {path.name}")
     except Exception as e:
         print(f"  Error appending to Postgres: {e}")
         raise

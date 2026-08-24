@@ -4,76 +4,90 @@ from typing import List
 
 import pandas as pd
 
-from . import paths, runner
+from . import parquet_export, paths, runner
 
 
-def normalized_csv_files(date_dir: str) -> List[Path]:
+def normalized_files(date_dir: str) -> List[Path]:
     """
-    List eligible normalized CSVs (Fyers, Databento) for a day: everything
-    under normalized/*.csv except already-stripped files and NSE raw
-    passthrough files (nse_norm.py byte-copies those under a different,
-    non-canonical schema -- see its module docstring).
+    List eligible normalized Parquet files (Fyers, Databento) for a day.
+
+    NSE raw passthrough files are excluded by extension now rather than by their
+    "NSE-" prefix: nse_norm.py byte-copies vendor CSVs under a different,
+    non-canonical schema, so they are not Parquet and the glob never sees them.
+    The prefix check is kept anyway, since a future passthrough could arrive in
+    any format and it costs nothing.
     """
     normalized_dir = paths.normalized_dir(date_dir)
     if not normalized_dir.exists():
         return []
     return [
-        p for p in normalized_dir.glob("*.csv")
-        if not p.name.endswith(".stripped.csv") and not p.name.startswith("NSE-")
+        p for p in normalized_dir.glob(f"*{parquet_export.SUFFIX}")
+        if not p.name.startswith("NSE-")
     ]
+
+
+# Rows per yielded batch. Matches the chunk size the download and normalize
+# stages already use, and is the unit the ClickHouse push inserts in.
+CONTRACT_BATCH_ROWS = 50_000
+
+
+def iter_contract_rows(date_dir: str, batch_rows: int = CONTRACT_BATCH_ROWS):
+    """Yield [date, exchange] + normalized-column rows in batches.
+
+    Streams the normalized CSVs rather than materialising every row: an
+    --all-symbols GLBX day is ~1.09M contracts, which the list-returning version
+    below holds as ~1.09M dicts, then again inside whatever consumes it.
+
+    Dedupe on (scriptToken, script) is unchanged and still global, so the `seen`
+    set is the one thing held for the whole walk -- keys only, not rows, the same
+    trade the definition download makes.
+    """
+    seen = set()
+    for path in normalized_files(date_dir):
+        # Normalized filenames are always "{MIC}-...parquet" (XNSE-FYERS.parquet,
+        # XCME-DATABENTO-normalized.parquet, ...); the schema never carries an
+        # exchange column itself, so derive it from the name.
+        exchange = path.name.split("-", 1)[0]
+        batch = []
+        try:
+            for rows in parquet_export.iter_rows(path, batch_rows):
+                for row in rows:
+                    if not row.get("scriptToken"):
+                        continue
+                    key = (row.get("scriptToken"), row.get("script"))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    contract_row = {"date": date_dir, "exchange": exchange}
+                    for col in paths.NORMALIZED_COLUMNS:
+                        contract_row[col] = row.get(col, "")
+                    batch.append(contract_row)
+                    if len(batch) >= batch_rows:
+                        yield batch
+                        batch = []
+        except Exception as e:
+            print(f"  Error reading {path}: {e}")
+        if batch:
+            yield batch
 
 
 def aggregate_contract_rows(date_dir: str) -> List[dict]:
     """
     Aggregate all normalized symbol contracts into flat contract rows.
     Returns list of dicts with [date, exchange] + normalized columns.
+
+    Materialises what iter_contract_rows streams. Kept for the CSV and SQLite
+    exports, which build a DataFrame from the whole day anyway; the database
+    pushes should use the iterator instead.
     """
-    rows = []
-
-    for csv_path in normalized_csv_files(date_dir):
-        # Normalized filenames are always "{MIC}-...csv" (XNSE-FYERS.csv,
-        # XCME-DATABENTO-normalized.csv, ...); the 16-col schema never
-        # carries an exchange column itself, so derive it from the name
-        # like v4-golang's ExchangeMICForNormalizedCSV.
-        exchange = csv_path.name.split("-", 1)[0]
-
-        try:
-            # pandas reads empty CSV cells as float NaN, not "" -- keep_default_na=False
-            # keeps every cell a plain string so blank fields round-trip as "" downstream
-            # (e.g. into COPY's FORCE_NULL) instead of becoming the literal string "nan".
-            df = pd.read_csv(csv_path, keep_default_na=False, dtype=str)
-            for _, row in df.iterrows():
-                contract_row = {
-                    "date": date_dir,
-                    "exchange": exchange,
-                }
-                # Add canonical columns
-                for col in paths.NORMALIZED_COLUMNS:
-                    contract_row[col] = row.get(col, "")
-
-                # Filter out invalid rows
-                if contract_row.get("scriptToken") and contract_row.get("exchange"):
-                    rows.append(contract_row)
-        except Exception as e:
-            print(f"  Error reading {csv_path}: {e}")
-
-    # Deduplicate by (scriptToken, script)
-    seen = set()
-    deduped = []
-    for row in rows:
-        key = (row.get("scriptToken"), row.get("script"))
-        if key not in seen:
-            seen.add(key)
-            deduped.append(row)
-
-    return deduped
+    return [row for batch in iter_contract_rows(date_dir) for row in batch]
 
 
 def aggregate_basket_rows(date_dir: str) -> List[dict]:
     """
     Aggregate all basket constituents into flat basket rows.
     Returns list of dicts with [date, basket] + Nexus's basket columns
-    (paths.NEXUS_BASKET_COLUMNS) wherever the per-basket CSV has them --
+    (paths.NEXUS_BASKET_COLUMNS) wherever the per-basket file has them --
     the "script" fallback covers today's stub baskets.py output, which
     only ever writes [date, symbol, underlying].
     """
@@ -83,12 +97,10 @@ def aggregate_basket_rows(date_dir: str) -> List[dict]:
     if not contracts_day_dir.exists():
         return rows
 
-    # Find all basket CSV files
-    for csv_path in contracts_day_dir.glob("*.csv"):
-        basket_name = csv_path.stem
+    for path in contracts_day_dir.glob(f"*{parquet_export.SUFFIX}"):
+        basket_name = path.stem
         try:
-            df = pd.read_csv(csv_path, keep_default_na=False, dtype=str)
-            for _, row in df.iterrows():
+            for row in parquet_export.read_rows(path):
                 script = row.get("script", "") or row.get("symbol", "")
                 if not script:
                     continue
@@ -99,7 +111,7 @@ def aggregate_basket_rows(date_dir: str) -> List[dict]:
                     basket_row[col] = row.get(col, "")
                 rows.append(basket_row)
         except Exception as e:
-            print(f"  Error reading {csv_path}: {e}")
+            print(f"  Error reading {path}: {e}")
 
     return rows
 

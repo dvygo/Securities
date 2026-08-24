@@ -28,7 +28,13 @@ v4/**/20[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
 v4/constituents/contracts/
 v*-python/constituents/contracts/
 data/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
+# v6 owns its data tree under the package (config.ini [paths].data_dir).
+# Whole tree, not just raw/ and normalized/ -- plugin/ lands here too.
+v*-python/premarket*/data/
 v*-python/strategies*/*/data/
+# Databento batch job downloads: one directory per job id, tens of GB of
+# .dbn.zst. Not matched by the dated data/YYYYMMDD/ rule above.
+data/_batch/
 
 # Binaries, archives, local DBs
 *.exe

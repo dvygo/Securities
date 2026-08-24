@@ -1,13 +1,10 @@
 """Plugin normalization: map each canonical normalized CSV to the legacy pg
 symbol-master schema (docs/plugin/pg_data_types.txt), one output file per
 input file, written to data/YYYYMMDD/v6/plugin/ (sibling of normalized/)."""
-import csv
-import os
 from datetime import datetime, timezone
 
-import pandas as pd
 
-from .. import bin_export, export, paths, runner
+from .. import export, parquet_export, paths, runner
 
 # Column order matches docs/plugin/pg_data_types.txt exactly.
 PLUGIN_COLUMNS = [
@@ -103,54 +100,49 @@ def run(opts: runner.Opts) -> None:
         print("DRY RUN: Would build plugin CSVs")
         return
 
-    print("  Building plugin CSVs...")
-    csv_files = export.normalized_csv_files(opts.date_dir)
-    if not csv_files:
-        print("    No normalized CSVs found")
+    print("  Building plugin files...")
+    normalized = export.normalized_files(opts.date_dir)
+    if not normalized:
+        print("    No normalized files found")
         return
 
     trade_date = f"{opts.date_dir[0:4]}-{opts.date_dir[4:6]}-{opts.date_dir[6:8]}"
     plugin_dir = paths.plugin_dir(opts.date_dir)
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
-    for csv_path in csv_files:
-        exchange = csv_path.name.split("-", 1)[0]
-        output_path = plugin_dir / csv_path.name
-        # Staged the same way as the normalizer and the download side: PID-scoped so
-        # concurrent runs cannot share a path, and NOT ending in .csv, because
-        # postgres_export_plugin globs plugin/*.csv -- a leftover that still looked
-        # like a finished file is what got pushed twice and broke the (token,
-        # trade_date) primary key.
-        temp_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
-
-        # Chunked read + append, so an --all-symbols venue is never held whole:
+    for src_path in normalized:
+        exchange = src_path.name.split("-", 1)[0]
+        output_path = plugin_dir / src_path.name
+        # Staging and promote-on-close live in RowWriter: PID-scoped so concurrent
+        # runs cannot share a path, and never under the finished name -- a leftover
+        # that looked finished is what got pushed twice and broke the
+        # (token, trade_date) primary key.
+        #
+        # Chunked read + write, so an --all-symbols venue is never held whole:
         # XCME is 961k rows and OPRA 2.03M, which previously became a source frame,
         # a list of mapped dicts and an output frame before a single write.
+        writer = parquet_export.RowWriter(output_path, PLUGIN_COLUMNS)
         total = 0
         try:
-            with open(temp_path, "w", newline="", encoding="utf-8-sig") as fh:
-                writer = csv.DictWriter(fh, fieldnames=PLUGIN_COLUMNS, extrasaction="ignore", restval="")
-                writer.writeheader()
-                for frame in pd.read_csv(
-                    csv_path, keep_default_na=False, dtype=str, chunksize=PLUGIN_CHUNK_ROWS
-                ):
-                    batch = [
-                        map_row(row, trade_date, exchange)
-                        for row in frame.to_dict("records")
-                        if row.get("scriptToken")
-                    ]
-                    if not batch:
-                        continue
-                    writer.writerows(batch)
-                    fh.flush()
-                    total += len(batch)
+            for rows in parquet_export.iter_rows(src_path, PLUGIN_CHUNK_ROWS):
+                batch = [
+                    map_row(row, trade_date, exchange)
+                    for row in rows
+                    if row.get("scriptToken")
+                ]
+                if not batch:
+                    continue
+                writer.write(batch)
+                total += len(batch)
         except Exception as e:
-            print(f"    Error processing {csv_path}: {e}")
-            temp_path.unlink(missing_ok=True)
+            print(f"    Error processing {src_path}: {e}")
+            writer.abort()
             continue
 
-        # An empty venue still gets a header-only file: unlike the raw/normalized
-        # stages, a plugin CSV with no rows is a valid "nothing to push today".
-        paths.promote_staging(temp_path, output_path)
-        print(f"    Wrote {total} rows to {output_path}")
-        bin_export.write_companion_safe(output_path)
+        # Unlike the raw/normalized stages, an empty venue here is a valid
+        # "nothing to push today" -- but a row-group-less Parquet file is not
+        # readable, so nothing is written and the push simply finds no file.
+        if writer.close():
+            print(f"    Wrote {total} rows to {output_path}")
+        else:
+            print(f"    No plugin rows for {exchange}")
