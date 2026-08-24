@@ -2,11 +2,14 @@
 import re
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Iterator, List
 
+import databento as db
 import pandas as pd
 
 from .. import parquet_export, paths, runner
+from ..sources import databento_src as ds
 from . import broker_script, counter_token, price, session
 
 
@@ -502,6 +505,82 @@ VENUE_MAPPERS = {
 }
 
 
+def _manual_dbn_files(directory: Path) -> List[Path]:
+    """*.dbn/*.dbn.zst files in a manual drop directory, sorted by name.
+
+    condition.json/metadata.json/manifest.json (whatever else the operator
+    extracted from a batch job's zip alongside the payload) are ignored by
+    construction -- only the DBN suffix is matched.
+    """
+    return sorted(p for p in directory.iterdir() if p.name.endswith((".dbn", ".dbn.zst")))
+
+
+def _manual_dbn_row_batches(
+    files: List[Path], expected_dataset: str, chunk_rows: int
+) -> Iterator[List[Dict[str, Any]]]:
+    """Definition rows from one or more manually-dropped DBN files, batched.
+
+    Yields the same row shape databento_src.py's own _iter_definition_batches
+    produces off a live download, so the mapper/passthrough code below treats a
+    manual drop identically to a streamed one. Deduped on instrument_id across
+    all files together (first file wins, sorted by filename), matching that
+    same download-side dedupe -- a definition schema restates the same
+    instrument intraday, and stacking several sessions' files should still
+    resolve each instrument once.
+
+    A file whose schema isn't "definition", or whose dataset doesn't match the
+    venue folder it was dropped in, is skipped with a warning rather than
+    silently mixed in -- a misplaced file (wrong venue's export, or a trades/
+    mbo dump instead of a definition one) would otherwise corrupt the venue's
+    normalized output with no error at all.
+    """
+    seen: set = set()
+    batch: List[Dict[str, Any]] = []
+    for path in files:
+        store = db.DBNStore.from_file(path)
+        if str(store.schema) != "definition":
+            print(f"      Skipping {path.name}: schema={store.schema}, expected definition")
+            continue
+        if str(store.dataset) != expected_dataset:
+            print(f"      Skipping {path.name}: dataset={store.dataset}, expected "
+                  f"{expected_dataset} -- wrong venue folder?")
+            continue
+        for rec in store:
+            if not isinstance(rec, db.InstrumentDefMsg):
+                continue
+            if rec.instrument_id in seen:
+                continue
+            seen.add(rec.instrument_id)
+            row = {
+                "instrument_id": rec.instrument_id,
+                "stype_in_symbol": rec.raw_symbol,
+                "stype_out_symbol": rec.instrument_id,
+                "stype_in": "raw_symbol",
+                "stype_out": "instrument_id",
+                "start_ts": rec.pretty_activation,
+                "end_ts": rec.pretty_expiration,
+                "instrument_class": str(rec.instrument_class),
+            }
+            row.update({f: ds._def_value(rec, f) for f in paths.DEFINITION_FIELDS})
+            batch.append(row)
+            if len(batch) >= chunk_rows:
+                yield batch
+                batch = []
+    if batch:
+        yield batch
+
+
+def _csv_row_batches(csv_path: Path, chunk_rows: int) -> Iterator[List[Dict[str, Any]]]:
+    """Rows from a streamed-download raw CSV, batched.
+
+    dtype=str keeps ids and symbols verbatim: pandas otherwise widens an int
+    column to float wherever a value is missing, which is what turned
+    instrument ids into "637543226.0".
+    """
+    for frame in pd.read_csv(csv_path, chunksize=chunk_rows, dtype=str, keep_default_na=False):
+        yield frame.to_dict("records")
+
+
 def run(opts: runner.Opts) -> None:
     """Normalize Databento data: stream each raw CSV, map symbols, append output.
 
@@ -524,11 +603,25 @@ def run(opts: runner.Opts) -> None:
     # Process each Databento venue independently -- stype_in/stype_out
     # semantics differ per venue, so each gets its own mapper.
     for venue, mapper in VENUE_MAPPERS.items():
+        venue_cfg = ds.VENUE_CONFIGS[venue]
+        manual_dir = paths.manual_venue_dir(opts.date_dir, venue_cfg.venue_name)
+        manual_files = _manual_dbn_files(manual_dir) if manual_dir.is_dir() else []
         csv_path = paths.databento_raw_csv(opts.date_dir, venue)
-        if not csv_path.exists():
+
+        if manual_files:
+            # A manual drop wins over the streamed CSV when both exist for the
+            # same day -- it is a deliberate operator override, e.g. a batch
+            # job's definition file dropped in place of the day's own
+            # --all-symbols download.
+            source = f"{len(manual_files)} manual file(s) in {manual_dir.name}/"
+            row_batches = _manual_dbn_row_batches(manual_files, venue_cfg.dataset, NORMALIZE_CHUNK_ROWS)
+        elif csv_path.exists():
+            source = csv_path.name
+            row_batches = _csv_row_batches(csv_path, NORMALIZE_CHUNK_ROWS)
+        else:
             continue
 
-        print(f"    Processing {venue}...")
+        print(f"    Processing {venue} ({source})...")
         output_path = normalized_dir / f"{venue.upper()}-DATABENTO-normalized{parquet_export.SUFFIX}"
 
         bases = counter_token.bases_for(venue)
@@ -540,14 +633,9 @@ def run(opts: runner.Opts) -> None:
         writer = parquet_export.RowWriter(output_path, paths.NORMALIZED_COLUMNS)
         total = 0
         try:
-            # The raw file is still vendor CSV. dtype=str keeps ids and symbols
-            # verbatim: pandas otherwise widens an int column to float wherever a
-            # value is missing, which is what turned ids into "637543226.0".
-            for frame in pd.read_csv(
-                csv_path, chunksize=NORMALIZE_CHUNK_ROWS, dtype=str, keep_default_na=False
-            ):
+            for rows in row_batches:
                 batch = []
-                for row in frame.to_dict("records"):
+                for row in rows:
                     norm_row = mapper(row, ref_date)
                     if norm_row.get("script"):
                         _copy_definition_fields(row, norm_row)
@@ -564,7 +652,7 @@ def run(opts: runner.Opts) -> None:
                 total += len(batch)
                 print(f"      {total} row(s)...", flush=True)
         except Exception as e:
-            print(f"      Error processing {csv_path}: {e}")
+            print(f"      Error processing {source}: {e}")
             writer.abort()
             continue
 

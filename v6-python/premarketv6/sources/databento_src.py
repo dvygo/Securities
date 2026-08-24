@@ -5,12 +5,16 @@ Venue wiring:
   - stype_in defaults: XCME=parent (raw_symbol if --all-symbols), XCBO=parent, XNAS=raw_symbol
   - XCME defaults to --all-symbols and so takes the definition path; XCBO/XNAS
     stay basket-driven unless the flag is passed
-  - --all-symbols in hist mode only works on EQUS.MINI (XNAS); GLBX.MDP3 and
-    OPRA.PILLAR reject ALL_SYMBOLS at symbology.resolve
+  - --all-symbols in hist mode only works on EQUS.MINI (XNAS) via symbology.resolve;
+    GLBX.MDP3 and OPRA.PILLAR go through the definition schema instead, fetched via
+    a batch job (_download_definitions_via_batch), not streamed
   - stype_out sent to API is always instrument_id
   - date range computed from metadata.get_dataset_range() minus a lookback window
-  - output: YYYYMMDD/raw/{VENUE}-DATABENTO.csv with columns matching
-    internal/databento/mapping.go's MappingColumns
+  - output:
+      - definition schema (XCME/XCBO --all-symbols): YYYYMMDD/{VENUE}/*.dbn.zst,
+        via paths.manual_venue_dir -- no CSV, read directly by normalize
+      - everything else: YYYYMMDD/raw/{VENUE}-DATABENTO.csv, columns matching
+        internal/databento/mapping.go's MappingColumns
 """
 import csv
 import datetime as dt
@@ -38,12 +42,9 @@ HIST_RESOLVE_RETRY_DELAY_SEC = 4
 # 422 symbology_all_symbols_with_incompatible_dataset -- the response is a single
 # JSON blob and GLBX/OPRA carry ~1-2M instruments a day, so only EQUS.MINI (~13k)
 # is accepted. Datasets listed here take the cheap resolve path for --all-symbols;
-# everything else falls back to the definition schema (see _iter_definition_batches).
+# everything else falls back to the definition schema, fetched via a batch job
+# (see _download_definitions_via_batch) rather than symbology.resolve.
 ALL_SYMBOLS_HIST_DATASETS = {"EQUS.MINI"}
-
-# Rows buffered before the definition path yields a chunk to the CSV writer. Only
-# the dedupe set is held for the whole run, so this bounds the row memory.
-DEFINITION_CHUNK_ROWS = 50_000
 
 MAPPING_COLUMNS = [
     "instrument_id",
@@ -58,13 +59,6 @@ MAPPING_COLUMNS = [
     # what tells the normalizer to fall back to parsing the symbol string.
     "instrument_class",
 ]
-
-# The definition path can fill far more than symbology.resolve returns, so it gets
-# its own wider header: the shared columns first, in the same order, then every
-# remaining InstrumentDefMsg field (paths.DEFINITION_FIELDS). Keeping the shared
-# eight in front means anything reading these CSVs positionally sees the old shape
-# unchanged, and the normalizer's mappers need no branch for which path wrote them.
-DEFINITION_COLUMNS = MAPPING_COLUMNS + paths.DEFINITION_FIELDS
 
 
 def _def_value(record, name: str) -> str:
@@ -279,9 +273,28 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
         stype_in = "raw_symbol"
 
     if opts.dry_run:
-        route = "definition schema" if use_definitions else "symbology.resolve"
+        route = "definition schema (batch)" if use_definitions else "symbology.resolve"
         print(f"DRY RUN: Would download {venue} {mode} via {route} "
               f"stype_in={stype_in} for symbols: {symbols}")
+        return
+
+    if use_definitions:
+        # No CSV staging for this path at all -- the batch job's .dbn.zst lands
+        # directly in the venue's manual-drop directory. See
+        # _download_definitions_via_batch for why this is a submit+poll+download
+        # rather than the streaming approach every other branch here uses.
+        dest_dir = paths.manual_venue_dir(opts.date_dir, venue_cfg.venue_name)
+        if dest_dir.is_dir() and any(p.name.endswith((".dbn", ".dbn.zst")) for p in dest_dir.iterdir()):
+            # An existing file is either an operator's manual drop or a prior
+            # successful run of this same branch -- either way it is a complete
+            # file (this function only ever moves a fully-downloaded file into
+            # place), so re-submitting a job to overwrite it is only waste.
+            print(f"  {dest_dir} already has a definition file -- skipping "
+                  f"(remove it first to force a re-fetch)")
+            return
+        client = db.Historical(key=api_key)
+        total_bytes = _download_definitions_via_batch(client, venue_cfg, stype_in, opts.date_dir, dest_dir)
+        print(f"Wrote {total_bytes:,} byte(s) to {dest_dir}")
         return
 
     raw_dir = paths.raw_dir(opts.date_dir)
@@ -298,14 +311,13 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     temp_csv = output_csv.with_name(f"{output_csv.name}.tmp.{os.getpid()}")
 
     if mode == "hist":
+        # use_definitions returned above; every hist download reaching here goes
+        # through symbology.resolve.
         client = db.Historical(key=api_key)
-        if use_definitions:
-            batches = _iter_definition_batches(client, venue_cfg, stype_in)
-        else:
-            batches = _iter_hist_batches(
-                client, venue_cfg, symbols, stype_in, opts.date_dir,
-                cfg.hist_lookback_days, opts.hist_range,
-            )
+        batches = _iter_hist_batches(
+            client, venue_cfg, symbols, stype_in, opts.date_dir,
+            cfg.hist_lookback_days, opts.hist_range,
+        )
     elif mode == "live":
         batches = _iter_live_batches(
             api_key, venue_cfg, symbols, stype_in, opts.live_start,
@@ -327,12 +339,10 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     try:
         with open(temp_csv, "w", newline="", encoding="utf-8-sig") as fh:
             # restval="" so the resolve path, which cannot fill instrument_class,
-            # writes it empty instead of raising on the missing key.
-            # extrasaction="ignore" makes a too-narrow header silently drop columns
-            # rather than raise, so this has to match the producer: the definition
-            # path fills DEFINITION_COLUMNS, every other path only MAPPING_COLUMNS.
-            fieldnames = DEFINITION_COLUMNS if use_definitions else MAPPING_COLUMNS
-            writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore", restval="")
+            # writes it empty instead of raising on the missing key. The definition
+            # path never reaches here (see the early return above), so this is
+            # always MAPPING_COLUMNS now.
+            writer = csv.DictWriter(fh, fieldnames=MAPPING_COLUMNS, extrasaction="ignore", restval="")
             writer.writeheader()
             fh.flush()
             for batch_rows in batches:
@@ -461,118 +471,112 @@ def _resolve_batch(
     return left_rows + right_rows, left_nf + right_nf
 
 
-def _iter_definition_batches(
+# Poll interval/ceiling for the definitions batch job below. Measured on a real
+# GLBX.MDP3 ALL_SYMBOLS single-day job (2026-08-24): ~27 minutes queued+processing
+# for 1.51M records / 47.3 MB compressed. The ceiling has headroom above that,
+# not a tight bound on the observed time -- an automated run should not hang
+# forever behind a queue, but 20 minutes false-failed on real, unstuck jobs.
+DEFINITION_BATCH_POLL_INTERVAL_SEC = 10
+DEFINITION_BATCH_POLL_CEILING_SEC = 45 * 60
+
+
+def _download_definitions_via_batch(
     client: db.Historical,
     venue_cfg: VenueConfig,
     stype_in: str,
-):
-    """ALL_SYMBOLS via the `definition` schema, for datasets symbology.resolve refuses.
+    date_dir: str,
+    dest_dir: Path,
+) -> int:
+    """ALL_SYMBOLS `definition` schema for one day, via the batch API.
 
-    Yields the same MAPPING_COLUMNS shape resolve() produces, so both the CSV writer
-    and normalize-databento consume it unchanged: stype_in_symbol carries the ticker
-    text and stype_out_symbol the numeric id, which is what the normalizer's
-    _resolve_symbol_id_fallback expects for a stype_out="instrument_id" row.
+    Replaces the old timeseries.get_range() streaming approach: that read DBN
+    records off an HTTP stream and re-encoded them as CSV text by hand, which
+    is strictly lossier and slower than just keeping what Databento already
+    sends -- a DBN file, zstd-compressed. This submits a batch job for the
+    same query and downloads the resulting .dbn.zst straight into dest_dir
+    with no CSV in between. normalize/databento_norm.py reads a venue's
+    manual-drop directory (paths.manual_venue_dir) in preference to a streamed
+    CSV, and that is exactly what dest_dir is -- an operator's own manual
+    batch download and this automated one land in the same place and are
+    indistinguishable to normalize.
 
-    Requests a single session rather than a lookback window. Definitions are a daily
-    snapshot of the whole instrument universe, so N days would be N copies of the
-    same instruments -- GLBX alone is ~1.1M records / ~600 MB for one day.
+    The requested day is date_dir itself, not "the latest complete session"
+    the old streaming path computed defensively. An automated run asks for
+    its own day and lets Databento say no if that day is not ready yet -- the
+    matching engine may not have produced a session's data at the time this
+    runs. submit_job() validates the range synchronously, so that rejection
+    surfaces immediately as an exception; it is deliberately not caught here.
+    Silently substituting yesterday's session, the way the old code did, would
+    hide exactly the condition this needs to surface.
 
-    Only the dedupe set of instrument ids is held for the whole run; rows are yielded
-    in DEFINITION_CHUNK_ROWS chunks so the caller streams them to the CSV rather than
-    holding ~1M row dicts, which is the same reason the resolve path yields per batch.
+    Polling failures are the other case that must not go quiet: a job stuck
+    past DEFINITION_BATCH_POLL_CEILING_SEC raises rather than looping forever,
+    since this runs inside an automated pipeline step, not a script someone is
+    watching.
     """
-    # No `end` on purpose: the API forward-fills it from `start` at the request's
-    # resolution, so a day-resolution start with no end is exactly one session. The
-    # forward-filled end is still bounds-checked though, so `start` has to be the
-    # last *complete* session or the implied end lands past what is published and the
-    # request 422s with data_end_after_available_end. dataset_range["end"] is an
-    # exclusive bound carrying a mid-session timestamp (e.g. 2026-08-12T05:20Z), so
-    # its own date is incomplete -- step back a day from it. That also holds when the
-    # bound is exactly midnight, since the forward-filled end is itself exclusive.
-    available_end = client.metadata.get_dataset_range(dataset=venue_cfg.dataset)["end"]
-    start_date = dt.datetime.strptime(available_end[:10], "%Y-%m-%d").date() - dt.timedelta(days=1)
-    start_s = start_date.isoformat()
+    start = dt.datetime.strptime(date_dir, "%Y%m%d").date()
+    end = start + dt.timedelta(days=1)
 
-    print(f"  Resolving {venue_cfg.venue_name} hist: ALL_SYMBOLS via definition schema, "
-          f"stype_in={stype_in}, start={start_s} (no end_date, defaults to latest available)")
-
-    meta_args = dict(
-        dataset=venue_cfg.dataset, symbols=ALL_SYMBOLS_SENTINEL, stype_in=stype_in,
-        schema="definition", start=start_s,
+    print(f"  Submitting batch job: {venue_cfg.dataset} ALL_SYMBOLS definition, "
+          f"{start.isoformat()}..{end.isoformat()}, encoding=dbn compression=zstd", flush=True)
+    ack = client.batch.submit_job(
+        dataset=venue_cfg.dataset,
+        symbols=ALL_SYMBOLS_SENTINEL,
+        schema="definition",
+        stype_in=stype_in,
+        start=start.isoformat(),
+        end=end.isoformat(),
+        encoding="dbn",
+        compression="zstd",
+        split_duration="day",
+        delivery="download",
     )
-    count = client.metadata.get_record_count(**meta_args)
-    size = client.metadata.get_billable_size(**meta_args)
-    print(f"    {count:,} record(s), {size / 1e6:.1f} MB to download...", flush=True)
+    job_id = ack["id"]
+    state = ack.get("state", "")
+    print(f"    job {job_id}: {state}", flush=True)
 
-    # Definitions restate the same instrument intraday, so dedupe on instrument_id.
-    # Keeping ids only (not rows) is what lets this stream: ~1M ints, not ~1M dicts.
-    #
-    # The set doubles as the resume marker. This request is a single ~600 MB
-    # transfer and the gateway does 504 on it, so it gets the same retry budget the
-    # resolve path has. A retry re-reads the day from the start, but every id
-    # already emitted is in `seen` by then, so only rows the caller has not been
-    # given yet are yielded -- the restart cannot duplicate what is already on disk.
-    seen: set[int] = set()
-    total = 0
-
-    for attempt in range(1, HIST_RESOLVE_RETRIES + 1):
-        chunk: list[dict] = []
-        try:
-            store = client.timeseries.get_range(
-                dataset=venue_cfg.dataset,
-                symbols=ALL_SYMBOLS_SENTINEL,
-                stype_in=stype_in,
-                schema="definition",
-                start=start_s,
+    elapsed = 0
+    while state not in ("done", "expired"):
+        if elapsed >= DEFINITION_BATCH_POLL_CEILING_SEC:
+            raise RuntimeError(
+                f"batch job {job_id} still {state!r} after {elapsed}s -- giving up. "
+                f"The job itself is unaffected and can be downloaded later with "
+                f"client.batch.download({job_id!r}, ...) once it finishes."
             )
-            for record in store:
-                if not isinstance(record, db.InstrumentDefMsg):
-                    continue
-                if record.instrument_id in seen:
-                    continue
-                seen.add(record.instrument_id)
-                chunk.append({
-                    "instrument_id": record.instrument_id,
-                    "stype_in_symbol": record.raw_symbol,
-                    "stype_out_symbol": record.instrument_id,
-                    "stype_in": stype_in,
-                    "stype_out": "instrument_id",
-                    "start_ts": record.pretty_activation,
-                    "end_ts": record.pretty_expiration,
-                    # An InstrumentClass enum, not a str -- str() it explicitly so
-                    # the CSV carries the one-char code ("S") and never the repr
-                    # ("<InstrumentClass.FUTURE_SPREAD: 'S'>"). Codes: F future,
-                    # C call, P put, S/T/M spreads, X FX spot, Y commodity spot,
-                    # B bond, K stock, I index.
-                    "instrument_class": str(record.instrument_class),
-                    # Everything else the definition record carries. Only a handful
-                    # of these feed the canonical normalized columns; the rest are
-                    # kept because discarding them at the writer meant re-downloading
-                    # ~600 MB to answer a question about tick rules or lot sizes.
-                    **{f: _def_value(record, f) for f in paths.DEFINITION_FIELDS},
-                })
-                if len(chunk) >= DEFINITION_CHUNK_ROWS:
-                    total += len(chunk)
-                    print(f"    {total:,} unique instrument(s)...", flush=True)
-                    yield chunk
-                    chunk = []
-            break
-        except Exception as e:
-            # Hand over whatever this attempt completed before failing; it is
-            # deduped and valid, and dropping it would only mean re-fetching it.
-            if chunk:
-                total += len(chunk)
-                yield chunk
-            if attempt == HIST_RESOLVE_RETRIES:
-                raise
-            print(f"    attempt {attempt}/{HIST_RESOLVE_RETRIES} failed after {total:,} row(s): "
-                  f"{str(e)[:80]}; retrying in {HIST_RESOLVE_RETRY_DELAY_SEC}s", flush=True)
-            time.sleep(HIST_RESOLVE_RETRY_DELAY_SEC)
+        time.sleep(DEFINITION_BATCH_POLL_INTERVAL_SEC)
+        elapsed += DEFINITION_BATCH_POLL_INTERVAL_SEC
+        state = client.batch.get_job_details(job_id).get("state", "")
+        print(f"    job {job_id}: {state} ({elapsed}s)", flush=True)
 
-    if chunk:
-        total += len(chunk)
-        yield chunk
-    print(f"    {total:,} unique instrument(s) after dedupe on instrument_id")
+    if state == "expired":
+        raise RuntimeError(f"batch job {job_id} expired before it could be downloaded")
+
+    files = client.batch.list_files(job_id)
+    data_files = sorted(
+        str(f["filename"]) for f in files
+        if str(f.get("filename", "")).endswith((".dbn", ".dbn.zst"))
+    )
+    if not data_files:
+        raise RuntimeError(f"batch job {job_id} finished with no .dbn/.dbn.zst file")
+
+    # batch.download() nests under {output_dir}/{job_id}/{filename}; the date
+    # dir is passed as output_dir so that lands as {date_dir}/{job_id}/{name},
+    # then each file is moved up into dest_dir (…/{VENUE}/{name}) to match the
+    # flat layout a manual extraction produces -- normalize's manual-drop
+    # reader globs dest_dir directly, one level, no job-id subfolder.
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    total_bytes = 0
+    for name in data_files:
+        written = client.batch.download(job_id=job_id, output_dir=dest_dir.parent, filename_to_download=name)
+        for src in written:
+            target = dest_dir / src.name
+            os.replace(src, target)
+            total_bytes += target.stat().st_size
+            print(f"    {target}", flush=True)
+        job_scratch = dest_dir.parent / job_id
+        if job_scratch.is_dir() and not any(job_scratch.iterdir()):
+            job_scratch.rmdir()
+    return total_bytes
 
 
 def _iter_live_batches(

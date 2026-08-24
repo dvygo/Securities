@@ -83,6 +83,28 @@ def raw_dir(as_of: str) -> Path:
     return day_dir(as_of) / "raw"
 
 
+def manual_venue_dir(as_of: str, venue_name: str) -> Path:
+    """
+    A venue's Databento batch definition payload for one day:
+    data/YYYYMMDD/{VENUE}/ (e.g. data/20260824/XCBO/) -- a sibling of the v6/
+    pipeline tree at the same date, not nested under it.
+
+    Two things land here, indistinguishably to normalize:
+      - premarketv6's own --all-symbols download for GLBX.MDP3/OPRA.PILLAR,
+        which submits a batch job and downloads the resulting *.dbn.zst here
+        directly (sources/databento_src.py's _download_definitions_via_batch)
+      - an operator's own manual extraction of a batch job's zip (condition.json/
+        metadata.json/manifest.json are ignored; only the *.dbn/*.dbn.zst
+        definition file is read), dropped here by hand as an override
+
+    If a file already exists for a venue/day when the automated download would
+    run, that's a manual override and normalize/databento_norm.py reads it in
+    preference to re-fetching. Nothing here is CSV -- normalize reads the DBN
+    directly.
+    """
+    return data_root() / as_of / venue_name.upper()
+
+
 def fyers_raw_dir(as_of: str) -> Path:
     """Fyers raw directory: YYYYMMDD/raw/FYERS/"""
     return raw_dir(as_of) / "FYERS"
