@@ -186,19 +186,19 @@ def run(opts: runner.Opts) -> None:
         # filter above so the sequence has no gaps. One counter per output file,
         # which is what has to be internally unique -- XNSE and XBOM each merge
         # several source feeds into a single file.
-        bases = counter_token.bases_for(mic)
-        if bases is not None:
-            # Row count is known here, so the block is checked before numbering
+        prefix = counter_token.prefix_for(mic)
+        if prefix is not None:
+            # Row count is known here, so capacity is checked before numbering
             # rather than discovered by assign() partway through.
-            counter_token.check_capacity(mic, bases[0], len(all_rows))
+            counter_token.check_capacity(mic, prefix, len(all_rows))
             for n, row in enumerate(all_rows, 1):
-                row["counterToken"] = counter_token.assign(bases, n)
+                row["counterToken"] = counter_token.assign(prefix, n)
 
             # counterTokenV2: stable across days. Every row is already in
             # memory here, so the whole symbol set is known and the carry-
             # forward needs no extra pass.
             exchange_cfg = counter_token.exchange_for(mic)
-            v2_base = exchange_cfg.counter_base_v2
+            v2_prefix = exchange_cfg.counter_prefix_v2
             try:
                 previous, prev_day = counter_token.previous_tokens(
                     opts.date_dir, mic, exchange_cfg.venue_id)
@@ -207,8 +207,8 @@ def run(opts: runner.Opts) -> None:
                 continue
             scripts = [r.get("script", "") for r in all_rows]
             tokens = counter_token.carry_forward(
-                previous, scripts, exchange_cfg.venue_id, v2_base)
-            counter_token.check_capacity(mic, v2_base, tokens.high_water)
+                previous, scripts, exchange_cfg.venue_id, v2_prefix)
+            counter_token.check_capacity(mic, v2_prefix, tokens.high_water)
             for row in all_rows:
                 row["counterTokenV2"] = tokens.token(row.get("script", ""))
             counter_token.merge_into_manifest(opts.date_dir, mic, tokens)

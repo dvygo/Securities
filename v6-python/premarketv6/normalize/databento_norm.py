@@ -706,8 +706,8 @@ def run(opts: runner.Opts) -> None:
                 continue
             scripts = [script for script in _source_scripts() if script]
             tokens = counter_token.carry_forward(
-                previous, scripts, exchange_cfg.venue_id, exchange_cfg.counter_base_v2)
-            counter_token.check_capacity(mic, exchange_cfg.counter_base_v2, tokens.high_water)
+                previous, scripts, exchange_cfg.venue_id, exchange_cfg.counter_prefix_v2)
+            counter_token.check_capacity(mic, exchange_cfg.counter_prefix_v2, tokens.high_water)
             new_count = len(tokens.assigned) - (
                 0 if previous is None
                 else len(set(tokens.assigned) & set(previous.assigned)))
@@ -716,7 +716,7 @@ def run(opts: runner.Opts) -> None:
                   + (f", carried from {prev_day}" if previous else ", first day"))
             row_batches = _row_batches()
 
-        bases = counter_token.bases_for(venue)
+        prefix = counter_token.prefix_for(venue)
         # PID-scoped staging and promote-on-close live in RowWriter, for the same
         # reason the download side stages: two runs must not share one temp path,
         # and readers must never see a partial file. A staging name that still
@@ -737,9 +737,9 @@ def run(opts: runner.Opts) -> None:
                 # Numbered after the script filter so the sequence has no gaps.
                 # `total` carries the counter across chunks, keeping it gapless
                 # and unique for the whole venue rather than per batch.
-                if bases is not None:
+                if prefix is not None:
                     for n, r in enumerate(batch, total + 1):
-                        r["counterToken"] = counter_token.assign(bases, n)
+                        r["counterToken"] = counter_token.assign(prefix, n)
                 if tokens is not None:
                     for r in batch:
                         r["counterTokenV2"] = tokens.token(r.get("script", ""))

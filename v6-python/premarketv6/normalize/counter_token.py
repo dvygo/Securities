@@ -1,4 +1,4 @@
-"""counterToken: a per-venue positional counter in a reserved numeric block.
+"""counterToken: a per-venue counter carrying the venue's id as a prefix.
 
 scriptToken carries each source's own instrument id, which is only unique within
 that source -- Databento's instrument_id is unique within a dataset, so on
@@ -7,32 +7,33 @@ start at 1 and run straight into GLBX's low ids. Anything keying on a token
 without an exchange column needs something collision-free, and the pg
 symbol-master table the plugin pushes to keys on exactly (token, trade_date).
 
-So every venue is numbered into its own reserved block:
+So the venue's id is the token's leading digits and the counter follows, widening
+as it fills:
 
-    counterToken = base * BLOCK + n,  n counting from 1 inside the block
+    prefix 10 -> 1000..1009, 10000..10099, 100000..100999, ...
 
-This is arithmetic, not string concatenation. An earlier version glued the base
-digit onto the counter, which made the token's width follow the counter's --
-"1"+"35000" and "1"+"1" gave 135000 and 11, the same nominal base at wildly
-different magnitudes, with no correct text ordering. Fixed-size blocks give every
-token the same width and sort correctly as text or number.
+Prefixes are ALWAYS two digits, 10..99. That is load-bearing, not cosmetic: with
+variable-width counters, single-digit prefixes collide the moment a second digit
+appears -- prefix 1's three-digit range (100..199) is prefix 10's two-digit range
+(100..109). Measured: prefixes 1..12 over 200k tokens each produced 122,220
+collisions; 10..30 over 300k each produced none. validate() refuses anything
+outside 10..99.
 
-Each venue owns ONE block per column, and filling it raises rather than wrapping:
-a wrapped counter would collide inside the venue's own trade_date, which is the
-one failure this exists to prevent. The blocks are no longer a table in this
-file -- they are config.ini's [EXCHANGE:<MIC>] base_countertoken_integer and
-base_countertokenv2_integer, pre-flighted by validate() before normalize runs.
+Each venue owns TWO consecutive prefixes: venue_id for counterToken and
+venue_id+1 for counterTokenV2. Deriving the second from the first means the two
+columns cannot be configured onto the same prefix, which would make them
+indistinguishable as integers.
 
-The numbering is positional and therefore per-day -- a contract gets a different
-counterToken tomorrow if the universe shifts. That is intended, since the pg
-primary key includes trade_date, but it means nothing may join on counterToken
-across dates.
+Trade-off accepted knowingly: tokens are no longer fixed-width, so they do not
+sort correctly as TEXT ("10" < "100" < "11"). Sort them as numbers. The previous
+fixed-size-block scheme sorted either way; this one buys a token that names its
+venue in its leading digits instead.
 
-int32 budget: six venues x two columns = 12 blocks, bases 1..12, topping out at
-1,300,000,000 -- 61% of int32's 2,147,483,647. Bases up to 20 stay inside it
-(2,100,000,000), so there is room for four more blocks before a 32-bit consumer
-would overflow. validate() refuses anything past MAX_BASE rather than letting it
-through to be discovered by an overflowed consumer downstream.
+int32 budget: every two-digit prefix reaches a 7-digit counter before crossing
+int32's 2,147,483,647, giving 11,111,110 rows per prefix. The largest venue,
+OPRA, wrote 2,002,550 rows on 2026-08-26 -- 18% of that. check_capacity()
+refuses a day that would not fit rather than wrapping, since a wrapped counter
+would collide inside the venue's own trade_date.
 """
 import json
 import os
@@ -43,51 +44,68 @@ from typing import Dict, List, Optional, Sequence
 
 from .. import config, paths
 
-
-BLOCK = 100_000_000
-
-# Widest signed 32-bit value a downstream consumer can hold. The blocks are sized
-# so a token never exceeds it; validate() below refuses a config that would.
+# Widest signed 32-bit value a downstream consumer can hold.
 INT32_MAX = 2_147_483_647
 
-# Highest base whose entire block still fits int32: base*BLOCK + BLOCK <= INT32_MAX.
-MAX_BASE = (INT32_MAX - BLOCK) // BLOCK          # 20
+# Prefixes are two digits. venue_id is the counterToken prefix and venue_id+1 is
+# counterTokenV2's, so the highest usable venue_id leaves room for its pair.
+MIN_PREFIX = 10
+MAX_PREFIX = 99
+MAX_VENUE_ID = MAX_PREFIX - 1          # 98, whose pair is 99
 
 
-def _blocks(base: int):
-    """The block tuple assign() takes, from a single configured base integer.
+def assign(prefix: int, n: int) -> str:
+    """Token for the n-th row (1-based) of a venue owning `prefix`.
 
-    One block per base, not two. The old table gave every venue a spill block,
-    doubling its ceiling to 200M rows -- but measured usage is ~2% of a single
-    block (OPRA 2,002,550 rows on 2026-08-26, the largest venue), and two blocks
-    per venue for BOTH v1 and v2 needs 24 blocks, topping out at 2,500,000,000
-    and overflowing int32. One block each gives 12 blocks, top 1,300,000,000,
-    with the same 100M-row ceiling per venue that has never been approached.
+    The counter widens as each width fills: 10 values at one digit, 100 at two,
+    1000 at three. Raises rather than wrapping once the next width would cross
+    int32.
     """
-    return (base,)
+    width, remaining = 1, n
+    while remaining > 10 ** width:
+        remaining -= 10 ** width
+        width += 1
+        if (prefix + 1) * (10 ** width) - 1 > INT32_MAX:
+            raise ValueError(
+                f"counterToken exhausted for prefix {prefix}: row {n:,} needs a "
+                f"{width}-digit counter, which crosses int32 "
+                f"({INT32_MAX:,}). Do not wrap -- the tokens would collide."
+            )
+    return f"{prefix}{remaining - 1:0{width}d}"
 
 
-# venue_id N owns blocks (2N-1, 2N), so the highest venue_id whose v2 block still
-# fits int32 is MAX_BASE//2 -- ten venues, against the six allocated today.
-MAX_VENUE_ID = MAX_BASE // 2
+def capacity(prefix: int) -> int:
+    """Rows `prefix` can number before a token would exceed int32."""
+    total, width = 0, 1
+    while (prefix + 1) * (10 ** width) - 1 <= INT32_MAX:
+        total += 10 ** width
+        width += 1
+    return total
+
+
+def check_capacity(mic: str, prefix: int, rows: int) -> None:
+    """Raise if `rows` will not fit under `prefix`."""
+    limit = capacity(prefix)
+    if rows > limit:
+        raise ValueError(
+            f"{mic}: {rows:,} rows exceed the {limit:,} that prefix {prefix} can "
+            f"number inside int32 ({INT32_MAX:,}). Do not wrap -- the tokens "
+            f"would collide inside the venue's own trade_date."
+        )
 
 
 def validate(exchanges) -> dict:
     """Pre-flight the numbering config. Returns {venue: [error, ...]}.
 
-    Run before any normalizing, so a venue_id whose block would bleed int32 is
-    caught while nothing has been written -- not raised from assign() two
-    million rows into a file that then has to be thrown away.
+    Run before any normalizing, so a prefix that would bleed int32 or collide is
+    caught while nothing has been written.
 
-    Only venue_id is checked, because it is the only knob: both blocks are
-    derived from it (see config.ExchangeCfg.counter_base), so two venues sharing
-    a block is unrepresentable rather than merely invalid.
-
-      - venue_id set, positive, and unique across venues
-      - venue_id <= MAX_VENUE_ID, i.e. its v2 block stays inside int32
+      - venue_id set and inside 10..98 (its pair, venue_id+1, must stay 2-digit)
+      - venue_id unique, and no venue's pair overlapping another's: two venues
+        must differ by at least 2, since each owns venue_id and venue_id+1
     """
     errors: dict = {}
-    seen_ids: dict = {}
+    taken: dict = {}
 
     def fail(venue, msg):
         errors.setdefault(venue, []).append(msg)
@@ -100,96 +118,23 @@ def validate(exchanges) -> dict:
         if not vid:
             fail(mic, "venue_id is unset")
             continue
-        if vid < 0:
-            fail(mic, f"venue_id={vid} is negative")
+        if vid < MIN_PREFIX or vid > MAX_VENUE_ID:
+            fail(mic, f"venue_id={vid} is outside {MIN_PREFIX}..{MAX_VENUE_ID}. "
+                      f"Prefixes must be exactly two digits -- a single-digit "
+                      f"prefix collides with a two-digit one as the counter "
+                      f"widens (prefix 1's 100..199 is prefix 10's 100..109), "
+                      f"and {MAX_PREFIX} is the last whose pair still fits.")
             continue
-        if vid > MAX_VENUE_ID:
-            top = (vid * 2) * BLOCK + BLOCK
-            fail(mic, f"venue_id={vid} would bleed int32: its counterTokenV2 block "
-                      f"(base {vid * 2}) tops out at {top:,} against int32's "
-                      f"{INT32_MAX:,}. Highest usable venue_id is {MAX_VENUE_ID}.")
-            continue
-        if vid in seen_ids:
-            fail(mic, f"venue_id {vid} already used by {seen_ids[vid]} -- ids must be "
-                      f"unique, they are what the token blocks are derived from")
-        else:
-            seen_ids[vid] = mic
+        for prefix in (vid, vid + 1):
+            owner = taken.get(prefix)
+            if owner and owner != mic:
+                fail(mic, f"prefix {prefix} already owned by {owner}. Each venue "
+                          f"takes venue_id and venue_id+1, so ids must differ by "
+                          f"at least 2.")
+            else:
+                taken[prefix] = mic
     return errors
 
-
-def check_capacity(mic: str, base: int, rows: int) -> None:
-    """Raise if `rows` will not fit the block starting at `base`."""
-    if rows > BLOCK:
-        raise ValueError(
-            f"{mic}: {rows:,} rows exceed the {BLOCK:,}-row block at base {base}. "
-            f"Allocate a second base -- do not wrap, the tokens would collide."
-        )
-    top = base * BLOCK + rows
-    if top > INT32_MAX:
-        raise ValueError(
-            f"{mic}: highest token {top:,} exceeds int32 {INT32_MAX:,} "
-            f"(base {base}, {rows:,} rows)."
-        )
-
-
-@lru_cache(maxsize=1)
-def _exchanges():
-    """config.ini's exchange table, read once per process."""
-    return config.load_exchanges()
-
-
-def exchange_for(venue: str):
-    """The [EXCHANGE:<MIC>] config for a venue, or None."""
-    return _exchanges().get((venue or "").lower())
-
-
-def bases_for(venue: str, v2: bool = False):
-    """Block owned by a venue for counterToken (or counterTokenV2), from config.
-
-    None if the venue has no [EXCHANGE:<MIC>] section or no base configured,
-    which is how a non-numbered venue opts out.
-    """
-    cfg = _exchanges().get((venue or "").lower())
-    if cfg is None:
-        return None
-    base = cfg.counter_base_v2 if v2 else cfg.counter_base
-    return _blocks(base) if base else None
-
-
-def assign(bases, n: int) -> str:
-    """counterToken for the n-th row (1-based) of a venue owning `bases` blocks."""
-    block_index, offset = divmod(n - 1, BLOCK)
-    if block_index >= len(bases):
-        raise ValueError(
-            f"counterToken blocks exhausted: row {n:,} needs block {block_index + 1} "
-            f"but only {len(bases)} are allocated ({bases}). Allocate another base in "
-            f"config.ini [EXCHANGE:<MIC>] -- do not wrap, the tokens would collide."
-        )
-    return str(bases[block_index] * BLOCK + offset + 1)
-
-
-# ---------------------------------------------------------------------------
-# counterTokenV2: the same block arithmetic, with day-to-day memory.
-#
-# v1 is positional -- row 1 of today's file is token 1, so a contract's token
-# moves whenever the universe shifts and nothing may join on it across dates.
-# v2 keeps a symbol's number for as long as that symbol keeps appearing:
-#
-#   1. a script seen before keeps the offset it already had
-#   2. a script that stopped appearing releases its offset to the free pool
-#   3. a new script takes the lowest free offset, or extends the high-water
-#
-# Identity is the `script` string within the venue's own block. Reuse is
-# immediate -- an offset freed yesterday can be reissued today -- so a symbol
-# that vanishes for one day and returns may come back under a different number.
-# That is the chosen trade-off; it keeps the block dense.
-#
-# State is one manifest.json per day, next to that day's normalized output. The
-# carry-forward reads the most recent manifest STRICTLY BEFORE the day being
-# built, which is what makes a re-run reproducible: rebuilding 2026-08-26 always
-# starts from 08-25 regardless of what 08-27 has since done, and weekends and
-# holidays are skipped by the walk-back rather than by a calendar.
-# ---------------------------------------------------------------------------
 
 # How far back to look for the previous manifest. Long enough for a holiday week
 # plus a weekend; past that the venue is treated as new and numbered from
@@ -204,7 +149,7 @@ MANIFEST_VERSION = 2
 class VenueTokens:
     """One venue's counterTokenV2 allocation for one day."""
     venue_id: int
-    base: int
+    prefix: int
     high_water: int = 0                       # highest offset ever handed out
     assigned: Dict[str, int] = field(default_factory=dict)   # script -> offset
     free: List[int] = field(default_factory=list)            # released, ascending
@@ -212,11 +157,11 @@ class VenueTokens:
     def token(self, script: str) -> str:
         """Full counterTokenV2 for a script, or "" if it has none."""
         offset = self.assigned.get(script)
-        return "" if offset is None else str(self.base * BLOCK + offset)
+        return "" if offset is None else assign(self.prefix, offset)
 
 
 def carry_forward(
-    previous: Optional[VenueTokens], scripts: Sequence[str], venue_id: int, base: int,
+    previous: Optional[VenueTokens], scripts: Sequence[str], venue_id: int, prefix: int,
 ) -> VenueTokens:
     """Allocate today's offsets from yesterday's, per the three rules above.
 
@@ -229,7 +174,7 @@ def carry_forward(
 
     if previous is None:
         assigned = {script: n for n, script in enumerate(present, 1)}
-        return VenueTokens(venue_id, base, len(assigned), assigned, [])
+        return VenueTokens(venue_id, prefix, len(assigned), assigned, [])
 
     kept = {s: previous.assigned[s] for s in present if s in previous.assigned}
     released = [off for s, off in previous.assigned.items() if s not in kept]
@@ -247,7 +192,7 @@ def carry_forward(
         else:
             high_water += 1
             assigned[script] = high_water
-    return VenueTokens(venue_id, base, high_water, assigned, pool[taken:])
+    return VenueTokens(venue_id, prefix, high_water, assigned, pool[taken:])
 
 
 def _manifest_path(as_of: str) -> Path:
@@ -297,7 +242,7 @@ def previous_tokens(as_of: str, mic: str, venue_id: int) -> tuple[Optional[Venue
         return (
             VenueTokens(
                 venue_id=stored_id,
-                base=int(entry.get("base", 0)),
+                prefix=int(entry.get("prefix", 0)),
                 high_water=int(entry.get("high_water", 0)),
                 assigned={str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
                 free=[int(x) for x in (entry.get("free") or [])],
@@ -322,7 +267,7 @@ def write_manifest(as_of: str, venues: Dict[str, VenueTokens]) -> Path:
         "venues": {
             mic: {
                 "venue_id": tokens.venue_id,
-                "base": tokens.base,
+                "prefix": tokens.prefix,
                 "high_water": tokens.high_water,
                 "count": len(tokens.assigned),
                 "free": tokens.free,
@@ -349,10 +294,33 @@ def merge_into_manifest(as_of: str, mic: str, tokens: VenueTokens) -> Path:
     for name, entry in (existing.get("venues") or {}).items():
         venues[name] = VenueTokens(
             venue_id=int(entry.get("venue_id", 0)),
-            base=int(entry.get("base", 0)),
+            prefix=int(entry.get("prefix", 0)),
             high_water=int(entry.get("high_water", 0)),
             assigned={str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
             free=[int(x) for x in (entry.get("free") or [])],
         )
     venues[mic] = tokens
     return write_manifest(as_of, venues)
+
+
+@lru_cache(maxsize=1)
+def _exchanges():
+    """config.ini's exchange table, read once per process."""
+    return config.load_exchanges()
+
+
+def exchange_for(venue: str):
+    """The [EXCHANGE:<MIC>] config for a venue, or None."""
+    return _exchanges().get((venue or "").lower())
+
+
+def prefix_for(venue: str, v2: bool = False):
+    """Token prefix a venue owns: venue_id for counterToken, +1 for V2.
+
+    None if the venue has no [EXCHANGE:<MIC>] section or no venue_id, which is
+    how a venue opts out of being numbered.
+    """
+    cfg = exchange_for(venue)
+    if cfg is None or not cfg.venue_id:
+        return None
+    return cfg.venue_id + 1 if v2 else cfg.venue_id

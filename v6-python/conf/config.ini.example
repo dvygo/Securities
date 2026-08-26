@@ -151,7 +151,7 @@ exchanges = XCME,XCBO
 
 [EXCHANGE:XNAS]
 feed = databento
-venue_id = 3
+venue_id = 14
 dataset = EQUS.MINI
 schema = definition
 stype_in = raw_symbol
@@ -166,7 +166,7 @@ hist_lookback_days = 7
 
 [EXCHANGE:XCBO]
 feed = databento
-venue_id = 1
+venue_id = 10
 dataset = OPRA.PILLAR
 schema = definition
 stype_in = parent
@@ -184,7 +184,7 @@ hist_lookback_days = 7
 
 [EXCHANGE:XCME]
 feed = databento
-venue_id = 2
+venue_id = 12
 dataset = GLBX.MDP3
 schema = definition
 stype_in = parent
@@ -199,12 +199,12 @@ hist_lookback_days = 7
 
 [EXCHANGE:XNSE]
 feed = fyers
-venue_id = 4
+venue_id = 16
 
 [EXCHANGE:XBOM]
 feed = fyers
-venue_id = 5
+venue_id = 18
 
 [EXCHANGE:XIMC]
 feed = fyers
-venue_id = 6
+venue_id = 20

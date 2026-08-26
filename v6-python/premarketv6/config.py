@@ -34,12 +34,12 @@ class ExchangeCfg:
     """
     venue_name: str                       # MIC as written in the section header
     feed: str = "databento"               # databento | fyers
-    # Numbering identity: ONE knob. Both token blocks are derived from it --
-    # counterToken gets block (venue_id*2 - 1), counterTokenV2 gets (venue_id*2)
-    # -- so two venues can never be configured onto the same block and v1 can
-    # never be configured onto v2's. Disjointness is structural here rather than
-    # something validate() has to police across three hand-maintained integers.
-    # 0 means unset, which is a validation error for a venue that is numbered.
+    # Numbering identity: ONE knob, and it is the token's leading digits.
+    # counterToken uses venue_id as its prefix and counterTokenV2 uses
+    # venue_id+1, so the two columns cannot be put on the same prefix. Must be
+    # two digits (10..98) -- a single-digit prefix collides with a two-digit one
+    # once the counter widens. 0 means unset, a validation error for a numbered
+    # venue. See normalize/counter_token.
     venue_id: int = 0
     dataset: str = ""                     # Databento dataset id
     schema: str = "definition"
@@ -63,14 +63,14 @@ class ExchangeCfg:
     hist_lookback_days: int = 7
 
     @property
-    def counter_base(self) -> int:
-        """counterToken's block. 0 when venue_id is unset (venue not numbered)."""
-        return self.venue_id * 2 - 1 if self.venue_id else 0
+    def counter_prefix(self) -> int:
+        """counterToken's two-digit prefix. 0 when venue_id is unset."""
+        return self.venue_id
 
     @property
-    def counter_base_v2(self) -> int:
-        """counterTokenV2's block, always counter_base + 1."""
-        return self.venue_id * 2 if self.venue_id else 0
+    def counter_prefix_v2(self) -> int:
+        """counterTokenV2's prefix, always counter_prefix + 1."""
+        return self.venue_id + 1 if self.venue_id else 0
 
     @property
     def all_symbols_stype_in(self) -> str:
