@@ -35,13 +35,14 @@ EXPORT_BATCH_ROWS = export.CONTRACT_BATCH_ROWS
 
 # Canonical columns holding an integer. Everything else in CONTRACT_COLUMNS is
 # String. These are Nullable because they legitimately go blank -- tickSize is
-# always empty (it belongs to the interactive layer), counterToken is empty for
-# every non-Databento venue, and an equity has no strike or expiration. Blank
+# always empty (it belongs to the interactive layer), counterToken/counterTokenV2
+# are empty for any venue with no venue_id configured, and an equity has no
+# strike or expiration. Blank
 # cells become NULL at insert (see _cell), never 0, so "no strike" and "strike 0"
 # stay distinguishable.
 CONTRACT_INT_COLUMNS = {
     "multiplier", "lotSize", "tickSize", "expiration",
-    "scriptToken", "strike", "counterToken",
+    "scriptToken", "strike", "counterToken", "counterTokenV2",
 }
 
 # The definition passthrough stays String, including the numeric fields.

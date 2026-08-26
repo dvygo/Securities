@@ -4,6 +4,7 @@ import sys
 from datetime import datetime
 
 from . import runlog, runner
+from .sources import databento_src
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -63,49 +64,26 @@ def create_parser() -> argparse.ArgumentParser:
     india_parser = subparsers.add_parser("india", help="Download Fyers Indian exchange data")
     add_download_args(india_parser)
 
-    # XCME subcommand
-    xcme_parser = subparsers.add_parser("xcme", help="Download XCME Databento data")
-    add_download_args(xcme_parser)
-    # ALL_SYMBOLS by default for XCME only: GLBX is the venue we take whole, and the
-    # 28-parent basket was leaving most of the universe undownloaded. XCBO and XNAS
-    # keep their opt-in flag below. --no-all-symbols falls back to the basket CSV;
-    # --symbols-file overrides both (see databento_src.resolve_symbols).
-    xcme_parser.add_argument(
-        "--all-symbols",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Subscribe to ALL_SYMBOLS (default; --no-all-symbols uses the basket CSV)",
-    )
-    xcme_parser.add_argument(
-        "--symbols-file",
-        help="Path to symbols file",
-    )
-
-    # XCBO subcommand
-    xcbo_parser = subparsers.add_parser("xcbo", help="Download XCBO/OPRA Databento data")
-    add_download_args(xcbo_parser)
-    xcbo_parser.add_argument(
-        "--all-symbols",
-        action="store_true",
-        help="Subscribe to ALL_SYMBOLS",
-    )
-    xcbo_parser.add_argument(
-        "--symbols-file",
-        help="Path to symbols file",
-    )
-
-    # XNAS subcommand
-    xnas_parser = subparsers.add_parser("xnas", help="Download XNAS/EQUS Databento data")
-    add_download_args(xnas_parser)
-    xnas_parser.add_argument(
-        "--all-symbols",
-        action="store_true",
-        help="Subscribe to ALL_SYMBOLS",
-    )
-    xnas_parser.add_argument(
-        "--symbols-file",
-        help="Path to symbols file",
-    )
+    # Databento venue subcommands. The venue set, and whether --all-symbols is
+    # on by default, both come from config.ini's [EXCHANGE:<CODE>] sections --
+    # see premarketv6.config.load_exchanges. Nothing about a venue is hardcoded
+    # here any more, so adding one is a config edit.
+    for venue, exchange_cfg in sorted(databento_src.VENUE_CONFIGS.items()):
+        venue_parser = subparsers.add_parser(
+            venue, help=f"Download {exchange_cfg.venue_name} Databento data")
+        add_download_args(venue_parser)
+        venue_parser.add_argument(
+            "--all-symbols",
+            action=argparse.BooleanOptionalAction,
+            default=exchange_cfg.all_symbols_default,
+            help=(f"Subscribe to ALL_SYMBOLS "
+                  f"(default: {str(exchange_cfg.all_symbols_default).lower()}; "
+                  f"--no-all-symbols uses the basket CSV)"),
+        )
+        venue_parser.add_argument(
+            "--symbols-file",
+            help="Path to symbols file",
+        )
 
     # Normalize subcommand
     normalize_parser = subparsers.add_parser("normalize", help="Normalize downloaded data")
@@ -239,12 +217,8 @@ def main() -> int:
     try:
         if args.command == "india":
             return run_download("india", args)
-        elif args.command == "xcme":
-            return run_download("xcme", args)
-        elif args.command == "xcbo":
-            return run_download("xcbo", args)
-        elif args.command == "xnas":
-            return run_download("xnas", args)
+        elif args.command in databento_src.VENUE_CONFIGS:
+            return run_download(args.command, args)
         elif args.command == "normalize":
             return run_normalize(args)
         else:

@@ -15,7 +15,6 @@ live_seconds = 10
 live_retries = 3
 live_retry_delay_sec = 2
 max_maps = 100000
-hist_lookback_days = 7
 
 [normalizer]
 glbx_underlying = ES
@@ -64,3 +63,148 @@ table = contracts
 # Comma-separated MIC allow-list (matches the plugin CSV's filename prefix).
 # Empty = push every plugin CSV.
 exchanges = XCME,XCBO
+
+# ---------------------------------------------------------------------------
+# Per-exchange download policy. Authoritative: a venue with no section here is
+# unknown to the pipeline. Replaces the venue table that used to live in
+# sources/databento_src.VENUE_CONFIGS and the global [databento]
+# hist_lookback_days -- both deleted, do not re-add.
+#
+#   feed                    databento | fyers
+#   venue_id                stable small integer identifying the venue. THE ONLY
+#                           numbering knob: both token blocks are derived from
+#                           it, counterToken on block (venue_id*2 - 1) and
+#                           counterTokenV2 on (venue_id*2). Deriving them means
+#                           two venues sharing a block, or v1 landing on v2's,
+#                           is unrepresentable rather than merely invalid -- the
+#                           three hand-maintained integers this replaced could
+#                           drift apart silently.
+#                           A block is counter_token.BLOCK (100,000,000) wide,
+#                           so venue_id N spans (2N-1)00,000,001 .. 2N00,000,000.
+#                           Pre-flighted by normalize/counter_token.validate
+#                           BEFORE any row is written: unset, duplicated, or
+#                           int32-bleeding is a CRITICAL error and that venue is
+#                           skipped rather than half-normalized.
+#                           int32 ceiling: venue_id 10 is the highest whose v2
+#                           block fits 2,147,483,647. Six are allocated today.
+#
+#   dataset                 Databento dataset id (databento feeds only)
+#   schema                  schema for the ALL_SYMBOLS batch path
+#   stype_in                symbology type for basket downloads
+#   stype_in_all_symbols    symbology type when --all-symbols is in play
+#                           (blank = same as stype_in)
+#   all_symbols_default     --all-symbols on unless --no-all-symbols is passed.
+#                           true for every databento venue: the baskets were
+#                           leaving most of each universe undownloaded.
+#   batch_start_time        UTC HH:MM, narrowing-only lower bound. PIN THIS AT
+#                           00:00. The definition schema is served as a daily
+#                           snapshot anchored to UTC midnight, and the Databento
+#                           client warns on anything else: "The request time
+#                           range does not start at UTC midnight, instrument
+#                           definitions effective on this date may be missing."
+#                           Measured on 2026-08-21, starting at RTH open
+#                           (13:30Z) instead of midnight: OPRA.PILLAR returned
+#                           90 records against 2,253,273 for the day -- 0.0%.
+#                           databento_src warns if this is not 00:00.
+#   batch_end_time          UTC HH:MM, narrowing-only upper bound (blank=next
+#                           midnight). Left blank deliberately: the real bound
+#                           is the dataset's live available end, which this is
+#                           ALWAYS min()'d with. A fixed end can only shrink the
+#                           window, never widen it -- and an unclamped fixed end
+#                           is exactly what produces 422
+#                           data_end_after_available_end on every intraday run.
+#   batch_lookback_days     days before date_dir that the window opens. 1 =
+#                           "yesterday 00:00Z through latest available". Keeps
+#                           an early run useful: OPRA does not publish today's
+#                           snapshot until ~10:00-11:00Z and EQUS until
+#                           ~05:00-06:00Z, so a today-only window is empty
+#                           before then and the run fails outright. The overlap
+#                           is the normalizer's to dedupe. 0 = single day.
+#   definition_ready_ratio  fraction of the previous session's definition count
+#                           the window must reach before a batch job is
+#                           submitted. Guards the thin-file case: the clamp
+#                           makes the range legal, not the data complete.
+#   hist_pin_latest_session resolve against the latest complete session only
+#   hist_lookback_days      lookback window for the symbology.resolve path,
+#                           i.e. basket downloads only -- --all-symbols always
+#                           takes the definition batch path now
+#
+# Session/publish reference. RTH is NOT the right anchor for definitions -- they
+# publish before or around session open, not during the trading session:
+#
+#   venue  RTH (exchange_calendars)   definitions first appear (UTC)
+#   XNAS   13:30-20:00Z  09:30-16:00 ET   05:00-06:00Z, complete by 06:00Z
+#   XCME   22:00Z open   18:00 ET open    00:00-01:00Z, complete by 01:00Z
+#   XCBO   13:30-20:00Z  09:30-16:00 ET   10:00-11:00Z, tail to 15:00Z
+#
+# All three finish well before RTH close, and XCME finishes 12+ hours before
+# RTH open, so a window pinned to RTH would drop the snapshot entirely.
+#
+# Measured definition publish curves, 2026-08-25 (cumulative, UTC [ET]):
+#   GLBX.MDP3    08:00Z [04:00] 1,147,477   ~99% before premarket, then a
+#                12:10Z [08:10] 1,157,591   +0.3%/hr trickle all session
+#   OPRA.PILLAR  08:00Z [04:00]         0   nothing, then one burst
+#                09:00Z [05:00]     6,270   06:00-07:00 ET, then flat
+#                11:00Z [07:00] 1,995,154
+#   EQUS.MINI    08:00Z [04:00]    13,187   complete before premarket
+# So XCBO must not run before ~07:00 ET; XCME and XNAS are safe from 04:00 ET.
+
+[EXCHANGE:XNAS]
+feed = databento
+venue_id = 3
+dataset = EQUS.MINI
+schema = definition
+stype_in = raw_symbol
+stype_in_all_symbols = raw_symbol
+all_symbols_default = true
+batch_start_time = 00:00
+batch_end_time =
+batch_lookback_days = 1
+definition_ready_ratio = 0.5
+hist_pin_latest_session = false
+hist_lookback_days = 7
+
+[EXCHANGE:XCBO]
+feed = databento
+venue_id = 1
+dataset = OPRA.PILLAR
+schema = definition
+stype_in = parent
+stype_in_all_symbols = parent
+all_symbols_default = true
+batch_start_time = 00:00
+batch_end_time =
+batch_lookback_days = 1
+definition_ready_ratio = 0.5
+# OPRA reassigns instrument_id every trading day, so resolving against any date
+# other than the latest complete session returns a token space that shares
+# almost nothing with the live feed. See VenueConfig history in databento_src.
+hist_pin_latest_session = true
+hist_lookback_days = 7
+
+[EXCHANGE:XCME]
+feed = databento
+venue_id = 2
+dataset = GLBX.MDP3
+schema = definition
+stype_in = parent
+stype_in_all_symbols = raw_symbol
+all_symbols_default = true
+batch_start_time = 00:00
+batch_end_time =
+batch_lookback_days = 1
+definition_ready_ratio = 0.5
+hist_pin_latest_session = false
+hist_lookback_days = 7
+
+[EXCHANGE:XNSE]
+feed = fyers
+venue_id = 4
+
+[EXCHANGE:XBOM]
+feed = fyers
+venue_id = 5
+
+[EXCHANGE:XIMC]
+feed = fyers
+venue_id = 6

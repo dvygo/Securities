@@ -1,0 +1,9 @@
+# Static musl build: one self-contained binary, no runtime libc dependency, so
+# it can be copied anywhere the pipeline runs.
+#
+# Requires a C toolchain (`sudo apt install build-essential`). Without it cargo
+# cannot even link its own build scripts, which are host binaries and need the
+# `cc` driver. rust-lld alone is not enough: it cannot resolve -lgcc_s/-lutil/
+# -lrt, which are the dev symlinks gcc supplies.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]

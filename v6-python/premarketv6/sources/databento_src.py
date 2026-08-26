@@ -2,26 +2,30 @@
 
 Venue wiring:
   - dataset names: GLBX.MDP3 (XCME), OPRA.PILLAR (XCBO), EQUS.MINI (XNAS)
+  - the venue table itself is config.ini's [EXCHANGE:<CODE>] sections, not code:
+    dataset, stype_in, schema, --all-symbols default and the clamp/readiness
+    knobs all live there (premarketv6.config.load_exchanges)
   - stype_in defaults: XCME=parent (raw_symbol if --all-symbols), XCBO=parent, XNAS=raw_symbol
-  - XCME defaults to --all-symbols and so takes the definition path; XCBO/XNAS
-    stay basket-driven unless the flag is passed
-  - --all-symbols in hist mode only works on EQUS.MINI (XNAS) via symbology.resolve;
-    GLBX.MDP3 and OPRA.PILLAR go through the definition schema instead, fetched via
-    a batch job (_download_definitions_via_batch), not streamed
+  - --all-symbols is on by default for all three, and in hist mode it always
+    means the definition schema fetched via a batch job
+    (_download_definitions_via_batch), landing as .dbn.zst -- no venue takes
+    symbology.resolve for ALL_SYMBOLS any more
+  - symbology.resolve is still the route for basket downloads (--no-all-symbols
+    or --symbols-file), which cannot carry instrument_class
   - stype_out sent to API is always instrument_id
   - date range computed from metadata.get_dataset_range() minus a lookback window
   - output:
-      - definition schema (XCME/XCBO --all-symbols): YYYYMMDD/{VENUE}/*.dbn.zst,
+      - definition schema (any venue, --all-symbols): YYYYMMDD/{VENUE}/*.dbn.zst,
         via paths.manual_venue_dir -- no CSV, read directly by normalize
-      - everything else: YYYYMMDD/raw/{VENUE}-DATABENTO.csv, columns matching
+      - basket downloads: YYYYMMDD/raw/{VENUE}-DATABENTO.csv, columns matching
         internal/databento/mapping.go's MappingColumns
 """
 import csv
 import datetime as dt
 import os
+import re
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -38,13 +42,18 @@ HIST_RESOLVE_BATCH = 5
 HIST_RESOLVE_RETRIES = 3
 HIST_RESOLVE_RETRY_DELAY_SEC = 4
 
-# symbology.resolve rejects ALL_SYMBOLS on most datasets with
-# 422 symbology_all_symbols_with_incompatible_dataset -- the response is a single
-# JSON blob and GLBX/OPRA carry ~1-2M instruments a day, so only EQUS.MINI (~13k)
-# is accepted. Datasets listed here take the cheap resolve path for --all-symbols;
-# everything else falls back to the definition schema, fetched via a batch job
-# (see _download_definitions_via_batch) rather than symbology.resolve.
-ALL_SYMBOLS_HIST_DATASETS = {"EQUS.MINI"}
+# EQUS.MINI used to be carved out here: symbology.resolve rejects ALL_SYMBOLS on
+# most datasets with 422 symbology_all_symbols_with_incompatible_dataset (the
+# response is a single JSON blob and GLBX/OPRA carry ~1-2M instruments a day),
+# but EQUS at ~13k was small enough to be accepted, so XNAS took the cheap
+# resolve route. That carve-out is gone: --all-symbols now means the definition
+# schema via a batch job for every venue, so all three land as .dbn.zst.
+#
+# The cost of the carve-out was instrument_class. symbology.resolve returns ids
+# and dates and nothing else, so XNAS shipped 13,195 rows with the column blank
+# and the normalizer fell back to parsing symbol strings, while XCBO and XCME
+# read it straight off the InstrumentDefMsg records. EQUS definitions are ~13k
+# records against OPRA's ~2M, so the job is quick.
 
 MAPPING_COLUMNS = [
     "instrument_id",
@@ -85,43 +94,51 @@ def _def_value(record, name: str) -> str:
     return str(value)
 
 
-@dataclass
-class VenueConfig:
-    """Databento venue configuration."""
-    venue_name: str
-    dataset: str
-    # OPRA reassigns instrument_id every trading day: resolving against any date
-    # other than the latest complete session returns a token space that shares
-    # almost nothing with the live feed. Measured on NVDA.OPT against live on
-    # 2026-08-04 -- start=08-03 matched 3818/3818, start=07-31 matched 1/3758,
-    # start=07-29 matched 0/3606. Not a decay curve, a cliff.
-    #
-    # Worse than a miss: ids that appear on both days mostly point at *different*
-    # contracts (8542 of 8551 across the full 8-parent basket), so a token join
-    # silently attributes ticks to the wrong strike rather than dropping them.
-    #
-    # GLBX/EQUS ids are stable across dates (XCME: 27596/27596 hist-vs-live), and
-    # there the lookback window is load-bearing -- it picks up recently expired
-    # contracts the live definition stream no longer announces (59505 vs 43109
-    # symbols). So this is opt-in per venue, not a global policy change.
-    hist_pin_latest_session: bool = False
-
-
-VENUE_CONFIGS = {
-    "xcme": VenueConfig(venue_name="XCME", dataset="GLBX.MDP3"),
-    "xcbo": VenueConfig(venue_name="XCBO", dataset="OPRA.PILLAR", hist_pin_latest_session=True),
-    "xnas": VenueConfig(venue_name="XNAS", dataset="EQUS.MINI"),
+# Venue table, read from config.ini's [EXCHANGE:<CODE>] sections. There is no
+# built-in fallback: the old hardcoded VenueConfig table and config.ini used to
+# describe the same venues independently, and could disagree without anyone
+# noticing. config.ini is now the only description.
+#
+# Only databento-fed exchanges land here -- [EXCHANGE:XNSE]/[EXCHANGE:XBOM] are
+# feed=fyers and belong to sources/fyers_src.py.
+#
+# Notes that used to live on the dataclass, kept because they are the evidence
+# behind two of the config values:
+#
+# hist_pin_latest_session (true for XCBO): OPRA reassigns instrument_id every
+# trading day, so resolving against any date other than the latest complete
+# session returns a token space sharing almost nothing with the live feed.
+# Measured on NVDA.OPT against live on 2026-08-04 -- start=08-03 matched
+# 3818/3818, start=07-31 matched 1/3758, start=07-29 matched 0/3606. Not a decay
+# curve, a cliff. Worse than a miss: ids present on both days mostly point at
+# *different* contracts (8542 of 8551 across the full 8-parent basket), so a
+# token join silently attributes ticks to the wrong strike rather than dropping
+# them. GLBX/EQUS ids are stable across dates (XCME: 27596/27596 hist-vs-live)
+# and there the lookback window is load-bearing -- it picks up recently expired
+# contracts the live definition stream no longer announces (59505 vs 43109
+# symbols). Hence per-venue, not global.
+#
+# definition_ready_ratio: the upper clamp in _download_definitions_via_batch
+# only stops the API rejecting the range -- it cannot tell a complete session
+# from one whose definitions have not published yet, and both produce a file.
+# The measured publish curves are in config.ini next to the values themselves.
+VENUE_CONFIGS: dict[str, config.ExchangeCfg] = {
+    venue: exchange_cfg
+    for venue, exchange_cfg in config.load_exchanges().items()
+    if exchange_cfg.feed == "databento"
 }
 
 
 def default_stype_in(venue: str, all_symbols: bool = False) -> str:
-    """Per-venue default stype_in."""
-    if venue == "xcme":
-        return "raw_symbol" if all_symbols else "parent"
-    elif venue == "xcbo":
-        return "parent"
-    elif venue == "xnas":
+    """Per-venue default stype_in, from [EXCHANGE:<CODE>].
+
+    XCME is the one venue where the two differ: `parent` for a basket download,
+    `raw_symbol` once ALL_SYMBOLS is in play.
+    """
+    exchange_cfg = VENUE_CONFIGS.get(venue)
+    if exchange_cfg is None:
         return "raw_symbol"
+    return exchange_cfg.all_symbols_stype_in if all_symbols else exchange_cfg.stype_in
     return "raw_symbol"
 
 
@@ -184,7 +201,8 @@ def resolve_hist_range(
     an operator override and wins over pin_latest_session.
 
     If pin_latest_session, ignore lookback_days and resolve against the latest
-    complete session only -- required for OPRA, see VenueConfig.
+    complete session only -- required for OPRA, see the
+    hist_pin_latest_session notes above VENUE_CONFIGS.
 
     Otherwise: end = asOf+1day (exclusive
     UTC midnight, clamped to dataset's actual available end), start = end -
@@ -233,7 +251,11 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     mode: 'hist' or 'live'
     """
     if venue not in VENUE_CONFIGS:
-        raise ValueError(f"Unknown venue: {venue}")
+        known = ", ".join(sorted(VENUE_CONFIGS)) or "(none)"
+        raise ValueError(
+            f"Unknown venue: {venue}. Venues come from config.ini "
+            f"[EXCHANGE:<CODE>] sections with feed=databento; configured: {known}"
+        )
 
     venue_cfg = VENUE_CONFIGS[venue]
     cfg = config.load_databento()
@@ -258,13 +280,10 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     )
     stype_in = opts.stype_in or default_stype_in(venue, all_symbols)
 
-    # symbology.resolve only accepts ALL_SYMBOLS on small datasets; elsewhere the
-    # definition schema is the supported route to the full instrument universe.
-    use_definitions = (
-        all_symbols
-        and mode == "hist"
-        and venue_cfg.dataset not in ALL_SYMBOLS_HIST_DATASETS
-    )
+    # --all-symbols means the definition schema, for every venue. symbology.resolve
+    # stays the route for basket downloads, where the symbol list is explicit and
+    # instrument_class is not on offer either way.
+    use_definitions = all_symbols and mode == "hist"
     if use_definitions:
         # The definition path writes record.raw_symbol into stype_in_symbol, so the
         # stype_in column has to say raw_symbol or the CSV mislabels its own contents
@@ -316,7 +335,7 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
         client = db.Historical(key=api_key)
         batches = _iter_hist_batches(
             client, venue_cfg, symbols, stype_in, opts.date_dir,
-            cfg.hist_lookback_days, opts.hist_range,
+            venue_cfg.hist_lookback_days, opts.hist_range,
         )
     elif mode == "live":
         batches = _iter_live_batches(
@@ -370,7 +389,7 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
 
 def _iter_hist_batches(
     client: db.Historical,
-    venue_cfg: VenueConfig,
+    venue_cfg: config.ExchangeCfg,
     symbols: list[str],
     stype_in: str,
     as_of: str,
@@ -415,7 +434,7 @@ def _iter_hist_batches(
 
 def _resolve_batch(
     client: db.Historical,
-    venue_cfg: VenueConfig,
+    venue_cfg: config.ExchangeCfg,
     batch: list[str],
     stype_in: str,
     start_date: str,
@@ -471,6 +490,98 @@ def _resolve_batch(
     return left_rows + right_rows, left_nf + right_nf
 
 
+def _parse_metadata_ts(raw: str) -> dt.datetime:
+    """Databento metadata timestamp -> aware UTC datetime.
+
+    The API sends nanosecond precision ("2026-08-25T11:40:00.000000000Z"),
+    which fromisoformat() will not take: it accepts 3 or 6 fractional digits,
+    not 9. Truncate the fraction to microseconds and swap Z for +00:00.
+    """
+    s = raw.replace("Z", "+00:00")
+    s = re.sub(r"(\.\d{6})\d+", r"\1", s)
+    return dt.datetime.fromisoformat(s)
+
+
+def _available_end(client: db.Historical, dataset: str, schema: str) -> dt.datetime:
+    """Exclusive end of what `dataset` actually holds for `schema`.
+
+    Prefers the per-schema range over the dataset-wide one: they diverge (on
+    OPRA.PILLAR, ohlcv-1d ends at 00:00 while definition runs to the current
+    minute), and a query is validated against its own schema's range.
+    """
+    rng = client.metadata.get_dataset_range(dataset=dataset)
+    per_schema = (rng.get("schema") or {}).get(schema) or {}
+    return _parse_metadata_ts(per_schema.get("end") or rng["end"])
+
+
+# How far back _prior_session_count will walk looking for a session with data,
+# in calendar days. Covers a long weekend plus adjacent holidays; past that,
+# treat the absence as unknown rather than as a reason to block the download.
+PRIOR_SESSION_LOOKBACK_DAYS = 5
+
+
+def _offset_into_day(
+    midnight: dt.datetime, hhmm: str, fallback: Optional[dt.datetime] = None,
+) -> dt.datetime:
+    """"HH:MM" as an absolute instant on midnight's UTC day.
+
+    Blank means "no opinion" and returns `fallback` (or midnight itself), which
+    is what lets an unset batch_start_time/batch_end_time fall through to the
+    plain day boundaries.
+    """
+    if not hhmm:
+        return fallback if fallback is not None else midnight
+    hour, _, minute = hhmm.partition(":")
+    return midnight + dt.timedelta(hours=int(hour), minutes=int(minute or 0))
+
+
+def _definition_count(
+    client: db.Historical, dataset: str, schema: str, stype_in: str,
+    start: str, end: str,
+) -> int:
+    """Records the definition query would return, without running it.
+
+    metadata.get_record_count is not billed and answers in about a second,
+    which is what makes the readiness check below affordable ahead of a job
+    that takes ~27 minutes and does bill.
+    """
+    return client.metadata.get_record_count(
+        dataset=dataset,
+        symbols=ALL_SYMBOLS_SENTINEL,
+        schema=schema,
+        stype_in=stype_in,
+        start=start,
+        end=end,
+    )
+
+
+def _prior_session_count(
+    client: db.Historical, dataset: str, schema: str, stype_in: str,
+    before: dt.date,
+) -> tuple[Optional[dt.date], int]:
+    """Definition count for the most recent full day before `before` that has one.
+
+    Walks back a day at a time so weekends and holidays are skipped without a
+    calendar dependency -- a non-session simply counts zero. Returns
+    (None, 0) if nothing in the window has data, which the caller reads as
+    "no baseline" and lets the download through rather than blocking on it.
+    """
+    for back in range(1, PRIOR_SESSION_LOOKBACK_DAYS + 1):
+        day = before - dt.timedelta(days=back)
+        try:
+            n = _definition_count(
+                client, dataset, schema, stype_in,
+                day.isoformat(), (day + dt.timedelta(days=1)).isoformat(),
+            )
+        except Exception:
+            # A rejected range (before the dataset starts, say) is not a
+            # readiness signal; keep walking.
+            continue
+        if n > 0:
+            return day, n
+    return None, 0
+
+
 # Poll interval/ceiling for the definitions batch job below. Measured on a real
 # GLBX.MDP3 ALL_SYMBOLS single-day job (2026-08-24): ~27 minutes queued+processing
 # for 1.51M records / 47.3 MB compressed. The ceiling has headroom above that,
@@ -482,7 +593,7 @@ DEFINITION_BATCH_POLL_CEILING_SEC = 45 * 60
 
 def _download_definitions_via_batch(
     client: db.Historical,
-    venue_cfg: VenueConfig,
+    venue_cfg: config.ExchangeCfg,
     stype_in: str,
     date_dir: str,
     dest_dir: Path,
@@ -500,31 +611,96 @@ def _download_definitions_via_batch(
     batch download and this automated one land in the same place and are
     indistinguishable to normalize.
 
-    The requested day is date_dir itself, not "the latest complete session"
-    the old streaming path computed defensively. An automated run asks for
-    its own day and lets Databento say no if that day is not ready yet -- the
-    matching engine may not have produced a session's data at the time this
-    runs. submit_job() validates the range synchronously, so that rejection
-    surfaces immediately as an exception; it is deliberately not caught here.
-    Silently substituting yesterday's session, the way the old code did, would
-    hide exactly the condition this needs to surface.
+    The requested window is date_dir's single UTC day, with `end` clamped to
+    the dataset's actual available end. Intraday, date_dir+1day is tomorrow
+    midnight UTC and the API rejects it with 422 data_end_after_available_end
+    ("OPRA.PILLAR has data available up to 2026-08-25 11:40"), which made
+    every same-day OPRA run fail outright.
+
+    Omitting `end` does not help and was tried: a date-only `start` with no
+    `end` is forward-filled by the server to start+1day -- the identical 422 --
+    and a datetime `start` with no `end` is refused with 422
+    data_start_too_precise_to_forward_fill. The range has to be closed, so it
+    is closed here against metadata.get_dataset_range(). Clamping also keeps a
+    backfill (--date-dir in the past) to its one day instead of letting it run
+    to now.
+
+    A day that has no data at all yet raises rather than submitting an empty
+    or inverted range: the matching engine may not have produced the session
+    when an automated run fires, and silently substituting a different day --
+    what the old streaming path did -- would hide exactly that condition.
 
     Polling failures are the other case that must not go quiet: a job stuck
     past DEFINITION_BATCH_POLL_CEILING_SEC raises rather than looping forever,
     since this runs inside an automated pipeline step, not a script someone is
     watching.
     """
-    start = dt.datetime.strptime(date_dir, "%Y%m%d").date()
-    end = start + dt.timedelta(days=1)
+    as_of = dt.datetime.strptime(date_dir, "%Y%m%d").date()
+    # The window opens batch_lookback_days before date_dir and runs to whatever
+    # Databento has. Default 1: an 04:00Z run wants yesterday's complete
+    # snapshot, because today's has not published yet -- OPRA lands ~10:00-11:00Z
+    # and EQUS ~05:00-06:00Z, so a today-only window is empty that early and the
+    # run failed outright. Deduping the overlap is the normalizer's job.
+    start = as_of - dt.timedelta(days=venue_cfg.batch_lookback_days)
+    midnight = dt.datetime.combine(start, dt.time.min, tzinfo=dt.timezone.utc)
+    day_end = dt.datetime.combine(as_of, dt.time.min, tzinfo=dt.timezone.utc) + dt.timedelta(days=1)
 
+    # [EXCHANGE:<CODE>] batch_start_time/batch_end_time narrow the day; they can
+    # never widen it. max()/min() against the plain day is what enforces that,
+    # so a stale or over-eager value in config.ini costs coverage rather than
+    # producing a range the API will reject.
+    start_ts = max(midnight, _offset_into_day(midnight, venue_cfg.batch_start_time))
+    if start_ts != midnight:
+        # Databento serves `definition` as a daily snapshot anchored to UTC
+        # midnight; its own client warns that "instrument definitions effective
+        # on this date may be missing" when a request starts later. Measured on
+        # 2026-08-21, a 13:30Z start returned 90 OPRA records against 2,253,273
+        # for the day. Loud rather than fatal: the knob is config, and an
+        # operator narrowing on purpose should not be blocked by this.
+        print(f"  WARNING: batch_start_time={venue_cfg.batch_start_time} is not "
+              f"00:00 UTC. The definition snapshot is anchored to UTC midnight, "
+              f"so this will silently drop definitions effective on "
+              f"{start.isoformat()}. Pin batch_start_time = 00:00 unless you "
+              f"know exactly why you are not.", flush=True)
+    configured_end = min(day_end, _offset_into_day(midnight, venue_cfg.batch_end_time, day_end))
+    available_end = _available_end(client, venue_cfg.dataset, venue_cfg.schema)
+    end = min(configured_end, available_end)
+    if end <= start_ts:
+        raise RuntimeError(
+            f"{venue_cfg.dataset} has no definition data in "
+            f"{start.isoformat()}..{as_of.isoformat()} yet "
+            f"(available up to {available_end.isoformat()}) -- nothing to download"
+        )
+
+    have = _definition_count(client, venue_cfg.dataset, venue_cfg.schema,
+                             stype_in, start_ts.isoformat(), end.isoformat())
+    prior_day, prior = _prior_session_count(
+        client, venue_cfg.dataset, venue_cfg.schema, stype_in, start)  # start = window open
+    floor = int(prior * venue_cfg.definition_ready_ratio)
+    if prior and have < floor:
+        raise RuntimeError(
+            f"{venue_cfg.dataset} definitions for "
+            f"{start.isoformat()}..{as_of.isoformat()} are not "
+            f"published yet: {have:,} records up to {end.isoformat()} against "
+            f"{prior:,} on {prior_day.isoformat()} "
+            f"({have / prior:.1%}, floor {venue_cfg.definition_ready_ratio:.0%}). "
+            f"Downloading now would write a file holding a fraction of the "
+            f"session. Re-run once they land -- OPRA publishes ~06:00-07:00 ET, "
+            f"GLBX before 04:00 ET."
+        )
+
+    clamped = " (clamped to available)" if end < day_end else ""
+    baseline = (f", {have:,} records vs {prior:,} on {prior_day.isoformat()}"
+                if prior else f", {have:,} records (no baseline)")
     print(f"  Submitting batch job: {venue_cfg.dataset} ALL_SYMBOLS definition, "
-          f"{start.isoformat()}..{end.isoformat()}, encoding=dbn compression=zstd", flush=True)
+          f"{start_ts.isoformat()}..{end.isoformat()}{clamped}{baseline}, "
+          f"encoding=dbn compression=zstd", flush=True)
     ack = client.batch.submit_job(
         dataset=venue_cfg.dataset,
         symbols=ALL_SYMBOLS_SENTINEL,
-        schema="definition",
+        schema=venue_cfg.schema,
         stype_in=stype_in,
-        start=start.isoformat(),
+        start=start_ts.isoformat(),
         end=end.isoformat(),
         encoding="dbn",
         compression="zstd",
@@ -581,7 +757,7 @@ def _download_definitions_via_batch(
 
 def _iter_live_batches(
     api_key: str,
-    venue_cfg: VenueConfig,
+    venue_cfg: config.ExchangeCfg,
     symbols: list[str],
     stype_in: str,
     live_start: Optional[str],
@@ -627,7 +803,7 @@ def _iter_live_batches(
 
 def _fetch_live_once(
     api_key: str,
-    venue_cfg: VenueConfig,
+    venue_cfg: config.ExchangeCfg,
     symbols: list[str],
     stype_in: str,
     live_start: Optional[str],

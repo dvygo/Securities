@@ -150,21 +150,28 @@ def run(opts: runner.Opts) -> None:
 
     cfg = config.load_normalizer()
     normalized_dir = paths.normalized_dir(opts.date_dir)
-    raw_dir = paths.fyers_raw_dir(opts.date_dir)
-
-    if not raw_dir.exists():
-        print("    No Fyers raw directory found")
-        return
-
     normalized_dir.mkdir(parents=True, exist_ok=True)
 
     # Process each Fyers MIC bundle
+    # Same pre-flight the Databento path runs: a bad base is a CRITICAL config
+    # error and the MIC is skipped, not numbered into unusable tokens.
+    token_errors = counter_token.validate(config.load_exchanges())
+
     for mic, (output_csv, table_name, source_files) in paths.FYERS_MIC_BUNDLES.items():
+        if mic in token_errors:
+            for msg in token_errors[mic]:
+                print(f"  CRITICAL [{mic}] counterToken config: {msg}")
+            print(f"  CRITICAL: skipping Fyers {mic} -- fix conf/config.ini [EXCHANGE:{mic}]")
+            continue
+        bundle_dir = paths.venue_dir(opts.date_dir, mic)
+        if not bundle_dir.is_dir():
+            print(f"  No raw directory for Fyers {mic} ({bundle_dir})")
+            continue
         print(f"  Normalizing Fyers {mic}...")
 
         all_rows = []
         for source_file in source_files:
-            source_path = raw_dir / source_file
+            source_path = bundle_dir / source_file
             if not source_path.exists():
                 continue
 
@@ -181,8 +188,36 @@ def run(opts: runner.Opts) -> None:
         # several source feeds into a single file.
         bases = counter_token.bases_for(mic)
         if bases is not None:
+            # Row count is known here, so the block is checked before numbering
+            # rather than discovered by assign() partway through.
+            counter_token.check_capacity(mic, bases[0], len(all_rows))
             for n, row in enumerate(all_rows, 1):
                 row["counterToken"] = counter_token.assign(bases, n)
+
+            # counterTokenV2: stable across days. Every row is already in
+            # memory here, so the whole symbol set is known and the carry-
+            # forward needs no extra pass.
+            exchange_cfg = counter_token.exchange_for(mic)
+            v2_base = exchange_cfg.counter_base_v2
+            try:
+                previous, prev_day = counter_token.previous_tokens(
+                    opts.date_dir, mic, exchange_cfg.venue_id)
+            except ValueError as exc:
+                print(f"  CRITICAL: skipping Fyers {mic} -- {exc}")
+                continue
+            scripts = [r.get("script", "") for r in all_rows]
+            tokens = counter_token.carry_forward(
+                previous, scripts, exchange_cfg.venue_id, v2_base)
+            counter_token.check_capacity(mic, v2_base, tokens.high_water)
+            for row in all_rows:
+                row["counterTokenV2"] = tokens.token(row.get("script", ""))
+            counter_token.merge_into_manifest(opts.date_dir, mic, tokens)
+            reused = len(tokens.assigned) - (
+                0 if previous is None
+                else len(set(tokens.assigned) & set(previous.assigned)))
+            print(f"    {mic} counterTokenV2: {len(tokens.assigned):,} symbol(s), "
+                  f"{reused:,} new, high-water {tokens.high_water:,}"
+                  + (f", carried from {prev_day}" if previous else ", first day"))
 
         # Write normalized Parquet
         output_path = normalized_dir / output_csv

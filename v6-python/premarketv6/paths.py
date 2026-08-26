@@ -83,6 +83,18 @@ def raw_dir(as_of: str) -> Path:
     return day_dir(as_of) / "raw"
 
 
+def venue_dir(as_of: str, venue_name: str) -> Path:
+    """One venue's own directory for a day: data/YYYYMMDD/{VENUE}/.
+
+    A sibling of the v6/ pipeline tree at the same date, not nested under it,
+    and shared by both feeds: Databento venues drop their batch definition
+    *.dbn.zst here (see manual_venue_dir), and the Fyers MIC bundles drop their
+    raw segment CSVs here (see fyers_segment_path). Both feeds therefore have
+    the same shape on disk -- data/YYYYMMDD/XCME/ next to data/YYYYMMDD/XNSE/.
+    """
+    return data_root() / as_of / venue_name.upper()
+
+
 def manual_venue_dir(as_of: str, venue_name: str) -> Path:
     """
     A venue's Databento batch definition payload for one day:
@@ -105,9 +117,16 @@ def manual_venue_dir(as_of: str, venue_name: str) -> Path:
     return data_root() / as_of / venue_name.upper()
 
 
-def fyers_raw_dir(as_of: str) -> Path:
-    """Fyers raw directory: YYYYMMDD/raw/FYERS/"""
-    return raw_dir(as_of) / "FYERS"
+def fyers_segment_path(as_of: str, segment: str) -> Path:
+    """Raw CSV for one Fyers segment, inside its MIC bundle's venue directory.
+
+    Replaces the flat YYYYMMDD/raw/FYERS/ drop: segments now sit under the MIC
+    that owns them (data/YYYYMMDD/XNSE/XNFO-FYERS.csv), which is both the thing
+    that gets a counter_token block and the thing normalize emits as one file,
+    so the folder matches the unit of work rather than the vendor's name.
+    """
+    mic = FYERS_SEGMENT_MIC[segment]
+    return venue_dir(as_of, mic) / FYERS_RAW_SEGMENTS[segment]
 
 
 def nse_exchange_raw_dir(as_of: str) -> Path:
@@ -286,6 +305,11 @@ NORMALIZED_COLUMNS = [
     # Blank for non-Databento venues, which keep their own tokens. Appended, like
     # the broker columns, so positional readers keep working.
     "counterToken",
+    # Stable across days, unlike counterToken above: a script keeps its number
+    # for as long as it keeps appearing, and a number is only reused once its
+    # script stops appearing. Carried in manifest.json per day. This is the one
+    # to join on across dates -- counterToken is positional and must not be.
+    "counterTokenV2",
 ] + DEFINITION_PASSTHROUGH_COLUMNS
 
 # Contract columns = date + exchange + normalized columns
@@ -308,6 +332,15 @@ FYERS_MIC_BUNDLES = {
     "XNSE": ("XNSE-FYERS.parquet", "xnse", ["XNSE-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv"]),
     "XBOM": ("XBOM-FYERS.parquet", "xbom", ["XBSE-FYERS.csv", "XBFO-FYERS.csv"]),  # BSE -> XBOM MIC
     "XIMC": ("XIMC-FYERS.parquet", "ximc", ["XMCX-FYERS.csv"]),
+}
+
+# Segment -> owning MIC bundle, derived from FYERS_MIC_BUNDLES so a segment can
+# never be listed in one place and missing from the other.
+FYERS_SEGMENT_MIC = {
+    segment: mic
+    for mic, (_out, _table, sources) in FYERS_MIC_BUNDLES.items()
+    for segment, filename in FYERS_RAW_SEGMENTS.items()
+    if filename in sources
 }
 
 # NSE segments

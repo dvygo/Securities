@@ -145,9 +145,6 @@ def download(opts: runner.Opts) -> None:
         print("DRY RUN: Would download Fyers symbol master data")
         return
 
-    raw_dir = paths.fyers_raw_dir(opts.date_dir)
-    raw_dir.mkdir(parents=True, exist_ok=True)
-
     # Segment key -> source file mapping (from v4 Python)
     segment_sources = {
         "xnse": "NSE_CM.csv",
@@ -160,12 +157,15 @@ def download(opts: runner.Opts) -> None:
 
     # Download each segment
     for segment, source_file in segment_sources.items():
-        filename = paths.FYERS_RAW_SEGMENTS.get(segment)
-        if not filename:
+        if segment not in paths.FYERS_RAW_SEGMENTS:
             continue
 
         url = f"{cfg.base_url}/{source_file}"
-        output_path = raw_dir / filename
+        # Each segment lands under the MIC bundle that owns it, so XNFO sits
+        # beside XNSE and XNCD in data/YYYYMMDD/XNSE/ -- one folder per thing
+        # normalize actually emits.
+        output_path = paths.fyers_segment_path(opts.date_dir, segment)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
         print(f"Downloading {segment}...")
         try:

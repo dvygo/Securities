@@ -18,7 +18,103 @@ class DatabentoCfg:
     live_retries: int = 3
     live_retry_delay_sec: int = 2
     max_maps: int = 100000
+
+
+EXCHANGE_SECTION_PREFIX = "EXCHANGE:"
+
+
+@dataclass
+class ExchangeCfg:
+    """One [EXCHANGE:<CODE>] section: how a venue is downloaded.
+
+    Replaces the venue table that used to be hardcoded in
+    sources/databento_src.VENUE_CONFIGS, plus the global
+    [databento] hist_lookback_days. Both are gone; this is the only place a
+    venue is described.
+    """
+    venue_name: str                       # MIC as written in the section header
+    feed: str = "databento"               # databento | fyers
+    # Numbering identity: ONE knob. Both token blocks are derived from it --
+    # counterToken gets block (venue_id*2 - 1), counterTokenV2 gets (venue_id*2)
+    # -- so two venues can never be configured onto the same block and v1 can
+    # never be configured onto v2's. Disjointness is structural here rather than
+    # something validate() has to police across three hand-maintained integers.
+    # 0 means unset, which is a validation error for a venue that is numbered.
+    venue_id: int = 0
+    dataset: str = ""                     # Databento dataset id
+    schema: str = "definition"
+    stype_in: str = "raw_symbol"
+    stype_in_all_symbols: str = ""        # blank -> same as stype_in
+    all_symbols_default: bool = False
+    # Narrowing-only bounds on the definition batch window, "HH:MM" UTC or blank.
+    # They can shrink the day but never widen it: the upper bound is still
+    # min()'d with the dataset's live available end, which is what stops the
+    # 422 data_end_after_available_end that a fixed end always eventually hits.
+    batch_start_time: str = ""
+    batch_end_time: str = ""
+    # How many days before date_dir the definition window opens. 1 = "yesterday
+    # 00:00Z through latest available", which is what keeps an early-morning run
+    # useful: OPRA does not publish today's snapshot until ~10:00-11:00Z and
+    # EQUS until ~05:00-06:00Z, so a window starting at today 00:00Z is simply
+    # empty before then. 0 restores the single-day window.
+    batch_lookback_days: int = 1
+    definition_ready_ratio: float = 0.5
+    hist_pin_latest_session: bool = False
     hist_lookback_days: int = 7
+
+    @property
+    def counter_base(self) -> int:
+        """counterToken's block. 0 when venue_id is unset (venue not numbered)."""
+        return self.venue_id * 2 - 1 if self.venue_id else 0
+
+    @property
+    def counter_base_v2(self) -> int:
+        """counterTokenV2's block, always counter_base + 1."""
+        return self.venue_id * 2 if self.venue_id else 0
+
+    @property
+    def all_symbols_stype_in(self) -> str:
+        return self.stype_in_all_symbols or self.stype_in
+
+
+def load_exchanges() -> dict[str, ExchangeCfg]:
+    """Every [EXCHANGE:<CODE>] section, keyed by lowercased code.
+
+    The section set is authoritative: a venue with no section is unknown to
+    the pipeline. There is deliberately no built-in fallback table -- that is
+    what made the old VENUE_CONFIGS and config.ini disagree silently.
+    """
+    config_file = paths.config_ini()
+    if not config_file.exists():
+        return {}
+    cfg = configparser.ConfigParser()
+    cfg.read(config_file)
+
+    out: dict[str, ExchangeCfg] = {}
+    for name in cfg.sections():
+        if not name.startswith(EXCHANGE_SECTION_PREFIX):
+            continue
+        code = name[len(EXCHANGE_SECTION_PREFIX):].strip().upper()
+        if not code:
+            continue
+        sec = cfg[name]
+        out[code.lower()] = ExchangeCfg(
+            venue_name=code,
+            feed=sec.get("feed", "databento").strip(),
+            venue_id=sec.getint("venue_id", 0),
+            dataset=sec.get("dataset", "").strip(),
+            schema=sec.get("schema", "definition").strip(),
+            stype_in=sec.get("stype_in", "raw_symbol").strip(),
+            stype_in_all_symbols=sec.get("stype_in_all_symbols", "").strip(),
+            all_symbols_default=sec.getboolean("all_symbols_default", False),
+            batch_start_time=sec.get("batch_start_time", "").strip(),
+            batch_end_time=sec.get("batch_end_time", "").strip(),
+            batch_lookback_days=sec.getint("batch_lookback_days", 1),
+            definition_ready_ratio=sec.getfloat("definition_ready_ratio", 0.5),
+            hist_pin_latest_session=sec.getboolean("hist_pin_latest_session", False),
+            hist_lookback_days=sec.getint("hist_lookback_days", 7),
+        )
+    return out
 
 
 @dataclass
@@ -73,7 +169,7 @@ def load_databento() -> DatabentoCfg:
             keys[exchange] = override
 
     live_seconds, live_retries, live_retry_delay_sec = 10, 3, 2
-    max_maps, hist_lookback_days = 100000, 7
+    max_maps = 100000
 
     config_file = paths.config_ini()
     if config_file.exists():
@@ -85,7 +181,6 @@ def load_databento() -> DatabentoCfg:
             live_retries = section.getint("live_retries", live_retries)
             live_retry_delay_sec = section.getint("live_retry_delay_sec", live_retry_delay_sec)
             max_maps = section.getint("max_maps", max_maps)
-            hist_lookback_days = section.getint("hist_lookback_days", hist_lookback_days)
 
     return DatabentoCfg(
         keys=keys,
@@ -93,7 +188,6 @@ def load_databento() -> DatabentoCfg:
         live_retries=live_retries,
         live_retry_delay_sec=live_retry_delay_sec,
         max_maps=max_maps,
-        hist_lookback_days=hist_lookback_days,
     )
 
 

@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterator, List
 import databento as db
 import pandas as pd
 
-from .. import parquet_export, paths, runner
+from .. import config, parquet_export, paths, runner
 from ..sources import databento_src as ds
 from . import broker_script, counter_token, price, session
 
@@ -284,6 +284,44 @@ def _resolve_symbol_id_fallback(row: Dict[str, Any]) -> tuple[str, str, str]:
     stype_in = stype_in if isinstance(stype_in, str) else str(stype_in)
     stype_out = stype_out if isinstance(stype_out, str) else str(stype_out)
     return stype_in, stype_out, stype_out or stype_in
+
+
+def _manual_dbn_scripts(files: List[Path], expected_dataset: str) -> Iterator[str]:
+    """Just the raw_symbols from a manual DBN drop, in the same order and with
+    the same dedupe as _manual_dbn_row_batches.
+
+    counterTokenV2's collect pass needs the day's symbol set and nothing else.
+    Going through _manual_dbn_row_batches for that costs ~90s on OPRA, because
+    it stringifies every DEFINITION_FIELDS column for all 2M records -- 60M
+    getattr+str calls -- and then the collect pass throws all of it away. Reading
+    one attribute instead makes the pass ~0.4s. Measured 2026-08-26.
+
+    The dedupe and the schema/dataset guards have to match the full reader
+    exactly, or the symbol set would disagree with the rows actually written.
+    """
+    seen: set = set()
+    for path in files:
+        store = db.DBNStore.from_file(path)
+        if str(store.schema) != "definition" or str(store.dataset) != expected_dataset:
+            continue
+        for rec in store:
+            if not isinstance(rec, db.InstrumentDefMsg):
+                continue
+            if rec.instrument_id in seen:
+                continue
+            seen.add(rec.instrument_id)
+            yield rec.raw_symbol
+
+
+def script_of(row: Dict[str, Any]) -> str:
+    """The `script` a mapper would produce, without running the whole mapper.
+
+    All three Databento mappers set script from _resolve_symbol_id_fallback's
+    symbol, so counterTokenV2's collect pass can read the day's symbol set
+    without paying for broker symbology, session and price derivation on every
+    row a second time.
+    """
+    return _resolve_symbol_id_fallback(row)[2]
 
 
 GLBX_CLASS_TYPES = {
@@ -602,8 +640,22 @@ def run(opts: runner.Opts) -> None:
 
     # Process each Databento venue independently -- stype_in/stype_out
     # semantics differ per venue, so each gets its own mapper.
+    # Numbering config is pre-flighted once, before a single row is written.
+    # A base that would bleed int32, collide with another venue's block, or is
+    # simply unset is a CRITICAL config error -- the venue is skipped rather
+    # than normalized into tokens a 32-bit consumer cannot hold.
+    token_errors = counter_token.validate(config.load_exchanges())
+    mine = {ds.VENUE_CONFIGS[v].venue_name for v in VENUE_MAPPERS if v in ds.VENUE_CONFIGS}
+    for mic in sorted(set(token_errors) & mine):
+        for msg in token_errors[mic]:
+            print(f"  CRITICAL [{mic}] counterToken config: {msg}")
+        print(f"  CRITICAL: skipping {mic} -- fix conf/config.ini [EXCHANGE:{mic}] "
+              f"before normalizing")
+
     for venue, mapper in VENUE_MAPPERS.items():
         venue_cfg = ds.VENUE_CONFIGS[venue]
+        if venue_cfg.venue_name in token_errors:
+            continue
         manual_dir = paths.manual_venue_dir(opts.date_dir, venue_cfg.venue_name)
         manual_files = _manual_dbn_files(manual_dir) if manual_dir.is_dir() else []
         csv_path = paths.databento_raw_csv(opts.date_dir, venue)
@@ -614,15 +666,55 @@ def run(opts: runner.Opts) -> None:
             # job's definition file dropped in place of the day's own
             # --all-symbols download.
             source = f"{len(manual_files)} manual file(s) in {manual_dir.name}/"
-            row_batches = _manual_dbn_row_batches(manual_files, venue_cfg.dataset, NORMALIZE_CHUNK_ROWS)
+
+            def _row_batches(files=manual_files, dataset=venue_cfg.dataset):
+                return _manual_dbn_row_batches(files, dataset, NORMALIZE_CHUNK_ROWS)
+
+            def _source_scripts(files=manual_files, dataset=venue_cfg.dataset):
+                return _manual_dbn_scripts(files, dataset)
         elif csv_path.exists():
             source = csv_path.name
-            row_batches = _csv_row_batches(csv_path, NORMALIZE_CHUNK_ROWS)
+
+            def _row_batches(path=csv_path):
+                return _csv_row_batches(path, NORMALIZE_CHUNK_ROWS)
+
+            def _source_scripts(path=csv_path):
+                return (script_of(row) for batch in _csv_row_batches(path, NORMALIZE_CHUNK_ROWS)
+                        for row in batch)
         else:
             continue
+        row_batches = _row_batches()
 
         print(f"    Processing {venue} ({source})...")
         output_path = normalized_dir / f"{venue.upper()}-DATABENTO-normalized{parquet_export.SUFFIX}"
+
+        # counterTokenV2 needs the whole day's symbol set before it can allocate:
+        # which offsets are free depends on which of yesterday's scripts are
+        # absent today, and that is not known until the last row. This path
+        # streams in chunks and cannot buffer 2M mapped rows, so the symbol set
+        # is collected in a cheap first pass over the same source -- script_of
+        # instead of the full mapper -- and the write below stays streaming.
+        mic = venue_cfg.venue_name
+        exchange_cfg = counter_token.exchange_for(venue)
+        tokens = None
+        if exchange_cfg is not None and exchange_cfg.venue_id:
+            try:
+                previous, prev_day = counter_token.previous_tokens(
+                    opts.date_dir, mic, exchange_cfg.venue_id)
+            except ValueError as exc:
+                print(f"      CRITICAL: skipping {venue} -- {exc}")
+                continue
+            scripts = [script for script in _source_scripts() if script]
+            tokens = counter_token.carry_forward(
+                previous, scripts, exchange_cfg.venue_id, exchange_cfg.counter_base_v2)
+            counter_token.check_capacity(mic, exchange_cfg.counter_base_v2, tokens.high_water)
+            new_count = len(tokens.assigned) - (
+                0 if previous is None
+                else len(set(tokens.assigned) & set(previous.assigned)))
+            print(f"      counterTokenV2: {len(tokens.assigned):,} symbol(s), "
+                  f"{new_count:,} new, high-water {tokens.high_water:,}"
+                  + (f", carried from {prev_day}" if previous else ", first day"))
+            row_batches = _row_batches()
 
         bases = counter_token.bases_for(venue)
         # PID-scoped staging and promote-on-close live in RowWriter, for the same
@@ -648,6 +740,9 @@ def run(opts: runner.Opts) -> None:
                 if bases is not None:
                     for n, r in enumerate(batch, total + 1):
                         r["counterToken"] = counter_token.assign(bases, n)
+                if tokens is not None:
+                    for r in batch:
+                        r["counterTokenV2"] = tokens.token(r.get("script", ""))
                 writer.write(batch)
                 total += len(batch)
                 print(f"      {total} row(s)...", flush=True)
@@ -659,6 +754,10 @@ def run(opts: runner.Opts) -> None:
         # close() writes nothing at all for an empty venue -- a row-group-less
         # file would look like a valid empty venue downstream.
         if writer.close():
+            # Only after the file is promoted: a manifest naming tokens that no
+            # output actually carries would be read as tomorrow's truth.
+            if tokens is not None:
+                counter_token.merge_into_manifest(opts.date_dir, mic, tokens)
             print(f"      Wrote {total} rows to {output_path.name}")
         else:
             print(f"      No rows for {venue}")
