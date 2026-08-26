@@ -107,11 +107,11 @@ fn cell(array: &std::sync::Arc<dyn arrow::array::Array>, row: usize) -> String {
 
 #[cfg(feature = "columnar")]
 fn load_dbn(path: &Path, limit: usize) -> Result<Table> {
-    use dbn::decode::{DbnRecordDecoder, DecodeRecordRef};
-    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    // .zst is sniffed from the magic bytes rather than the extension, so a
-    // compressed file named .dbn still reads.
-    let mut decoder = DbnRecordDecoder::with_zstd(file)?;
+    use dbn::decode::{DecodeRecordRef, DynDecoder};
+    // DynDecoder sniffs zstd from the magic bytes rather than the extension, so
+    // a compressed file named plain .dbn still reads.
+    let mut decoder = DynDecoder::from_file(path, dbn::VersionUpgradePolicy::default())
+        .with_context(|| format!("opening {}", path.display()))?;
     let header = vec![
         "rtype".into(), "instrument_id".into(), "raw_symbol".into(),
         "instrument_class".into(), "ts_event".into(),
@@ -126,7 +126,7 @@ fn load_dbn(path: &Path, limit: usize) -> Result<Table> {
 
 #[cfg(feature = "columnar")]
 fn describe(rec: &dbn::RecordRef) -> Vec<String> {
-    use dbn::InstrumentDefMsg;
+    use dbn::{InstrumentDefMsg, Record};   // Record brings header() into scope
     if let Some(d) = rec.get::<InstrumentDefMsg>() {
         return vec![
             "definition".into(),
@@ -136,6 +136,7 @@ fn describe(rec: &dbn::RecordRef) -> Vec<String> {
             d.hd.ts_event.to_string(),
         ];
     }
-    vec![format!("{:?}", rec.header().rtype), rec.header().instrument_id.to_string(),
-         String::new(), String::new(), rec.header().ts_event.to_string()]
+    let hd = rec.header();
+    vec![format!("{:?}", hd.rtype), hd.instrument_id.to_string(),
+         String::new(), String::new(), hd.ts_event.to_string()]
 }

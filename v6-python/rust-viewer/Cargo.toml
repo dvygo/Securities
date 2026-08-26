@@ -24,7 +24,10 @@ duckdb = { version = "1.1", optional = true, features = ["bundled"] }
 
 [features]
 default = []
-columnar = ["dep:arrow", "dep:parquet", "dep:dbn", "dep:duckdb"]
+columnar = ["dep:arrow", "dep:parquet", "dep:dbn"]
+# DuckDB is a separate feature: it compiles a large C++ amalgamation, so it is
+# opt-in rather than bundled into every build of the viewer.
+duck = ["dep:duckdb"]
 
 [profile.release]
 opt-level = 3
