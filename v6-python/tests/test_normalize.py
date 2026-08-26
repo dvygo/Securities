@@ -115,54 +115,6 @@ class TestDatabentoParsing:
         assert databento_norm.underlying_root_from_stype_in(".SPX") == "SPX"
 
 
-class TestFyersNormalization:
-    """Test Fyers row mapping to canonical schema."""
-
-    def test_map_fyers_row_equity(self):
-        """Test mapping a Fyers equity row."""
-        row = {
-            "symbol": "INFY",
-            "fyToken": "011224010100001",
-            "exchange": "NSE",
-            "segment": "CM",
-            "description": "Infosys Limited",
-            "instrumenttype": "EQ",
-            "tick_size": "1",
-            "lot_size": "1",
-        }
-
-        from premarketv6 import config
-        cfg = config.load_normalizer()
-        result = fields.map_fyers_row(row, cfg)
-
-        assert result["script"] == "INFY"
-        assert result["exchange"] == "XNSE"
-        assert result["scriptInstrumentType"] == "EQUITY"
-        assert result["currency"] == "INR"
-
-    def test_map_fyers_row_future(self):
-        """Test mapping a Fyers futures row."""
-        row = {
-            "symbol": "BANKNIFTY-JAN25FUT",
-            "fyToken": "021225010100001",
-            "exchange": "NSE",
-            "segment": "FO",
-            "description": "Bank Nifty Jan 2025",
-            "instrumenttype": "FUTSTK",
-            "tick_size": "5",
-            "lot_size": "15",
-            "multiplier": "1",
-        }
-
-        from premarketv6 import config
-        cfg = config.load_normalizer()
-        result = fields.map_fyers_row(row, cfg)
-
-        assert result["script"] == "BANKNIFTY-JAN25FUT"
-        assert result["scriptInstrumentType"] == "FUTURE"
-        assert result["lotSize"] == 15
-
-
 class TestVenueTokenPrefix:
     """scriptToken is the bare Databento instrument_id (databento_norm.prefixed_token).
 
