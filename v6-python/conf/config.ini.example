@@ -72,21 +72,33 @@ exchanges = XCME,XCBO
 #
 #   feed                    databento | fyers
 #   venue_id                stable small integer identifying the venue. THE ONLY
-#                           numbering knob: both token blocks are derived from
-#                           it, counterToken on block (venue_id*2 - 1) and
-#                           counterTokenV2 on (venue_id*2). Deriving them means
-#                           two venues sharing a block, or v1 landing on v2's,
-#                           is unrepresentable rather than merely invalid -- the
-#                           three hand-maintained integers this replaced could
-#                           drift apart silently.
-#                           A block is counter_token.BLOCK (100,000,000) wide,
-#                           so venue_id N spans (2N-1)00,000,001 .. 2N00,000,000.
+#                           numbering knob: both token prefixes are derived from
+#                           it, counterToken on venue_id and counterTokenV2 on
+#                           venue_id+1. Deriving them means two venues sharing a
+#                           prefix, or v1 landing on v2's, is unrepresentable
+#                           rather than merely invalid -- the three
+#                           hand-maintained integers this replaced could drift
+#                           apart silently.
+#                           venue_id IS the token's leading digits, and is always
+#                           two digits (10..98, so its pair stays two-digit).
+#                           Two digits is load-bearing, not cosmetic: with a
+#                           variable-width counter a single-digit prefix collides
+#                           the moment a second digit appears. The counter widens
+#                           as each width fills, so prefix N spans N0..N9, then
+#                           N00..N99, then N000..N999, and so on -- tokens are
+#                           NOT fixed-width and do not sort correctly as TEXT.
+#                           Sort them as numbers.
 #                           Pre-flighted by normalize/counter_token.validate
-#                           BEFORE any row is written: unset, duplicated, or
-#                           int32-bleeding is a CRITICAL error and that venue is
-#                           skipped rather than half-normalized.
-#                           int32 ceiling: venue_id 10 is the highest whose v2
-#                           block fits 2,147,483,647. Six are allocated today.
+#                           BEFORE any row is written: unset, out of 10..98,
+#                           duplicated, or closer than 2 to another venue_id (each
+#                           owns venue_id and venue_id+1) is a CRITICAL error and
+#                           that venue is skipped rather than half-normalized.
+#                           int32 budget: every two-digit prefix reaches at least
+#                           a 7-digit counter before crossing 2,147,483,647, so
+#                           at least 11,111,110 rows per prefix -- low prefixes
+#                           fit more (14 holds 111,111,110). check_capacity
+#                           refuses a day that would not fit rather than
+#                           wrapping. Six venue_ids are allocated today.
 #
 #   dataset                 Databento dataset id (databento feeds only)
 #   schema                  schema for the ALL_SYMBOLS batch path
