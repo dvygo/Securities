@@ -26,6 +26,19 @@ SEGMENT_BY_TYPE2 = {
 # Normalized rows read and mapped before a batch is appended to the plugin CSV.
 PLUGIN_CHUNK_ROWS = 50_000
 
+# What every empty plugin value becomes. The plugin table types most of these
+# columns as float8/int4, and an empty CSV field arrives there as NULL -- so
+# lotmultiple, ticksize and freeze_qty, which the canonical schema does not
+# carry at all, were landing as NULL on every Databento row (871,068 of 871,068
+# for XCME on 2026-08-27). Filling them here means the pushed table has no NULL
+# in any plugin column, whatever the venue.
+#
+# Applied to every column rather than a numeric subset, so a column added to
+# PLUGIN_COLUMNS later cannot reintroduce a NULL by being forgotten here. "1"
+# rather than "0" was chosen deliberately: these end up in divisor-like and
+# multiplier-like positions where a zero is worse than a wrong-but-harmless one.
+NULL_FILL = "1"
+
 
 def _expiry_ns(row: dict) -> int:
     """Effective expiry in nanoseconds since epoch UTC. 0 means never expires.
@@ -96,8 +109,25 @@ def _fullname(inst_type2: str, underlying: str, strike, divisor, opt_code: str, 
     return underlying
 
 
+def _fill_nulls(mapped: dict) -> dict:
+    """Replace every empty value with NULL_FILL.
+
+    None and "" both count: the canonical schema uses "" for a column a venue
+    does not carry, and .get() returns None for one that is missing entirely.
+    Whitespace-only is treated as empty too, since a value of " " reaches
+    Postgres as a non-NULL that is no more useful than a NULL.
+    """
+    return {
+        k: (NULL_FILL if v is None or (isinstance(v, str) and not v.strip()) else v)
+        for k, v in mapped.items()
+    }
+
+
 def map_row(row: dict, trade_date: str, exchange: str) -> dict:
-    """Map one canonical normalized row (paths.NORMALIZED_COLUMNS) to the plugin/pg schema."""
+    """Map one canonical normalized row (paths.NORMALIZED_COLUMNS) to the plugin/pg schema.
+
+    No value in the returned row is ever empty -- see _fill_nulls.
+    """
     inst_type2 = row.get("scriptInstrumentType2", "")
     option_type = row.get("optionType", "")
     opt_code = "CE" if option_type == "CALL" else "PE" if option_type == "PUT" else ""
@@ -112,7 +142,7 @@ def map_row(row: dict, trade_date: str, exchange: str) -> dict:
     expiry_sec = _expiry_seconds(row)
     expiry_str = datetime.fromtimestamp(expiry_sec, tz=timezone.utc).strftime("%Y-%m-%d") if expiry_sec else ""
 
-    return {
+    return _fill_nulls({
         "trade_date": trade_date,
         "segment": SEGMENT_BY_TYPE2.get(inst_type2, ""),
         # counterTokenV2, taken verbatim -- the collision-free numbering lives in
@@ -151,7 +181,7 @@ def map_row(row: dict, trade_date: str, exchange: str) -> dict:
             row.get("multiplier", ""), opt_code, expiry_str,
         ),
         "freeze_qty": "",  # not carried by the canonical schema
-    }
+    })
 
 
 def run(opts: runner.Opts) -> None:

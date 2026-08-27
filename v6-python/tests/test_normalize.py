@@ -627,5 +627,57 @@ class TestPluginUpsertSQL:
             postgres_export_plugin._upsert_sql("public", "t", list(postgres_export_plugin.PLUGIN_PRIMARY_KEY))
 
 
+class TestPluginNullSafety:
+    """No plugin column is ever empty: the pushed table must hold no NULL."""
+
+    @staticmethod
+    def _empty(row):
+        return [k for k, v in row.items()
+                if v is None or (isinstance(v, str) and not v.strip())]
+
+    def test_an_entirely_empty_input_still_fills_every_column(self):
+        """The worst case: a row carrying nothing the mapper recognises."""
+        row = plugin.map_row({}, "2026-08-27", "XCME")
+        assert self._empty(row) == []
+        assert set(row) == set(plugin.PLUGIN_COLUMNS)
+
+    def test_columns_the_canonical_schema_never_carries_are_filled(self):
+        """lotmultiple/freeze_qty have no source at all; ticksize has none for XCME."""
+        row = plugin.map_row({}, "2026-08-27", "XCME")
+        for col in ("lotmultiple", "freeze_qty", "ticksize"):
+            assert row[col] == plugin.NULL_FILL
+
+    def test_real_values_are_not_overwritten(self):
+        row = plugin.map_row(
+            {"script": "ESZ6", "scriptToken": "9", "counterTokenV2": "130",
+             "scriptInstrumentType": "FUTIDX", "scriptInstrumentType2": "FUTURE",
+             "underlying_root": "ES", "lotSize": "5", "tickSize": "25",
+             "multiplier": "1000000000"},
+            "2026-08-27", "XCME")
+        assert row["token"] == "130"
+        assert row["name"] == "ESZ6"
+        assert row["lotsize"] == "5"
+        assert row["ticksize"] == "25"
+        assert row["series"] == "XX"
+
+    def test_whitespace_only_counts_as_empty(self):
+        """A value of " " reaches Postgres as a non-NULL no more useful than a NULL."""
+        row = plugin.map_row({"script": "   ", "scriptToken": "1"}, "2026-08-27", "XCME")
+        assert row["name"] == plugin.NULL_FILL
+
+    def test_zero_is_a_value_and_survives(self):
+        """0 is meaningful for strikeprice/expirydate and must not become 1."""
+        row = plugin.map_row({"scriptToken": "1", "strike": 0, "expiration": 0},
+                             "2026-08-27", "XCME")
+        assert row["strikeprice"] == 0
+        assert row["expirydate"] == "0"
+
+    def test_every_declared_column_is_present(self):
+        """A column added to PLUGIN_COLUMNS is filled too, not silently absent."""
+        row = plugin.map_row({}, "2026-08-27", "XNSE")
+        for col in plugin.PLUGIN_COLUMNS:
+            assert col in row, col
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
