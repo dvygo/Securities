@@ -700,6 +700,9 @@ def run(opts: runner.Opts) -> None:
 
     for venue, mapper in VENUE_MAPPERS.items():
         venue_cfg = ds.VENUE_CONFIGS[venue]
+        if not venue_cfg.enabled:
+            print(f"    Skipping {venue_cfg.venue_name}: enabled = 0")
+            continue
         if venue_cfg.venue_name in token_errors:
             continue
         manual_dir = paths.manual_venue_dir(opts.date_dir, venue_cfg.venue_name)

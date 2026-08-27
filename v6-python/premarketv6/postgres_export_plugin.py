@@ -73,6 +73,20 @@ def run(opts: runner.Opts) -> None:
         return
 
     plugin_files = sorted(plugin_dir.glob(f"*{parquet_export.SUFFIX}"))
+
+    # A disabled venue never reaches the table, even if a plugin file for it is
+    # still on disk from the last run it was enabled for. The allow-list below
+    # is a separate, narrower filter: enabled says whether the pipeline runs the
+    # venue at all, [postgres-plugin].exchanges says which of the venues it does
+    # run get pushed to this particular table.
+    exchanges = config.load_exchanges()
+    disabled = {c.venue_name for c in exchanges.values() if not c.enabled}
+    if disabled:
+        skipped = [p for p in plugin_files if p.name.split("-", 1)[0] in disabled]
+        for path in skipped:
+            print(f"  Skipping {path.name}: {path.name.split('-', 1)[0]} enabled = 0")
+        plugin_files = [p for p in plugin_files if p.name.split("-", 1)[0] not in disabled]
+
     if cfg.exchanges:
         plugin_files = [p for p in plugin_files if p.name.split("-", 1)[0] in cfg.exchanges]
 

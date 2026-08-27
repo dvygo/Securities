@@ -1,9 +1,10 @@
 """Unit tests for normalization modules."""
+import configparser
 from datetime import date, datetime, timezone
 
 import pytest
 
-from premarketv6 import paths
+from premarketv6 import config, paths
 from premarketv6.normalize import broker_script, databento_norm, fields, plugin, price, session
 from premarketv6.sources import fyers_src
 
@@ -401,6 +402,42 @@ class TestGlbxContractMonth:
         result = databento_norm.map_xcme_row(row, self.REF)
         assert result["expiration"] == self._ns(2026, 12, 1)  # contract month, 1st
         assert result["brokerScript1"] == "ES/Z26"
+
+
+class TestExchangeEnabledFlag:
+    """[EXCHANGE:*] enabled is a strict 0/1 flag, not a boolean spelling."""
+
+    @staticmethod
+    def _section(body: str):
+        cfg = configparser.ConfigParser()
+        cfg.read_string(f"[EXCHANGE:XNAS]\n{body}\n")
+        return cfg["EXCHANGE:XNAS"]
+
+    def test_one_enables_and_zero_disables(self):
+        assert config._enabled_flag(self._section("enabled = 1"), "XNAS") is True
+        assert config._enabled_flag(self._section("enabled = 0"), "XNAS") is False
+
+    def test_absent_means_enabled(self):
+        """A section written before this knob existed keeps running."""
+        assert config._enabled_flag(self._section("feed = databento"), "XNAS") is True
+
+    def test_surrounding_whitespace_is_tolerated(self):
+        assert config._enabled_flag(self._section("enabled =  1  "), "XNAS") is True
+
+    @pytest.mark.parametrize("value", ["true", "false", "yes", "no", "on", "off", "", "2", "-1"])
+    def test_boolean_spellings_are_rejected(self, value):
+        """One spelling only: getboolean would quietly accept all of these.
+
+        Rejected rather than defaulted because both defaults are wrong -- a
+        silent disable loses a day's data, a silent enable pushes rows nobody
+        asked for.
+        """
+        with pytest.raises(ValueError, match="must be 0 or 1"):
+            config._enabled_flag(self._section(f"enabled = {value}"), "XNAS")
+
+    def test_error_names_the_venue(self):
+        with pytest.raises(ValueError, match=r"\[EXCHANGE:XCBO\]"):
+            config._enabled_flag(self._section("enabled = true"), "XCBO")
 
 
 if __name__ == "__main__":

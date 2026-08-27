@@ -34,6 +34,16 @@ class ExchangeCfg:
     """
     venue_name: str                       # MIC as written in the section header
     feed: str = "databento"               # databento | fyers
+    # Whether the pipeline touches this venue at all: download, normalize,
+    # plugin build and push each skip a disabled venue. Written 0/1, not
+    # true/false -- see _enabled_flag. Absent means 1, so a section that
+    # predates this knob keeps running.
+    #
+    # Disabling is NOT the same as deleting the section. The venue stays
+    # described, and validate() still holds its venue_id against every other
+    # venue's, so re-enabling it cannot silently collide with a prefix handed
+    # out while it was off.
+    enabled: bool = True
     # Numbering identity: ONE knob, and it is the token's leading digits.
     # counterToken uses venue_id as its prefix and counterTokenV2 uses
     # venue_id+1, so the two columns cannot be put on the same prefix. Must be
@@ -65,6 +75,27 @@ class ExchangeCfg:
         return self.stype_in_all_symbols or self.stype_in
 
 
+def _enabled_flag(sec, code: str) -> bool:
+    """Parse a venue's `enabled` as a strict 0/1 flag.
+
+    Deliberately not configparser's getboolean, which also accepts true/false,
+    yes/no and on/off. One spelling means a config file reads the same way
+    everywhere and a grep for "enabled = 1" finds every live venue; three
+    spellings mean the next reader has to check which one this file uses.
+
+    Anything else raises rather than defaulting, because both defaults are
+    wrong: silently disabling a venue loses a day's data, and silently enabling
+    one pushes rows nobody asked for.
+    """
+    raw = sec.get("enabled", "1").strip()
+    if raw not in ("0", "1"):
+        raise ValueError(
+            f"[EXCHANGE:{code}] enabled must be 0 or 1, got {raw!r}. "
+            f"This is a 0/1 flag, not true/false."
+        )
+    return raw == "1"
+
+
 def load_exchanges() -> dict[str, ExchangeCfg]:
     """Every [EXCHANGE:<CODE>] section, keyed by lowercased code.
 
@@ -89,6 +120,7 @@ def load_exchanges() -> dict[str, ExchangeCfg]:
         out[code.lower()] = ExchangeCfg(
             venue_name=code,
             feed=sec.get("feed", "databento").strip(),
+            enabled=_enabled_flag(sec, code),
             venue_id=sec.getint("venue_id", 0),
             dataset=sec.get("dataset", "").strip(),
             schema=sec.get("schema", "definition").strip(),

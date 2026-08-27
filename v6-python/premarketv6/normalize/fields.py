@@ -157,6 +157,10 @@ def run(opts: runner.Opts) -> None:
     token_errors = counter_token.validate(config.load_exchanges())
 
     for mic, (output_csv, table_name, source_files) in paths.FYERS_MIC_BUNDLES.items():
+        mic_cfg = counter_token.exchange_for(mic)
+        if mic_cfg is not None and not mic_cfg.enabled:
+            print(f"  Skipping Fyers {mic}: enabled = 0")
+            continue
         if mic in token_errors:
             for msg in token_errors[mic]:
                 print(f"  CRITICAL [{mic}] counterToken config: {msg}")

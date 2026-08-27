@@ -4,7 +4,7 @@ input file, written to data/YYYYMMDD/v6/plugin/ (sibling of normalized/)."""
 from datetime import datetime, timezone
 
 
-from .. import export, parquet_export, paths, runner
+from .. import config, export, parquet_export, paths, runner
 from . import session
 
 # Column order matches docs/plugin/pg_data_types.txt exactly.
@@ -168,11 +168,20 @@ def run(opts: runner.Opts) -> None:
 
     trade_date = f"{opts.date_dir[0:4]}-{opts.date_dir[4:6]}-{opts.date_dir[6:8]}"
     cutoff_ns = _cutoff_ns(opts.date_dir)
+    exchanges = config.load_exchanges()
     plugin_dir = paths.plugin_dir(opts.date_dir)
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
     for src_path in normalized:
         exchange = src_path.name.split("-", 1)[0]
+        # A disabled venue is skipped even when a normalized file is sitting
+        # there: the file is yesterday's, left behind by the stage that stopped
+        # writing it, and building a plugin file from it would push stale rows
+        # under today's trade_date.
+        venue_cfg = exchanges.get(exchange.lower())
+        if venue_cfg is not None and not venue_cfg.enabled:
+            print(f"    Skipping {exchange}: enabled = 0")
+            continue
         output_path = plugin_dir / src_path.name
         # Staging and promote-on-close live in RowWriter: PID-scoped so concurrent
         # runs cannot share a path, and never under the finished name -- a leftover

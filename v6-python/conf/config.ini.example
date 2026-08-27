@@ -56,6 +56,15 @@ exchanges = XCME,XCBO
 # hist_lookback_days -- both deleted, do not re-add.
 #
 #   feed                    databento | fyers
+#   enabled                 0 or 1, written as a digit -- NOT true/false. One
+#                           spelling so a grep for "enabled = 1" finds every
+#                           live venue. Absent means 1. A disabled venue is
+#                           skipped by every stage: download, normalize, plugin
+#                           build and push. It is NOT the same as deleting the
+#                           section -- the venue stays described and its
+#                           venue_id is still held against every other venue's,
+#                           so re-enabling it cannot collide with a prefix
+#                           handed out while it was off.
 #   venue_id                stable small integer identifying the venue. THE ONLY
 #                           numbering knob: both token prefixes are derived from
 #                           it, counterToken on venue_id and counterTokenV2 on
@@ -124,6 +133,7 @@ exchanges = XCME,XCBO
 
 [EXCHANGE:XNAS]
 feed = databento
+enabled = 1
 venue_id = 14
 dataset = EQUS.MINI
 schema = definition
@@ -136,6 +146,7 @@ hist_lookback_days = 7
 
 [EXCHANGE:XCBO]
 feed = databento
+enabled = 1
 venue_id = 10
 dataset = OPRA.PILLAR
 schema = definition
@@ -151,6 +162,7 @@ hist_lookback_days = 7
 
 [EXCHANGE:XCME]
 feed = databento
+enabled = 1
 venue_id = 12
 dataset = GLBX.MDP3
 schema = definition
@@ -163,12 +175,15 @@ hist_lookback_days = 7
 
 [EXCHANGE:XNSE]
 feed = fyers
+enabled = 1
 venue_id = 16
 
 [EXCHANGE:XBOM]
 feed = fyers
+enabled = 1
 venue_id = 18
 
 [EXCHANGE:XIMC]
 feed = fyers
+enabled = 1
 venue_id = 20

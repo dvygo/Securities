@@ -258,6 +258,14 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
         )
 
     venue_cfg = VENUE_CONFIGS[venue]
+    if not venue_cfg.enabled:
+        # Refused rather than skipped: naming a venue on the command line is an
+        # explicit request, and returning quietly would look like a download
+        # that found nothing rather than one that never ran.
+        raise ValueError(
+            f"{venue} ({venue_cfg.venue_name}) is disabled: set enabled = 1 in "
+            f"config.ini [EXCHANGE:{venue_cfg.venue_name}] to download it"
+        )
     cfg = config.load_databento()
 
     # Select API key based on venue
