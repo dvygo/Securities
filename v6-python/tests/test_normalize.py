@@ -587,5 +587,45 @@ class TestPluginTableDDL:
             config._flag_01(cfg["postgres-plugin"], "postgres-plugin", "create_table", "0")
 
 
+class TestPluginUpsertSQL:
+    """The push overwrites on (token, trade_date) instead of appending."""
+
+    def _sql(self):
+        return postgres_export_plugin._upsert_sql("public", "resultset", plugin.PLUGIN_COLUMNS)
+
+    def test_conflict_target_is_the_primary_key(self):
+        assert 'ON CONFLICT ("token", "trade_date")' in self._sql()
+
+    def test_it_updates_rather_than_ignoring(self):
+        """DO NOTHING would leave yesterday's values in place; ours must win."""
+        sql = self._sql()
+        assert "DO UPDATE SET" in sql
+        assert "DO NOTHING" not in sql
+
+    def test_every_non_key_column_is_overwritten(self):
+        sql = self._sql()
+        for col in plugin.PLUGIN_COLUMNS:
+            if col in postgres_export_plugin.PLUGIN_PRIMARY_KEY:
+                continue
+            assert f'"{col}" = EXCLUDED."{col}"' in sql, col
+
+    def test_key_columns_are_not_in_the_set_list(self):
+        """Assigning the matched key is a no-op Postgres rejects."""
+        set_clause = self._sql().split("DO UPDATE SET", 1)[1]
+        for col in postgres_export_plugin.PLUGIN_PRIMARY_KEY:
+            assert f'"{col}" = EXCLUDED' not in set_clause, col
+
+    def test_distinct_on_guards_duplicates_within_one_push(self):
+        """Without it Postgres raises 'cannot affect row a second time'."""
+        assert 'SELECT DISTINCT ON ("token", "trade_date")' in self._sql()
+
+    def test_it_reads_from_the_staging_table(self):
+        assert postgres_export_plugin._TEMP_TABLE in self._sql()
+
+    def test_all_key_columns_would_raise(self):
+        with pytest.raises(ValueError, match="nothing to update"):
+            postgres_export_plugin._upsert_sql("public", "t", list(postgres_export_plugin.PLUGIN_PRIMARY_KEY))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

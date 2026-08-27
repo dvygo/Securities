@@ -58,6 +58,10 @@ PLUGIN_COLUMN_TYPES = {
 # why counterToken/counterTokenV2 exist to keep a token unique across venues.
 PLUGIN_PRIMARY_KEY = ("token", "trade_date")
 
+# Staging table for the upsert. TEMP, so it is per-connection and cannot
+# collide with a concurrent push on another connection.
+_TEMP_TABLE = "plugin_upsert_staging"
+
 
 def _create_table_sql(schema: str, table: str) -> str:
     """DDL for the plugin table, in PLUGIN_COLUMNS order."""
@@ -126,39 +130,75 @@ def _batch_csv(columns: List[str], rows: List[dict], header: bool) -> str:
     return buf.getvalue()
 
 
-def _copy_append(conn: psycopg.connection.Connection, schema: str, table: str,
-                 columns: List[str], batches) -> int:
-    """COPY-append batches of rows into schema.table (no DROP/CREATE -- the table exists).
+def _upsert_sql(schema: str, table: str, columns: List[str]) -> str:
+    """INSERT ... ON CONFLICT DO UPDATE moving the staging rows into the target.
 
-    Takes an iterable of row batches rather than one list, and feeds them into a
-    single COPY as they arrive. The plugin build is chunked precisely so an
-    --all-symbols venue is never held whole; reading it back with read_rows put
-    it straight back into memory. Measured on the 2026-08-26 OPRA file: 1,636
-    bytes per row as dicts, so 1,998,042 rows is ~3.3 GB before a single byte
-    reaches Postgres.
-
-    Still one COPY and one commit per file, so a failure mid-file rolls the
-    whole file back exactly as it did before. Streaming changes the memory
-    profile, not the transaction boundary.
+    Every non-key column is overwritten from EXCLUDED, so our values win over
+    whatever is already stored. The key columns are excluded from the SET list
+    because they are what matched -- assigning them would be a no-op Postgres
+    rejects.
     """
     quoted_cols = ", ".join(f'"{c}"' for c in columns)
-    copy_sql = f'COPY "{schema}"."{table}" ({quoted_cols}) FROM STDIN WITH (FORMAT csv, HEADER true)'
+    pk = ", ".join(f'"{c}"' for c in PLUGIN_PRIMARY_KEY)
+    updates = ", ".join(
+        f'"{c}" = EXCLUDED."{c}"' for c in columns if c not in PLUGIN_PRIMARY_KEY
+    )
+    if not updates:
+        raise ValueError("Every plugin column is part of the primary key; nothing to update.")
+    return (
+        f'INSERT INTO "{schema}"."{table}" ({quoted_cols}) '
+        f'SELECT DISTINCT ON ({pk}) {quoted_cols} FROM "{_TEMP_TABLE}" '
+        f"ON CONFLICT ({pk}) DO UPDATE SET {updates}"
+    )
 
-    total = 0
+
+def _copy_upsert(conn: psycopg.connection.Connection, schema: str, table: str,
+                 columns: List[str], batches) -> tuple:
+    """Upsert batches of rows into schema.table. Returns (rows_read, rows_affected).
+
+    Our values always win: a (token, trade_date) already in the table is
+    overwritten, not appended beside and not skipped. Re-pushing a day is
+    therefore idempotent -- the previous push's row for a contract is replaced
+    by this one's rather than raising a duplicate-key error partway through and
+    leaving the day half written.
+
+    COPY cannot do ON CONFLICT, so the rows land in a TEMP table first and move
+    across in one INSERT ... ON CONFLICT DO UPDATE. The COPY into the temp table
+    still streams batch by batch, so the memory profile is unchanged; the temp
+    table is ON COMMIT DROP and the commit at the end of each file disposes of
+    it.
+
+    DISTINCT ON guards the one thing ON CONFLICT cannot survive: two rows for
+    the same key inside a single push, which Postgres rejects with "cannot
+    affect row a second time". counterTokenV2 is built so that cannot happen and
+    it did not on 2026-08-26 (3,017,990 rows, all distinct), but a dropped
+    duplicate shows up as rows_affected < rows_read rather than as a failed
+    push, and run() prints both.
+    """
+    quoted_cols = ", ".join(f'"{c}"' for c in columns)
+    read = 0
     with conn.cursor() as cur:
+        # LIKE the real table so the staging columns keep its exact types, and
+        # without its constraints so a duplicate inside this push reaches the
+        # DISTINCT ON below instead of failing the COPY.
+        cur.execute(f'CREATE TEMP TABLE "{_TEMP_TABLE}" (LIKE "{schema}"."{table}") ON COMMIT DROP')
+
+        copy_sql = f'COPY "{_TEMP_TABLE}" ({quoted_cols}) FROM STDIN WITH (FORMAT csv, HEADER true)'
         with cur.copy(copy_sql) as copy:
             for rows in batches:
                 if not rows:
                     continue
-                copy.write(_batch_csv(columns, rows, header=(total == 0)))
-                total += len(rows)
-        if total == 0:
-            # Nothing was written, so the COPY saw only a header-less empty
-            # stream. Roll back rather than commit an empty transaction.
+                copy.write(_batch_csv(columns, rows, header=(read == 0)))
+                read += len(rows)
+
+        if read == 0:
             conn.rollback()
-            return 0
+            return 0, 0
+
+        cur.execute(_upsert_sql(schema, table, columns))
+        affected = cur.rowcount
     conn.commit()
-    return total
+    return read, affected
 
 
 def run(opts: runner.Opts) -> None:
@@ -207,9 +247,11 @@ def run(opts: runner.Opts) -> None:
         with psycopg.connect(cfg.database_url) as conn:
             _ensure_table(conn, cfg.schema, cfg.table, cfg.create_table)
             for path in plugin_files:
-                n = _copy_append(conn, cfg.schema, cfg.table, plugin_norm.PLUGIN_COLUMNS,
-                                 parquet_export.iter_rows(path))
-                print(f"    Appended {n} rows from {path.name}")
+                read, affected = _copy_upsert(
+                    conn, cfg.schema, cfg.table, plugin_norm.PLUGIN_COLUMNS,
+                    parquet_export.iter_rows(path))
+                note = "" if read == affected else f" ({read - affected} duplicate key(s) collapsed)"
+                print(f"    Upserted {affected} rows from {path.name}{note}")
     except Exception as e:
         print(f"  Error appending to Postgres: {e}")
         raise
