@@ -112,24 +112,6 @@ class FyersCfg:
     retry_delay_sec: int = 2
 
 
-@dataclass
-class NormalizerCfg:
-    """Normalizer configuration (exchange/multiplier overrides)."""
-    glbx_underlying: str = "ES"
-    glbx_multiplier: int = 100000
-    glbx_exchange: str = "XCME"
-    opra_exchange: str = "XCBO"
-    opra_multiplier: int = 100000
-    equs_exchange: str = "XNAS"
-    equs_multiplier: int = 1
-    xnse_exchange: str = "XNSE"
-    xnfo_exchange: str = "XNFO"
-    xncd_exchange: str = "XNCD"
-    xbse_exchange: str = "XBSE"
-    xbfo_exchange: str = "XBFO"
-    xmcx_exchange: str = "XIMC"
-
-
 def load_databento() -> DatabentoCfg:
     """Load Databento config: per-exchange keys from keys.ini, other settings from config.ini.
 
@@ -203,42 +185,6 @@ def load_fyers() -> FyersCfg:
             )
 
     return FyersCfg(**defaults)
-
-
-def load_normalizer() -> NormalizerCfg:
-    """Load normalizer config from config.ini or hardcoded defaults."""
-    config_file = paths.config_ini()
-
-    cfg_dict = {
-        "glbx_underlying": "ES",
-        "glbx_multiplier": 100000,
-        "glbx_exchange": "XCME",
-        "opra_exchange": "XCBO",
-        "opra_multiplier": 100000,
-        "equs_exchange": "XNAS",
-        "equs_multiplier": 1,
-        "xnse_exchange": "XNSE",
-        "xnfo_exchange": "XNFO",
-        "xncd_exchange": "XNCD",
-        "xbse_exchange": "XBSE",
-        "xbfo_exchange": "XBFO",
-        "xmcx_exchange": "XIMC",
-    }
-
-    if config_file.exists():
-        cfg = configparser.ConfigParser()
-        cfg.read(config_file)
-        if "normalizer" in cfg:
-            section = cfg["normalizer"]
-            for key in cfg_dict:
-                if key in section:
-                    value = section[key]
-                    if key.endswith("_multiplier"):
-                        cfg_dict[key] = int(value)
-                    else:
-                        cfg_dict[key] = value
-
-    return NormalizerCfg(**cfg_dict)
 
 
 @dataclass

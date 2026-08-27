@@ -16,21 +16,6 @@ live_retries = 3
 live_retry_delay_sec = 2
 max_maps = 100000
 
-[normalizer]
-glbx_underlying = ES
-glbx_multiplier = 100000
-glbx_exchange = XCME
-opra_exchange = XCBO
-opra_multiplier = 100000
-equs_exchange = XNAS
-equs_multiplier = 1
-xnse_exchange = XNSE
-xnfo_exchange = XNFO
-xncd_exchange = XNCD
-xbse_exchange = XBSE
-xbfo_exchange = XBFO
-xmcx_exchange = XIMC
-
 [fyers]
 base_url = https://public.fyers.in/sym_details
 # Quote required: semicolons in UA are INI comments otherwise.

@@ -59,7 +59,7 @@ def _expiration_ns(raw: str) -> int:
     return ts
 
 
-def map_fyers_row(row: Dict[str, str], cfg: config.NormalizerCfg) -> Dict[str, Any]:
+def map_fyers_row(row: Dict[str, str]) -> Dict[str, Any]:
     """
     Map a single Fyers raw row to the 16-column canonical schema.
     Field keys here match the real feed, e.g.
@@ -148,7 +148,6 @@ def run(opts: runner.Opts) -> None:
         print("DRY RUN: Would normalize Fyers data")
         return
 
-    cfg = config.load_normalizer()
     normalized_dir = paths.normalized_dir(opts.date_dir)
     normalized_dir.mkdir(parents=True, exist_ok=True)
 
@@ -177,7 +176,7 @@ def run(opts: runner.Opts) -> None:
 
             raw_rows = fyers_src.parse_fyers_csv(source_path)
             for raw_row in raw_rows:
-                norm_row = map_fyers_row(raw_row, cfg)
+                norm_row = map_fyers_row(raw_row)
                 # Filter out empty/invalid rows
                 if norm_row.get("script") and norm_row.get("exchange"):
                     all_rows.append(norm_row)
