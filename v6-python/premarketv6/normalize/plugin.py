@@ -69,14 +69,25 @@ def map_row(row: dict, trade_date: str, exchange: str) -> dict:
     return {
         "trade_date": trade_date,
         "segment": SEGMENT_BY_TYPE2.get(inst_type2, ""),
-        # counterToken, taken verbatim -- the collision-free numbering lives in
-        # normalize/counter_token.py now (driven by databento_norm.py for the
+        # counterTokenV2, taken verbatim -- the collision-free numbering lives in
+        # normalize/counter_token.py (driven by databento_norm.py for the
         # Databento venues and fields.py for the Fyers ones), so this step no
-        # longer renumbers anything. Every venue is numbered, so the scriptToken
-        # fallback is unreachable in practice; it is kept only so a row that
-        # somehow arrives unnumbered still carries an id rather than an empty
-        # token, which would collide on the (token, trade_date) primary key.
-        "token": row.get("counterToken") or row.get("scriptToken", ""),
+        # longer renumbers anything.
+        #
+        # V2 and not counterToken: the pg symbol-master keys on
+        # (token, trade_date), so the token is what any cross-date join resolves
+        # against. counterToken is POSITIONAL -- a script's number moves whenever
+        # the day's row order shifts, so yesterday's token silently names a
+        # different script today. V2 is stable: a script keeps its number for as
+        # long as it keeps appearing, and a number is only reused once its script
+        # stops appearing.
+        #
+        # The fallbacks are a guard, not a path any venue takes today -- all six
+        # are fully numbered on both columns. But VenueTokens.token() returns ""
+        # for a script with no V2 allocation, and an empty token would collide on
+        # the primary key, so fall back to the positional token before the
+        # venue's own id.
+        "token": row.get("counterTokenV2") or row.get("counterToken") or row.get("scriptToken", ""),
         "symbol": row.get("underlying_root", ""),
         "expirydate": str(expiry_sec),
         "insttype": row.get("scriptInstrumentType", ""),
