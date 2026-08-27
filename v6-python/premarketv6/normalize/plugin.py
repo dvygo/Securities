@@ -39,6 +39,38 @@ PLUGIN_CHUNK_ROWS = 50_000
 # multiplier-like positions where a zero is worse than a wrong-but-harmless one.
 NULL_FILL = "1"
 
+# Columns whose empty value is not NULL_FILL. Each is a placeholder that says
+# "not applicable here" in the column's own vocabulary rather than in a generic
+# one, so a consumer can tell an absent value from a real 1.
+#
+#   strikeprice  -1, because 0 is a plausible-looking strike and would be read
+#                as one. Note this column is never empty -- it is 0 for anything
+#                without a strike (210,376 XCME rows on 20260827) -- so the
+#                substitution is keyed on 0 as well, in _plugin_placeholder.
+#   optiontype   XX, the same not-an-option marker `series` already uses for
+#                futures, instead of inventing a second one.
+#   segment      F&O. Only the blanks are filled: SEGMENT_BY_TYPE2 leaves the
+#                spread types empty and those are derivatives, but EQUITY maps
+#                to CM and must stay CM (3,143 XNSE and 926 XBOM rows on
+#                20260827, and every XNAS equity).
+COLUMN_FILL = {
+    "strikeprice": "-1",
+    "optiontype": "XX",
+    "segment": "F&O",
+}
+
+# strikeprice carries 0 for anything with no strike, so 0 is a missing value
+# there and not a real one. Everywhere else 0 is meaningful and is left alone --
+# expirydate 0 means "never expires".
+ZERO_IS_MISSING = ("strikeprice",)
+
+# Databento's undefined-price marker. Distinct from the undefined-TIMESTAMP one
+# session.as_ns handles (UINT64_MAX): prices are signed, so an unset price is
+# INT64_MAX and slips straight through a 2**63 floor. On 20260827 XCME,
+# def_min_price_increment is this on 110,662 rows, a real value on 902,608 and
+# zero on 35,328.
+UNDEF_PRICE = 2 ** 63 - 1
+
 
 def _expiry_ns(row: dict) -> int:
     """Effective expiry in nanoseconds since epoch UTC. 0 means never expires.
@@ -94,6 +126,42 @@ def _is_expired(row: dict, cutoff_ns: int) -> bool:
     return 0 < ns < cutoff_ns
 
 
+def _ticksize(row: dict) -> str:
+    """Tick size, preferring the venue's own min_price_increment.
+
+    The canonical tickSize is blank for every Databento venue -- XCME sets it
+    deliberately ("exclusive to the interactive layer"), so all 871,068 rows
+    were falling through to a placeholder. The definition record carries the
+    real value in def_min_price_increment.
+
+    Kept in Databento's 1e-9 fixed point rather than divided out, matching what
+    the neighbouring columns already do: strikeprice is fixed point at the same
+    scale (665000000000 for a 665.0 strike) and divisor carries the scale
+    itself. Dividing only this one column would make it the odd value out.
+
+    Rows with no increment carry UNDEF_PRICE and fall through to the column
+    placeholder, as do the 35,328 that carry a plain 0.
+    """
+    canonical = row.get("tickSize", "")
+    if isinstance(canonical, str) and canonical.strip():
+        return canonical
+    if canonical not in (None, ""):
+        return canonical
+    return str(_price_value(row.get("def_min_price_increment")) or "")
+
+
+def _price_value(value) -> int:
+    """A Databento fixed-point price field as int; 0 for unset or unparseable."""
+    try:
+        price = int(value) if value not in (None, "") else 0
+    except (TypeError, ValueError):
+        try:
+            price = int(float(value))
+        except (TypeError, ValueError):
+            return 0
+    return 0 if price <= 0 or price >= UNDEF_PRICE else price
+
+
 def _fullname(inst_type2: str, underlying: str, strike, divisor, opt_code: str, expiry_str: str) -> str:
     if inst_type2 == "OPTION":
         try:
@@ -109,16 +177,34 @@ def _fullname(inst_type2: str, underlying: str, strike, divisor, opt_code: str, 
     return underlying
 
 
-def _fill_nulls(mapped: dict) -> dict:
-    """Replace every empty value with NULL_FILL.
+def _is_missing(column: str, value) -> bool:
+    """Whether this column's value counts as absent.
 
     None and "" both count: the canonical schema uses "" for a column a venue
     does not carry, and .get() returns None for one that is missing entirely.
-    Whitespace-only is treated as empty too, since a value of " " reaches
-    Postgres as a non-NULL that is no more useful than a NULL.
+    Whitespace-only counts too, since " " reaches Postgres as a non-NULL no more
+    useful than a NULL. Zero counts only for the columns in ZERO_IS_MISSING.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    if column in ZERO_IS_MISSING:
+        try:
+            return float(value) == 0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def _fill_nulls(mapped: dict) -> dict:
+    """Replace every absent value with its column's placeholder.
+
+    No plugin column is left empty: they are float8/int4 in the plugin table and
+    an empty CSV field arrives through COPY as NULL.
     """
     return {
-        k: (NULL_FILL if v is None or (isinstance(v, str) and not v.strip()) else v)
+        k: (COLUMN_FILL.get(k, NULL_FILL) if _is_missing(k, v) else v)
         for k, v in mapped.items()
     }
 
@@ -171,7 +257,7 @@ def map_row(row: dict, trade_date: str, exchange: str) -> dict:
         "strikeprice": row.get("strike", ""),
         "lotmultiple": "",  # not carried by the canonical schema
         "lotsize": row.get("lotSize", ""),
-        "ticksize": row.get("tickSize", ""),
+        "ticksize": _ticksize(row),
         "name": row.get("script", ""),
         "series": series,
         "divisor": row.get("multiplier", ""),

@@ -665,12 +665,67 @@ class TestPluginNullSafety:
         row = plugin.map_row({"script": "   ", "scriptToken": "1"}, "2026-08-27", "XCME")
         assert row["name"] == plugin.NULL_FILL
 
-    def test_zero_is_a_value_and_survives(self):
-        """0 is meaningful for strikeprice/expirydate and must not become 1."""
-        row = plugin.map_row({"scriptToken": "1", "strike": 0, "expiration": 0},
-                             "2026-08-27", "XCME")
-        assert row["strikeprice"] == 0
+    def test_zero_survives_where_it_is_a_real_value(self):
+        """expirydate 0 means "never expires" and must not be substituted."""
+        row = plugin.map_row({"scriptToken": "1", "expiration": 0}, "2026-08-27", "XCME")
         assert row["expirydate"] == "0"
+
+    def test_strikeprice_zero_becomes_minus_one(self):
+        """0 is the no-strike value here, and reads as a plausible strike if left."""
+        row = plugin.map_row({"scriptToken": "1", "strike": 0}, "2026-08-27", "XCME")
+        assert row["strikeprice"] == "-1"
+
+    def test_a_real_strike_is_untouched(self):
+        row = plugin.map_row({"scriptToken": "1", "strike": "665000000000"},
+                             "2026-08-27", "XCME")
+        assert row["strikeprice"] == "665000000000"
+
+
+class TestPluginColumnFills:
+    """Absent values get their column's own placeholder, not a generic one."""
+
+    def test_missing_optiontype_is_xx(self):
+        """XX is what `series` already uses for a non-option; no second marker."""
+        row = plugin.map_row({"scriptToken": "1", "scriptInstrumentType2": "FUTURE"},
+                             "2026-08-27", "XCME")
+        assert row["optiontype"] == "XX"
+
+    def test_real_optiontype_survives(self):
+        row = plugin.map_row({"scriptToken": "1", "optionType": "CALL"}, "2026-08-27", "XCBO")
+        assert row["optiontype"] == "CE"
+
+    def test_blank_segment_becomes_fno(self):
+        """Spread types are absent from SEGMENT_BY_TYPE2 and are derivatives."""
+        row = plugin.map_row({"scriptToken": "1", "scriptInstrumentType2": "FUTURE_SPREAD"},
+                             "2026-08-27", "XCME")
+        assert row["segment"] == "F&O"
+
+    def test_equity_segment_stays_cm(self):
+        """The fill must not relabel cash-market instruments as derivatives."""
+        row = plugin.map_row({"scriptToken": "1", "scriptInstrumentType2": "EQUITY"},
+                             "2026-08-27", "XNAS")
+        assert row["segment"] == "CM"
+
+    def test_ticksize_comes_from_the_definition_record(self):
+        """Canonical tickSize is blank for every Databento venue."""
+        row = plugin.map_row(
+            {"scriptToken": "1", "tickSize": "", "def_min_price_increment": "25000000"},
+            "2026-08-27", "XCME")
+        assert row["ticksize"] == "25000000"
+
+    def test_canonical_ticksize_wins_when_present(self):
+        """Fyers venues carry their own; the definition fallback must not override."""
+        row = plugin.map_row(
+            {"scriptToken": "1", "tickSize": "500", "def_min_price_increment": "25000000"},
+            "2026-08-27", "XNSE")
+        assert row["ticksize"] == "500"
+
+    def test_ticksize_sentinel_falls_through_to_the_placeholder(self):
+        """def_min_price_increment carries INT64/UINT64 sentinels for "no increment"."""
+        row = plugin.map_row(
+            {"scriptToken": "1", "tickSize": "", "def_min_price_increment": str(2**63 - 1)},
+            "2026-08-27", "XCME")
+        assert row["ticksize"] == plugin.NULL_FILL
 
     def test_every_declared_column_is_present(self):
         """A column added to PLUGIN_COLUMNS is filled too, not silently absent."""
