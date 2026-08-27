@@ -26,6 +26,15 @@ class Opts:
     stype_in: Optional[str] = None
     live_start: Optional[str] = None
     hist_range: Optional[str] = None  # raw 16-digit YYYYMMDDYYYYMMDD, unparsed
+    # --venue: restrict the per-venue steps to these MICs (uppercased). Empty
+    # means every venue config.ini enables. Narrows a run; it cannot widen one,
+    # so a venue with enabled = 0 stays off even when named here.
+    venues: tuple = ()
+
+
+def venue_selected(opts: "Opts", mic: str) -> bool:
+    """Whether `mic` is in this run's --venue selection. True when none was given."""
+    return not opts.venues or mic.upper() in opts.venues
 
 
 _RANGE_RE = re.compile(r"^(\d{8})(\d{8})$")
@@ -108,6 +117,7 @@ def build_normalizer_steps(
     contracts_push_only: bool = False,
     plugin: bool = False,
     csv_only: bool = False,
+    baskets_enabled: bool = True,
 ) -> List[Step]:
     """
     Build the normalizer pipeline steps.
@@ -130,9 +140,12 @@ def build_normalizer_steps(
         Step("normalize-fyers", fields.run),
         Step("normalize-nse", nse_norm.run),
         Step("normalize-databento", databento_norm.run),
-        Step("baskets", baskets.run),
-        Step("csv-export", export.run),
     ]
+    # --no-baskets drops the step outright rather than letting it run and write
+    # nothing, so a run that skipped baskets is visible in the step list.
+    if baskets_enabled:
+        all_steps.append(Step("baskets", baskets.run))
+    all_steps.append(Step("csv-export", export.run))
 
     if plugin:
         all_steps.append(Step("plugin", plugin_norm.run))
@@ -155,6 +168,11 @@ def build_normalizer_steps(
         asked = {s for s in only if s in ("clickhouse", "postgres-plugin")}
         if asked:
             print(f"--csv-only: skipping {', '.join(sorted(asked))}", file=sys.stderr)
+
+    # Same courtesy as --csv-only above: a user who typed "--only baskets
+    # --no-baskets" gets an empty run, and needs to know why.
+    if not baskets_enabled and "baskets" in only:
+        print("--no-baskets: skipping baskets", file=sys.stderr)
 
     return steps
 

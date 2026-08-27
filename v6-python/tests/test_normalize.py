@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from premarketv6 import config, paths
+from premarketv6 import cli, config, paths, runner
 from premarketv6.normalize import broker_script, databento_norm, fields, plugin, price, session
 from premarketv6.sources import fyers_src
 
@@ -438,6 +438,67 @@ class TestExchangeEnabledFlag:
     def test_error_names_the_venue(self):
         with pytest.raises(ValueError, match=r"\[EXCHANGE:XCBO\]"):
             config._enabled_flag(self._section("enabled = true"), "XCBO")
+
+
+class TestVenueSelection:
+    """--venue narrows the per-venue steps; an unknown MIC must not pass quietly."""
+
+    @staticmethod
+    def _opts(venues=()):
+        return runner.Opts(as_of="20260826", date_dir="20260826", venues=venues)
+
+    def test_no_selection_means_every_venue(self):
+        opts = self._opts()
+        assert runner.venue_selected(opts, "XNAS")
+        assert runner.venue_selected(opts, "XCME")
+
+    def test_selection_admits_only_the_named(self):
+        opts = self._opts(("XNAS",))
+        assert runner.venue_selected(opts, "XNAS")
+        assert not runner.venue_selected(opts, "XCME")
+
+    def test_match_is_case_insensitive(self):
+        assert runner.venue_selected(self._opts(("XNAS",)), "xnas")
+
+    def test_values_are_uppercased_and_deduped(self):
+        assert cli._venue_selection(["xnas", "XNAS"]) == ("XNAS",)
+
+    def test_comma_separated_and_repeated_both_work(self):
+        assert cli._venue_selection(["XNAS,XCME"]) == ("XNAS", "XCME")
+        assert cli._venue_selection(["XNAS", "XCME"]) == ("XNAS", "XCME")
+
+    def test_empty_selection_is_empty_tuple(self):
+        assert cli._venue_selection([]) == ()
+
+    def test_unknown_venue_exits_rather_than_matching_nothing(self):
+        """A typo would otherwise produce a successful run that wrote nothing.
+
+        That is indistinguishable from a day whose data never arrived, so it
+        has to fail at the argument instead.
+        """
+        with pytest.raises(SystemExit, match="Unknown venue"):
+            cli._venue_selection(["XNSA"])
+
+    def test_error_lists_what_is_configured(self):
+        with pytest.raises(SystemExit, match="XNAS"):
+            cli._venue_selection(["NOPE"])
+
+
+class TestBasketsToggle:
+    """--no-baskets drops the step instead of letting it run and do nothing."""
+
+    def test_baskets_present_by_default(self):
+        names = [s.name for s in runner.build_normalizer_steps([])]
+        assert "baskets" in names
+
+    def test_no_baskets_removes_the_step(self):
+        names = [s.name for s in runner.build_normalizer_steps([], baskets_enabled=False)]
+        assert "baskets" not in names
+        assert "csv-export" in names   # the steps around it are untouched
+        assert "normalize-databento" in names
+
+    def test_no_baskets_beats_naming_it_in_only(self):
+        assert runner.build_normalizer_steps(["baskets"], baskets_enabled=False) == []
 
 
 if __name__ == "__main__":

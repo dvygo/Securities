@@ -157,6 +157,8 @@ def run(opts: runner.Opts) -> None:
     token_errors = counter_token.validate(config.load_exchanges())
 
     for mic, (output_csv, table_name, source_files) in paths.FYERS_MIC_BUNDLES.items():
+        if not runner.venue_selected(opts, mic):
+            continue
         mic_cfg = counter_token.exchange_for(mic)
         if mic_cfg is not None and not mic_cfg.enabled:
             print(f"  Skipping Fyers {mic}: enabled = 0")

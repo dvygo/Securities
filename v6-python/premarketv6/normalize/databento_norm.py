@@ -700,6 +700,8 @@ def run(opts: runner.Opts) -> None:
 
     for venue, mapper in VENUE_MAPPERS.items():
         venue_cfg = ds.VENUE_CONFIGS[venue]
+        if not runner.venue_selected(opts, venue_cfg.venue_name):
+            continue
         if not venue_cfg.enabled:
             print(f"    Skipping {venue_cfg.venue_name}: enabled = 0")
             continue

@@ -3,7 +3,7 @@ import argparse
 import sys
 from datetime import datetime
 
-from . import runlog, runner
+from . import config, runlog, runner
 from .sources import databento_src
 
 
@@ -121,6 +121,21 @@ def create_parser() -> argparse.ArgumentParser:
              "and suppresses the clickhouse/postgres-plugin steps even if named in --only.",
     )
     normalize_parser.add_argument(
+        "--venue",
+        action="append",
+        default=[],
+        metavar="MIC",
+        help="Restrict the per-venue steps (normalize-databento, normalize-fyers, "
+             "plugin) to this MIC; repeatable. Baskets and csv-export aggregate "
+             "across venues and are not narrowed. Narrows only -- a venue with "
+             "enabled = 0 stays off even when named.",
+    )
+    normalize_parser.add_argument(
+        "--no-baskets",
+        action="store_true",
+        help="Skip the baskets step. Overrides naming it in --only.",
+    )
+    normalize_parser.add_argument(
         "--basket",
         help="Specific basket to refresh",
     )
@@ -183,6 +198,7 @@ def run_normalize(args: argparse.Namespace) -> int:
             date_dir=args.date_dir,
             dry_run=args.dry_run,
             basket=getattr(args, "basket", None),
+            venues=_venue_selection(getattr(args, "venue", []) or []),
         )
 
         only = getattr(args, "only", []) or []
@@ -198,11 +214,39 @@ def run_normalize(args: argparse.Namespace) -> int:
             contracts_push_only=contracts_push_only,
             plugin=plugin,
             csv_only=getattr(args, "csv_only", False),
+            baskets_enabled=not getattr(args, "no_baskets", False),
         )
 
         return runner.run(steps, opts)
     finally:
         cleanup()
+
+
+def _venue_selection(raw: list) -> tuple:
+    """Normalise --venue values to a tuple of MICs, rejecting unknown ones.
+
+    A typo has to fail loudly. Passed through silently, "--venue XNSA" would
+    match no venue, every per-venue step would find nothing to do, and the run
+    would report success having written nothing -- indistinguishable from a day
+    where the data genuinely had not arrived.
+    """
+    if not raw:
+        return ()
+    known = {code.upper() for code in config.load_exchanges()}
+    picked, unknown = [], []
+    for value in raw:
+        for part in str(value).split(","):
+            mic = part.strip().upper()
+            if not mic:
+                continue
+            (picked if mic in known else unknown).append(mic)
+    if unknown:
+        raise SystemExit(
+            f"Unknown venue(s): {', '.join(sorted(set(unknown)))}. "
+            f"Venues come from config.ini [EXCHANGE:<CODE>] sections; "
+            f"configured: {', '.join(sorted(known)) or '(none)'}"
+        )
+    return tuple(dict.fromkeys(picked))
 
 
 def main() -> int:

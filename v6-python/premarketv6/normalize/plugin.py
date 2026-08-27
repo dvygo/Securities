@@ -178,6 +178,8 @@ def run(opts: runner.Opts) -> None:
         # there: the file is yesterday's, left behind by the stage that stopped
         # writing it, and building a plugin file from it would push stale rows
         # under today's trade_date.
+        if not runner.venue_selected(opts, exchange):
+            continue
         venue_cfg = exchanges.get(exchange.lower())
         if venue_cfg is not None and not venue_cfg.enabled:
             print(f"    Skipping {exchange}: enabled = 0")
