@@ -58,24 +58,30 @@ def _as_ns(value) -> int:
 def _expiry_ns(row: dict) -> int:
     """Effective expiry in nanoseconds since epoch UTC. 0 means never expires.
 
-    Canonical `expiration` first: it is the session close in UTC and the only
-    expiry column every venue carries -- def_expiration is blank for the three
-    Fyers venues, and present-but-unset (UINT64_MAX, see NS_SENTINEL_FLOOR) for
-    every XNAS equity and every OPRA SPOT leg.
+    def_expiration FIRST, because it is the venue's own last eligible trade
+    time and canonical `expiration` is not trustworthy for XCME. The GLBX
+    mapper derives expiration by regex off the symbol's month code
+    (databento_norm.glbx_expiration_ns), and the symbol carries no day, so the
+    day is hardcoded to the 1st of the month: all 622,952 XCME rows with a
+    non-zero expiration land on day 1, while their real def_expiration days
+    spread across the 25th-29th. It also mis-infers the decade near the wrap
+    boundary -- 6AH1 normalizes to 2021-03-01 against a real 2031-03-17.
 
-    def_expiration second, and it is not optional. On 2026-08-26 XCME had
-    375,744 rows whose canonical `expiration` is 0 while the row is a real
-    OPTION / OPTION_SPREAD / FUTURE / MIXED_SPREAD / FUTURE_SPREAD, and every
-    one of them carries def_expiration (the venue's own last eligible trade
-    time). Without the fallback those contracts read as perpetual and never age
-    out -- 105,554 already-expired XCME rows survive a strip that uses
-    `expiration` alone.
+    Deriving the strip from that column deleted 67,201 XCME and 120 XCBO
+    contracts that were still live, because "1st of the month" falls before a
+    cutoff the real expiry sits after. Databento hands us the authoritative
+    value in the definition record; use it.
+
+    Canonical `expiration` second, as the fallback for rows where the venue
+    gives us nothing: def_expiration is blank for the three Fyers venues, and
+    present-but-unset (UINT64_MAX, see NS_SENTINEL_FLOOR) for every XNAS equity
+    and every OPRA SPOT leg.
 
     0 from both is the genuine never-expires case -- equities and OPRA's SPOT
-    reference legs, 42,275 rows that day -- and must be kept. Treating a 0 as
-    "expired long ago" would delete every XNAS equity in the file.
+    reference legs, 42,275 rows on 2026-08-26 -- and must be kept. Treating a 0
+    as "expired long ago" would delete every XNAS equity in the file.
     """
-    return _as_ns(row.get("expiration")) or _as_ns(row.get("def_expiration"))
+    return _as_ns(row.get("def_expiration")) or _as_ns(row.get("expiration"))
 
 
 def _expiry_seconds(row: dict) -> int:

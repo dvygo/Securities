@@ -306,12 +306,23 @@ class TestPluginExpiry:
         row = {"expiration": "0", "def_expiration": str(self.CUTOFF - self.DAY_NS)}
         assert plugin._is_expired(row, self.CUTOFF) is True
 
-    def test_canonical_expiration_wins_over_def_expiration(self):
+    def test_def_expiration_wins_over_canonical_expiration(self):
+        """The venue's own expiry beats the symbol-derived one.
+
+        XCME's canonical expiration is regexed off the symbol's month code with
+        the day hardcoded to the 1st, so it lands before the real expiry and
+        strips contracts that are still live.
+        """
         row = {
-            "expiration": str(self.CUTOFF + 30 * self.DAY_NS),
-            "def_expiration": str(self.CUTOFF - self.DAY_NS),
+            "expiration": str(self.CUTOFF - self.DAY_NS),      # "1st of month", already past
+            "def_expiration": str(self.CUTOFF + 20 * self.DAY_NS),  # real expiry, still ahead
         }
         assert plugin._is_expired(row, self.CUTOFF) is False
+
+    def test_canonical_expiration_used_when_venue_gives_nothing(self):
+        """Fyers venues carry no def_expiration at all."""
+        row = {"expiration": str(self.CUTOFF - self.DAY_NS), "def_expiration": ""}
+        assert plugin._is_expired(row, self.CUTOFF) is True
 
     def test_float_rendered_timestamp_still_parses(self):
         """pandas widens an int column to float when any value is missing."""
