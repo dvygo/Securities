@@ -26,13 +26,81 @@ SEGMENT_BY_TYPE2 = {
 PLUGIN_CHUNK_ROWS = 50_000
 
 
-def _expiry_seconds(expiration) -> int:
-    """Canonical `expiration` is nanoseconds since epoch UTC; pg's expirydate is seconds."""
-    try:
-        ns = int(float(expiration)) if expiration not in (None, "") else 0
-    except ValueError:
+# A nanosecond timestamp that cannot be real. int64 nanoseconds run out in 2262,
+# so anything at or above this is a sentinel, not a date. Databento leaves an
+# unset timestamp as UINT64_MAX on the wire rather than 0 or blank: on
+# 2026-08-26 that is every one of the 13,201 XNAS equities and the 6,299 OPRA
+# SPOT reference legs. Read literally it is the year 586524, which would sail
+# past any "expired?" test and land in expirydate as 18446744073.
+NS_SENTINEL_FLOOR = 2 ** 63
+
+
+def _as_ns(value) -> int:
+    """Parse a nanosecond-since-epoch field; 0 for missing, unparseable or unset.
+
+    int() before float(): float cannot hold UINT64_MAX exactly, so the sentinel
+    round-trips to 18446744073709551616 and no longer equals itself. float stays
+    as the fallback because pandas widens an int column to float when any value
+    is missing, which renders ids and timestamps as "1787616000000000000.0".
+    """
+    if value in (None, ""):
         return 0
-    return ns // 1_000_000_000 if ns > 0 else 0
+    try:
+        ns = int(value)
+    except (TypeError, ValueError):
+        try:
+            ns = int(float(value))
+        except (TypeError, ValueError):
+            return 0
+    return 0 if ns < 0 or ns >= NS_SENTINEL_FLOOR else ns
+
+
+def _expiry_ns(row: dict) -> int:
+    """Effective expiry in nanoseconds since epoch UTC. 0 means never expires.
+
+    Canonical `expiration` first: it is the session close in UTC and the only
+    expiry column every venue carries -- def_expiration is blank for the three
+    Fyers venues, and present-but-unset (UINT64_MAX, see NS_SENTINEL_FLOOR) for
+    every XNAS equity and every OPRA SPOT leg.
+
+    def_expiration second, and it is not optional. On 2026-08-26 XCME had
+    375,744 rows whose canonical `expiration` is 0 while the row is a real
+    OPTION / OPTION_SPREAD / FUTURE / MIXED_SPREAD / FUTURE_SPREAD, and every
+    one of them carries def_expiration (the venue's own last eligible trade
+    time). Without the fallback those contracts read as perpetual and never age
+    out -- 105,554 already-expired XCME rows survive a strip that uses
+    `expiration` alone.
+
+    0 from both is the genuine never-expires case -- equities and OPRA's SPOT
+    reference legs, 42,275 rows that day -- and must be kept. Treating a 0 as
+    "expired long ago" would delete every XNAS equity in the file.
+    """
+    return _as_ns(row.get("expiration")) or _as_ns(row.get("def_expiration"))
+
+
+def _expiry_seconds(row: dict) -> int:
+    """Effective expiry as seconds, which is what pg's expirydate holds."""
+    return _expiry_ns(row) // 1_000_000_000
+
+
+def _cutoff_ns(date_dir: str) -> int:
+    """Strip boundary: 00:00 UTC on the run's own trade date.
+
+    Anchored to date_dir and not to wall-clock now, so re-running an old day
+    strips exactly what it stripped the first time.
+
+    Contracts expiring ON the trade date are kept -- 0DTE options are live and
+    heavily traded during the session the snapshot describes (28,213 rows on
+    2026-08-26), so the boundary is the start of the day, not its end.
+    """
+    day = datetime.strptime(date_dir, "%Y%m%d").replace(tzinfo=timezone.utc)
+    return int(day.timestamp()) * 1_000_000_000
+
+
+def _is_expired(row: dict, cutoff_ns: int) -> bool:
+    """True if this contract had already expired before the trade date began."""
+    ns = _expiry_ns(row)
+    return 0 < ns < cutoff_ns
 
 
 def _fullname(inst_type2: str, underlying: str, strike, divisor, opt_code: str, expiry_str: str) -> str:
@@ -63,7 +131,7 @@ def map_row(row: dict, trade_date: str, exchange: str) -> dict:
     else:
         series = ""
 
-    expiry_sec = _expiry_seconds(row.get("expiration"))
+    expiry_sec = _expiry_seconds(row)
     expiry_str = datetime.fromtimestamp(expiry_sec, tz=timezone.utc).strftime("%Y-%m-%d") if expiry_sec else ""
 
     return {
@@ -121,6 +189,7 @@ def run(opts: runner.Opts) -> None:
         return
 
     trade_date = f"{opts.date_dir[0:4]}-{opts.date_dir[4:6]}-{opts.date_dir[6:8]}"
+    cutoff_ns = _cutoff_ns(opts.date_dir)
     plugin_dir = paths.plugin_dir(opts.date_dir)
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -137,13 +206,22 @@ def run(opts: runner.Opts) -> None:
         # a list of mapped dicts and an output frame before a single write.
         writer = parquet_export.RowWriter(output_path, PLUGIN_COLUMNS)
         total = 0
+        expired = 0
         try:
             for rows in parquet_export.iter_rows(src_path, PLUGIN_CHUNK_ROWS):
-                batch = [
-                    map_row(row, trade_date, exchange)
-                    for row in rows
-                    if row.get("scriptToken")
-                ]
+                # Expired contracts are dropped here rather than mapped and
+                # filtered later: the symbol master is what the plugin resolves
+                # against, and a contract that stopped trading before this day
+                # began cannot be the answer to any lookup for it.
+                live = []
+                for row in rows:
+                    if not row.get("scriptToken"):
+                        continue
+                    if _is_expired(row, cutoff_ns):
+                        expired += 1
+                        continue
+                    live.append(row)
+                batch = [map_row(row, trade_date, exchange) for row in live]
                 if not batch:
                     continue
                 writer.write(batch)
@@ -156,7 +234,8 @@ def run(opts: runner.Opts) -> None:
         # Unlike the raw/normalized stages, an empty venue here is a valid
         # "nothing to push today" -- but a row-group-less Parquet file is not
         # readable, so nothing is written and the push simply finds no file.
+        dropped = f" ({expired:,} expired dropped)" if expired else ""
         if writer.close():
-            print(f"    Wrote {total} rows to {output_path}")
+            print(f"    Wrote {total} rows to {output_path}{dropped}")
         else:
-            print(f"    No plugin rows for {exchange}")
+            print(f"    No plugin rows for {exchange}{dropped}")

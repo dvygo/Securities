@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 import pytest
 
 from premarketv6 import paths
-from premarketv6.normalize import broker_script, databento_norm, fields, price, session
+from premarketv6.normalize import broker_script, databento_norm, fields, plugin, price, session
 from premarketv6.sources import fyers_src
 
 
@@ -253,6 +253,74 @@ class TestBrokerScript:
         result = databento_norm.map_xcme_row(row, date(2026, 8, 3))
         year = datetime.fromtimestamp(result["expiration"] / 1e9, tz=timezone.utc).year
         assert result["brokerScript1"] == f"ES/Z{year % 100:02d}"
+
+
+class TestPluginExpiry:
+    """Plugin expiry: which contracts are stripped, and what expirydate they carry."""
+
+    CUTOFF = plugin._cutoff_ns("20260826")
+    DAY_NS = 86_400 * 10 ** 9
+    UNDEF = "18446744073709551615"   # Databento's unset-timestamp sentinel
+
+    def test_cutoff_is_midnight_utc_on_the_trade_date(self):
+        assert self.CUTOFF == int(
+            datetime(2026, 8, 26, tzinfo=timezone.utc).timestamp()
+        ) * 10 ** 9
+
+    def test_undef_timestamp_reads_as_never_expires(self):
+        """UINT64_MAX is "unset", not the year 586524.
+
+        Every XNAS equity and every OPRA SPOT leg arrives this way. Read
+        literally it survives any expiry test and lands in expirydate as
+        18446744073.
+        """
+        row = {"expiration": "0", "def_expiration": self.UNDEF}
+        assert plugin._expiry_ns(row) == 0
+        assert plugin._expiry_seconds(row) == 0
+        assert plugin._is_expired(row, self.CUTOFF) is False
+
+    def test_undef_survives_the_int_parse_exactly(self):
+        """float() cannot hold UINT64_MAX, so it must not be parsed through float."""
+        assert plugin._as_ns(self.UNDEF) == 0
+        assert int(float(self.UNDEF)) != int(self.UNDEF)
+
+    def test_zero_expiration_is_kept_not_stripped(self):
+        """A 0 means never expires. Treating it as long-expired deletes every equity."""
+        row = {"expiration": "0", "def_expiration": ""}
+        assert plugin._is_expired(row, self.CUTOFF) is False
+
+    def test_expired_before_trade_date_is_stripped(self):
+        row = {"expiration": str(self.CUTOFF - self.DAY_NS)}
+        assert plugin._is_expired(row, self.CUTOFF) is True
+
+    def test_expiring_on_the_trade_date_is_kept(self):
+        """0DTE contracts are live during the session the snapshot describes."""
+        row = {"expiration": str(self.CUTOFF + 20 * 3600 * 10 ** 9)}
+        assert plugin._is_expired(row, self.CUTOFF) is False
+
+    def test_def_expiration_used_when_canonical_expiration_is_zero(self):
+        """XCME carries real OPTION/FUTURE rows whose canonical expiration is 0.
+
+        Without this fallback they read as perpetual and never age out.
+        """
+        row = {"expiration": "0", "def_expiration": str(self.CUTOFF - self.DAY_NS)}
+        assert plugin._is_expired(row, self.CUTOFF) is True
+
+    def test_canonical_expiration_wins_over_def_expiration(self):
+        row = {
+            "expiration": str(self.CUTOFF + 30 * self.DAY_NS),
+            "def_expiration": str(self.CUTOFF - self.DAY_NS),
+        }
+        assert plugin._is_expired(row, self.CUTOFF) is False
+
+    def test_float_rendered_timestamp_still_parses(self):
+        """pandas widens an int column to float when any value is missing."""
+        assert plugin._as_ns("1787616000000000000.0") == 1_787_616_000_000_000_000
+
+    def test_unparseable_and_negative_are_never_expired(self):
+        """Fail safe: keep the row rather than silently deleting it."""
+        for bad in ("abc", "", None, "-5"):
+            assert plugin._is_expired({"expiration": bad}, self.CUTOFF) is False
 
 
 if __name__ == "__main__":
