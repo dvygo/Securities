@@ -46,18 +46,6 @@ class ExchangeCfg:
     stype_in: str = "raw_symbol"
     stype_in_all_symbols: str = ""        # blank -> same as stype_in
     all_symbols_default: bool = False
-    # Narrowing-only bounds on the definition batch window, "HH:MM" UTC or blank.
-    # They can shrink the day but never widen it: the upper bound is still
-    # min()'d with the dataset's live available end, which is what stops the
-    # 422 data_end_after_available_end that a fixed end always eventually hits.
-    batch_start_time: str = ""
-    batch_end_time: str = ""
-    # How many days before date_dir the definition window opens. 1 = "yesterday
-    # 00:00Z through latest available", which is what keeps an early-morning run
-    # useful: OPRA does not publish today's snapshot until ~10:00-11:00Z and
-    # EQUS until ~05:00-06:00Z, so a window starting at today 00:00Z is simply
-    # empty before then. 0 restores the single-day window.
-    batch_lookback_days: int = 1
     definition_ready_ratio: float = 0.5
     hist_pin_latest_session: bool = False
     hist_lookback_days: int = 7
@@ -107,9 +95,6 @@ def load_exchanges() -> dict[str, ExchangeCfg]:
             stype_in=sec.get("stype_in", "raw_symbol").strip(),
             stype_in_all_symbols=sec.get("stype_in_all_symbols", "").strip(),
             all_symbols_default=sec.getboolean("all_symbols_default", False),
-            batch_start_time=sec.get("batch_start_time", "").strip(),
-            batch_end_time=sec.get("batch_end_time", "").strip(),
-            batch_lookback_days=sec.getint("batch_lookback_days", 1),
             definition_ready_ratio=sec.getfloat("definition_ready_ratio", 0.5),
             hist_pin_latest_session=sec.getboolean("hist_pin_latest_session", False),
             hist_lookback_days=sec.getint("hist_lookback_days", 7),

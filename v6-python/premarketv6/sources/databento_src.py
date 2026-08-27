@@ -520,21 +520,6 @@ def _available_end(client: db.Historical, dataset: str, schema: str) -> dt.datet
 PRIOR_SESSION_LOOKBACK_DAYS = 5
 
 
-def _offset_into_day(
-    midnight: dt.datetime, hhmm: str, fallback: Optional[dt.datetime] = None,
-) -> dt.datetime:
-    """"HH:MM" as an absolute instant on midnight's UTC day.
-
-    Blank means "no opinion" and returns `fallback` (or midnight itself), which
-    is what lets an unset batch_start_time/batch_end_time fall through to the
-    plain day boundaries.
-    """
-    if not hhmm:
-        return fallback if fallback is not None else midnight
-    hour, _, minute = hhmm.partition(":")
-    return midnight + dt.timedelta(hours=int(hour), minutes=int(minute or 0))
-
-
 def _definition_count(
     client: db.Historical, dataset: str, schema: str, stype_in: str,
     start: str, end: str,
@@ -650,56 +635,49 @@ def _download_definitions_via_batch(
     # put stale contracts behind a filename claiming today, and for OPRA the
     # instrument_ids in it belong to a token space the live feed no longer
     # uses (see hist_pin_latest_session).
+    # The window is date_dir's own UTC day, and nothing configures that.
+    #
+    #   date_dir 00:00Z -> get_dataset_range() -> refuse if date_dir is newer
+    #
+    # start is hardcoded to UTC midnight because the definition schema is a
+    # daily snapshot anchored there: Databento's own client warns that
+    # "instrument definitions effective on this date may be missing" for a later
+    # start, and a 13:30Z start on 2026-08-21 returned 90 OPRA records against
+    # 2,253,273 for the day. There is no defensible reason to configure it, so
+    # it is not configurable.
+    #
+    # end is the day's close, clamped to what the dataset actually holds.
+    # Omitting it does not work -- a date-only start with no end is
+    # forward-filled by the server to start+1day and then rejected with 422
+    # data_end_after_available_end, and a datetime start with no end is refused
+    # with data_start_too_precise_to_forward_fill. The range has to be closed.
+    #
+    # dataset_range["end"] is EXCLUSIVE, the same thing resolve_hist_range
+    # documents, so the newest session with data is the day containing end minus
+    # an instant rather than end's own date.
     as_of = dt.datetime.strptime(date_dir, "%Y%m%d").date()
+    start_ts = dt.datetime.combine(as_of, dt.time.min, tzinfo=dt.timezone.utc)
+    day_end = start_ts + dt.timedelta(days=1)
+
     available_end = _available_end(client, venue_cfg.dataset, venue_cfg.schema)
-    latest_session = (available_end - dt.timedelta(microseconds=1)).date()
-    if latest_session < as_of:
+    if (available_end - dt.timedelta(microseconds=1)).date() < as_of:
         raise RuntimeError(
             f"today's contract files are not updated yet, please check back later "
-            f"-- {venue_cfg.dataset} has data through {latest_session.isoformat()}, "
+            f"-- {venue_cfg.dataset} has data through "
+            f"{(available_end - dt.timedelta(microseconds=1)).date().isoformat()}, "
             f"asked for {as_of.isoformat()}. "
             f"GLBX publishes ~00:00-01:00Z, EQUS ~05:00-06:00Z, OPRA ~10:00-11:00Z."
         )
-
-    start = as_of - dt.timedelta(days=venue_cfg.batch_lookback_days)
-    midnight = dt.datetime.combine(start, dt.time.min, tzinfo=dt.timezone.utc)
-    day_end = dt.datetime.combine(as_of, dt.time.min, tzinfo=dt.timezone.utc) + dt.timedelta(days=1)
-
-    # [EXCHANGE:<CODE>] batch_start_time/batch_end_time narrow the day; they can
-    # never widen it. max()/min() against the plain day is what enforces that,
-    # so a stale or over-eager value in config.ini costs coverage rather than
-    # producing a range the API will reject.
-    start_ts = max(midnight, _offset_into_day(midnight, venue_cfg.batch_start_time))
-    if start_ts != midnight:
-        # Databento serves `definition` as a daily snapshot anchored to UTC
-        # midnight; its own client warns that "instrument definitions effective
-        # on this date may be missing" when a request starts later. Measured on
-        # 2026-08-21, a 13:30Z start returned 90 OPRA records against 2,253,273
-        # for the day. Loud rather than fatal: the knob is config, and an
-        # operator narrowing on purpose should not be blocked by this.
-        print(f"  WARNING: batch_start_time={venue_cfg.batch_start_time} is not "
-              f"00:00 UTC. The definition snapshot is anchored to UTC midnight, "
-              f"so this will silently drop definitions effective on "
-              f"{start.isoformat()}. Pin batch_start_time = 00:00 unless you "
-              f"know exactly why you are not.", flush=True)
-    configured_end = min(day_end, _offset_into_day(midnight, venue_cfg.batch_end_time, day_end))
-    end = min(configured_end, available_end)
-    if end <= start_ts:
-        raise RuntimeError(
-            f"{venue_cfg.dataset} has no definition data in "
-            f"{start.isoformat()}..{as_of.isoformat()} yet "
-            f"(available up to {available_end.isoformat()}) -- nothing to download"
-        )
+    end = min(day_end, available_end)
 
     have = _definition_count(client, venue_cfg.dataset, venue_cfg.schema,
                              stype_in, start_ts.isoformat(), end.isoformat())
     prior_day, prior = _prior_session_count(
-        client, venue_cfg.dataset, venue_cfg.schema, stype_in, start)  # start = window open
+        client, venue_cfg.dataset, venue_cfg.schema, stype_in, as_of)
     floor = int(prior * venue_cfg.definition_ready_ratio)
     if prior and have < floor:
         raise RuntimeError(
-            f"{venue_cfg.dataset} definitions for "
-            f"{start.isoformat()}..{as_of.isoformat()} are not "
+            f"{venue_cfg.dataset} definitions for {as_of.isoformat()} are not "
             f"published yet: {have:,} records up to {end.isoformat()} against "
             f"{prior:,} on {prior_day.isoformat()} "
             f"({have / prior:.1%}, floor {venue_cfg.definition_ready_ratio:.0%}). "

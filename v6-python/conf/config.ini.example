@@ -96,35 +96,6 @@ exchanges = XCME,XCBO
 #   all_symbols_default     --all-symbols on unless --no-all-symbols is passed.
 #                           true for every databento venue: the baskets were
 #                           leaving most of each universe undownloaded.
-#   batch_start_time        UTC HH:MM, narrowing-only lower bound. PIN THIS AT
-#                           00:00. The definition schema is served as a daily
-#                           snapshot anchored to UTC midnight, and the Databento
-#                           client warns on anything else: "The request time
-#                           range does not start at UTC midnight, instrument
-#                           definitions effective on this date may be missing."
-#                           Measured on 2026-08-21, starting at RTH open
-#                           (13:30Z) instead of midnight: OPRA.PILLAR returned
-#                           90 records against 2,253,273 for the day -- 0.0%.
-#                           databento_src warns if this is not 00:00.
-#   batch_end_time          UTC HH:MM, narrowing-only upper bound (blank=next
-#                           midnight). Left blank deliberately: the real bound
-#                           is the dataset's live available end, which this is
-#                           ALWAYS min()'d with. A fixed end can only shrink the
-#                           window, never widen it -- and an unclamped fixed end
-#                           is exactly what produces 422
-#                           data_end_after_available_end on every intraday run.
-#   batch_lookback_days     days before date_dir that the window opens.
-#                           0 (default) = date_dir itself, 00:00Z through
-#                           whatever the dataset has -- the end is always
-#                           clamped to the live available range, never a fixed
-#                           clock value.
-#                           Raise to 1 to also take the previous day. That
-#                           makes an early run useful when today has not
-#                           published yet -- OPRA lands ~10:00-11:00Z and EQUS
-#                           ~05:00-06:00Z, so a today-only window is empty
-#                           before then and the readiness guard blocks the run
-#                           rather than writing a thin file. The overlap is
-#                           then the normalizer's to dedupe.
 #   definition_ready_ratio  fraction of the previous session's definition count
 #                           the window must reach before a batch job is
 #                           submitted. Guards the thin-file case: the clamp
@@ -162,9 +133,6 @@ schema = definition
 stype_in = raw_symbol
 stype_in_all_symbols = raw_symbol
 all_symbols_default = true
-batch_start_time = 00:00
-batch_end_time =
-batch_lookback_days = 0
 definition_ready_ratio = 0.5
 hist_pin_latest_session = false
 hist_lookback_days = 7
@@ -177,9 +145,6 @@ schema = definition
 stype_in = parent
 stype_in_all_symbols = parent
 all_symbols_default = true
-batch_start_time = 00:00
-batch_end_time =
-batch_lookback_days = 0
 definition_ready_ratio = 0.5
 # OPRA reassigns instrument_id every trading day, so resolving against any date
 # other than the latest complete session returns a token space that shares
@@ -195,9 +160,6 @@ schema = definition
 stype_in = parent
 stype_in_all_symbols = raw_symbol
 all_symbols_default = true
-batch_start_time = 00:00
-batch_end_time =
-batch_lookback_days = 0
 definition_ready_ratio = 0.5
 hist_pin_latest_session = false
 hist_lookback_days = 7
