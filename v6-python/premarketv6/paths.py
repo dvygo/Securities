@@ -299,11 +299,14 @@ NORMALIZED_COLUMNS = [
     "brokerScript2",
     "brokerScript3",
     "brokerScript4",
-    # Per-venue positional counter in a reserved numeric block, assigned by
-    # normalize/databento_norm.py. scriptToken stays the Databento instrument_id;
-    # this is the collision-free key the plugin/pg schema pushes as its token.
-    # Blank for non-Databento venues, which keep their own tokens. Appended, like
-    # the broker columns, so positional readers keep working.
+    # Per-venue positional counter carrying the venue's two-digit prefix in its
+    # leading digits, numbered by normalize/counter_token.assign. scriptToken
+    # stays each source's own instrument id, which is only unique within that
+    # source; this is the collision-free key the plugin/pg schema pushes as its
+    # token. Populated for EVERY venue -- the Databento path assigns it in
+    # normalize/databento_norm.py and the Fyers path in normalize/fields.py --
+    # so it is never blank. Appended, like the broker columns, so positional
+    # readers keep working.
     "counterToken",
     # Stable across days, unlike counterToken above: a script keeps its number
     # for as long as it keeps appearing, and a number is only reused once its

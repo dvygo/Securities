@@ -69,10 +69,13 @@ def map_row(row: dict, trade_date: str, exchange: str) -> dict:
     return {
         "trade_date": trade_date,
         "segment": SEGMENT_BY_TYPE2.get(inst_type2, ""),
-        # counterToken where the normalizer assigned one (the Databento venues),
-        # otherwise the venue's own scriptToken. It is taken verbatim -- the
-        # collision-free numbering lives in normalize/databento_norm.py now, so
-        # this step no longer renumbers anything.
+        # counterToken, taken verbatim -- the collision-free numbering lives in
+        # normalize/counter_token.py now (driven by databento_norm.py for the
+        # Databento venues and fields.py for the Fyers ones), so this step no
+        # longer renumbers anything. Every venue is numbered, so the scriptToken
+        # fallback is unreachable in practice; it is kept only so a row that
+        # somehow arrives unnumbered still carries an id rather than an empty
+        # token, which would collide on the (token, trade_date) primary key.
         "token": row.get("counterToken") or row.get("scriptToken", ""),
         "symbol": row.get("underlying_root", ""),
         "expirydate": str(expiry_sec),
