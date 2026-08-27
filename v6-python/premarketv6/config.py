@@ -97,11 +97,11 @@ def load_baskets() -> BasketsCfg:
     cfg.read(config_file)
     if "baskets" not in cfg:
         return BasketsCfg()
-    return BasketsCfg(enabled=_enabled_flag(cfg["baskets"], "baskets"))
+    return BasketsCfg(enabled=_flag_01(cfg["baskets"], "baskets"))
 
 
-def _enabled_flag(sec, section: str) -> bool:
-    """Parse an `enabled` key as a strict 0/1 flag.
+def _flag_01(sec, section: str, key: str = "enabled", default: str = "1") -> bool:
+    """Parse a config key as a strict 0/1 flag.
 
     Deliberately not configparser's getboolean, which also accepts true/false,
     yes/no and on/off. One spelling means a config file reads the same way
@@ -112,10 +112,10 @@ def _enabled_flag(sec, section: str) -> bool:
     wrong: silently disabling a venue loses a day's data, and silently enabling
     one pushes rows nobody asked for.
     """
-    raw = sec.get("enabled", "1").strip()
+    raw = sec.get(key, default).strip()
     if raw not in ("0", "1"):
         raise ValueError(
-            f"[{section}] enabled must be 0 or 1, got {raw!r}. "
+            f"[{section}] {key} must be 0 or 1, got {raw!r}. "
             f"This is a 0/1 flag, not true/false."
         )
     return raw == "1"
@@ -145,7 +145,7 @@ def load_exchanges() -> dict[str, ExchangeCfg]:
         out[code.lower()] = ExchangeCfg(
             venue_name=code,
             feed=sec.get("feed", "databento").strip(),
-            enabled=_enabled_flag(sec, f"EXCHANGE:{code}"),
+            enabled=_flag_01(sec, f"EXCHANGE:{code}"),
             venue_id=sec.getint("venue_id", 0),
             dataset=sec.get("dataset", "").strip(),
             schema=sec.get("schema", "definition").strip(),
@@ -308,6 +308,15 @@ class PostgresPluginCfg:
     schema: str = ""
     table: str = ""
     exchanges: List[str] = field(default_factory=list)
+    # Whether the appender may CREATE TABLE IF NOT EXISTS its target.
+    #
+    # Defaults to 0, and the default is the point. The plugin table is
+    # externally managed, so "relation does not exist" is a useful error: it
+    # catches a mistyped schema/table before anything is written. With creation
+    # on, that same typo silently makes a new table and starts filling it --
+    # on whatever database the DSN points at, which is production for at least
+    # one deployment. Turn it on for a fresh database, leave it off elsewhere.
+    create_table: bool = False
 
 
 def load_postgres_plugin() -> PostgresPluginCfg:
@@ -316,6 +325,7 @@ def load_postgres_plugin() -> PostgresPluginCfg:
     schema = ""
     table = ""
     exchanges: List[str] = []
+    create_table = False
 
     config_file = paths.config_ini()
     if config_file.exists():
@@ -328,8 +338,10 @@ def load_postgres_plugin() -> PostgresPluginCfg:
             schema = section.get("schema", "")
             table = section.get("table", "")
             exchanges = [x.strip().upper() for x in section.get("exchanges", "").split(",") if x.strip()]
+            create_table = _flag_01(section, "postgres-plugin", "create_table", "0")
 
-    return PostgresPluginCfg(database_url=database_url, schema=schema, table=table, exchanges=exchanges)
+    return PostgresPluginCfg(database_url=database_url, schema=schema, table=table,
+                             exchanges=exchanges, create_table=create_table)
 
 
 def database_url(override: Optional[str] = None) -> str:

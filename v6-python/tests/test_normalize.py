@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from premarketv6 import cli, config, paths, runner
+from premarketv6 import cli, config, paths, postgres_export_plugin, runner
 from premarketv6.normalize import broker_script, databento_norm, fields, plugin, price, session
 from premarketv6.sources import fyers_src
 
@@ -418,15 +418,15 @@ class TestExchangeEnabledFlag:
         return cfg["EXCHANGE:XNAS"]
 
     def test_one_enables_and_zero_disables(self):
-        assert config._enabled_flag(self._section("enabled = 1"), "EXCHANGE:XNAS") is True
-        assert config._enabled_flag(self._section("enabled = 0"), "EXCHANGE:XNAS") is False
+        assert config._flag_01(self._section("enabled = 1"), "EXCHANGE:XNAS") is True
+        assert config._flag_01(self._section("enabled = 0"), "EXCHANGE:XNAS") is False
 
     def test_absent_means_enabled(self):
         """A section written before this knob existed keeps running."""
-        assert config._enabled_flag(self._section("feed = databento"), "EXCHANGE:XNAS") is True
+        assert config._flag_01(self._section("feed = databento"), "EXCHANGE:XNAS") is True
 
     def test_surrounding_whitespace_is_tolerated(self):
-        assert config._enabled_flag(self._section("enabled =  1  "), "EXCHANGE:XNAS") is True
+        assert config._flag_01(self._section("enabled =  1  "), "EXCHANGE:XNAS") is True
 
     @pytest.mark.parametrize("value", ["true", "false", "yes", "no", "on", "off", "", "2", "-1"])
     def test_boolean_spellings_are_rejected(self, value):
@@ -437,11 +437,11 @@ class TestExchangeEnabledFlag:
         asked for.
         """
         with pytest.raises(ValueError, match="must be 0 or 1"):
-            config._enabled_flag(self._section(f"enabled = {value}"), "EXCHANGE:XNAS")
+            config._flag_01(self._section(f"enabled = {value}"), "EXCHANGE:XNAS")
 
     def test_error_names_the_venue(self):
         with pytest.raises(ValueError, match=r"\[EXCHANGE:XCBO\]"):
-            config._enabled_flag(self._section("enabled = true"), "EXCHANGE:XCBO")
+            config._flag_01(self._section("enabled = true"), "EXCHANGE:XCBO")
 
 
 class TestVenueSelection:
@@ -539,6 +539,52 @@ class TestBasketsToggle:
         parser = cli.create_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["normalize", "--no-baskets"])
+
+
+class TestPluginTableDDL:
+    """The appender's CREATE TABLE, and the gate that keeps it off by default."""
+
+    def test_ddl_covers_every_plugin_column_in_order(self):
+        sql = postgres_export_plugin._create_table_sql("public", "contracts")
+        positions = [sql.index(f'"{c}"') for c in plugin.PLUGIN_COLUMNS]
+        assert positions == sorted(positions), "DDL column order must match PLUGIN_COLUMNS"
+
+    def test_ddl_is_if_not_exists_so_it_never_alters_a_real_table(self):
+        sql = postgres_export_plugin._create_table_sql("public", "contracts")
+        assert "CREATE TABLE IF NOT EXISTS" in sql
+
+    def test_ddl_carries_the_documented_primary_key(self):
+        sql = postgres_export_plugin._create_table_sql("public", "contracts")
+        assert 'PRIMARY KEY ("token", "trade_date")' in sql
+
+    def test_a_plugin_column_with_no_type_raises(self):
+        """Adding a column to PLUGIN_COLUMNS must not silently produce a table missing it."""
+        original = plugin.PLUGIN_COLUMNS[:]
+        try:
+            plugin.PLUGIN_COLUMNS.append("brand_new_column")
+            with pytest.raises(ValueError, match="brand_new_column"):
+                postgres_export_plugin._create_table_sql("public", "contracts")
+        finally:
+            plugin.PLUGIN_COLUMNS[:] = original
+
+    def test_create_table_defaults_off(self):
+        """The default is load-bearing: it is what turns a mistyped table into an error."""
+        cfg = configparser.ConfigParser()
+        cfg.read_string("[postgres-plugin]\nschema = public\ntable = contracts\n")
+        assert config._flag_01(cfg["postgres-plugin"], "postgres-plugin",
+                               "create_table", "0") is False
+
+    def test_create_table_one_enables(self):
+        cfg = configparser.ConfigParser()
+        cfg.read_string("[postgres-plugin]\ncreate_table = 1\n")
+        assert config._flag_01(cfg["postgres-plugin"], "postgres-plugin",
+                               "create_table", "0") is True
+
+    def test_create_table_rejects_boolean_spellings(self):
+        cfg = configparser.ConfigParser()
+        cfg.read_string("[postgres-plugin]\ncreate_table = true\n")
+        with pytest.raises(ValueError, match="create_table must be 0 or 1"):
+            config._flag_01(cfg["postgres-plugin"], "postgres-plugin", "create_table", "0")
 
 
 if __name__ == "__main__":

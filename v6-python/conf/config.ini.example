@@ -54,6 +54,13 @@ secure = false
 database_url = postgres://plugin:plugin@127.0.0.1:6006/plugindb?sslmode=disable
 schema = public
 table = contracts
+# May the appender CREATE TABLE IF NOT EXISTS its target? 0 or 1, a digit.
+# Defaults to 0, and the default is the point: the plugin table is managed
+# outside this repo, so "relation does not exist" is what catches a mistyped
+# schema/table before anything is written. With this on, that same typo
+# quietly creates a new table and starts filling it -- on whatever database
+# database_url names. Set it to 1 only for a genuinely new database.
+create_table = 0
 # Comma-separated MIC allow-list (matches the plugin CSV's filename prefix).
 # Empty = push every plugin CSV.
 exchanges = XCME,XCBO
