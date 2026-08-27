@@ -117,7 +117,6 @@ def build_normalizer_steps(
     contracts_push_only: bool = False,
     plugin: bool = False,
     csv_only: bool = False,
-    baskets_enabled: bool = True,
 ) -> List[Step]:
     """
     Build the normalizer pipeline steps.
@@ -133,7 +132,13 @@ def build_normalizer_steps(
     beats naming a db step in --only, because the failure it prevents (an unwanted
     write to a live table) cannot be undone by re-running.
     """
-    from . import clickhouse_export, postgres_export_plugin, baskets, export
+    from . import clickhouse_export, config, postgres_export_plugin, baskets, export
+
+    # [baskets].enabled, and only there -- there is no flag for it. Whether a
+    # deployment builds baskets is a property of the deployment, not of whoever
+    # is typing the command, so a scheduled run cannot change it by forgetting
+    # to repeat an argument.
+    baskets_enabled = config.load_baskets().enabled
     from .normalize import fields, databento_norm, nse_norm, plugin as plugin_norm
 
     all_steps = [
@@ -141,8 +146,8 @@ def build_normalizer_steps(
         Step("normalize-nse", nse_norm.run),
         Step("normalize-databento", databento_norm.run),
     ]
-    # --no-baskets drops the step outright rather than letting it run and write
-    # nothing, so a run that skipped baskets is visible in the step list.
+    # Dropped outright rather than left in to run and write nothing, so a run
+    # with baskets off is visible as a shorter step list.
     if baskets_enabled:
         all_steps.append(Step("baskets", baskets.run))
     all_steps.append(Step("csv-export", export.run))
@@ -169,10 +174,11 @@ def build_normalizer_steps(
         if asked:
             print(f"--csv-only: skipping {', '.join(sorted(asked))}", file=sys.stderr)
 
-    # Same courtesy as --csv-only above: a user who typed "--only baskets
-    # --no-baskets" gets an empty run, and needs to know why.
+    # Same courtesy as --csv-only above: "--only baskets" against a config that
+    # disables them is an empty run, and the reason is in a file rather than on
+    # the command line, so say which.
     if not baskets_enabled and "baskets" in only:
-        print("--no-baskets: skipping baskets", file=sys.stderr)
+        print("[baskets] enabled = 0 in config.ini: skipping baskets", file=sys.stderr)
 
     return steps
 

@@ -131,11 +131,6 @@ def create_parser() -> argparse.ArgumentParser:
              "enabled = 0 stays off even when named.",
     )
     normalize_parser.add_argument(
-        "--no-baskets",
-        action="store_true",
-        help="Skip the baskets step. Overrides naming it in --only.",
-    )
-    normalize_parser.add_argument(
         "--basket",
         help="Specific basket to refresh",
     )
@@ -214,7 +209,6 @@ def run_normalize(args: argparse.Namespace) -> int:
             contracts_push_only=contracts_push_only,
             plugin=plugin,
             csv_only=getattr(args, "csv_only", False),
-            baskets_enabled=not getattr(args, "no_baskets", False),
         )
 
         return runner.run(steps, opts)

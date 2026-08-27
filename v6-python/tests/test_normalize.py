@@ -1,5 +1,9 @@
 """Unit tests for normalization modules."""
 import configparser
+import contextlib
+import os
+import pathlib
+import tempfile
 from datetime import date, datetime, timezone
 
 import pytest
@@ -414,15 +418,15 @@ class TestExchangeEnabledFlag:
         return cfg["EXCHANGE:XNAS"]
 
     def test_one_enables_and_zero_disables(self):
-        assert config._enabled_flag(self._section("enabled = 1"), "XNAS") is True
-        assert config._enabled_flag(self._section("enabled = 0"), "XNAS") is False
+        assert config._enabled_flag(self._section("enabled = 1"), "EXCHANGE:XNAS") is True
+        assert config._enabled_flag(self._section("enabled = 0"), "EXCHANGE:XNAS") is False
 
     def test_absent_means_enabled(self):
         """A section written before this knob existed keeps running."""
-        assert config._enabled_flag(self._section("feed = databento"), "XNAS") is True
+        assert config._enabled_flag(self._section("feed = databento"), "EXCHANGE:XNAS") is True
 
     def test_surrounding_whitespace_is_tolerated(self):
-        assert config._enabled_flag(self._section("enabled =  1  "), "XNAS") is True
+        assert config._enabled_flag(self._section("enabled =  1  "), "EXCHANGE:XNAS") is True
 
     @pytest.mark.parametrize("value", ["true", "false", "yes", "no", "on", "off", "", "2", "-1"])
     def test_boolean_spellings_are_rejected(self, value):
@@ -433,11 +437,11 @@ class TestExchangeEnabledFlag:
         asked for.
         """
         with pytest.raises(ValueError, match="must be 0 or 1"):
-            config._enabled_flag(self._section(f"enabled = {value}"), "XNAS")
+            config._enabled_flag(self._section(f"enabled = {value}"), "EXCHANGE:XNAS")
 
     def test_error_names_the_venue(self):
         with pytest.raises(ValueError, match=r"\[EXCHANGE:XCBO\]"):
-            config._enabled_flag(self._section("enabled = true"), "XCBO")
+            config._enabled_flag(self._section("enabled = true"), "EXCHANGE:XCBO")
 
 
 class TestVenueSelection:
@@ -485,20 +489,56 @@ class TestVenueSelection:
 
 
 class TestBasketsToggle:
-    """--no-baskets drops the step instead of letting it run and do nothing."""
+    """[baskets].enabled drives the step. There is no flag for it."""
 
-    def test_baskets_present_by_default(self):
-        names = [s.name for s in runner.build_normalizer_steps([])]
-        assert "baskets" in names
+    @staticmethod
+    @contextlib.contextmanager
+    def _config(body: str):
+        """Point the whole pipeline at a throwaway config.ini for one block."""
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "config.ini"
+            path.write_text(body)
+            old = os.environ.get("PREMARKET_CONFIG")
+            os.environ["PREMARKET_CONFIG"] = str(path)
+            try:
+                yield
+            finally:
+                if old is None:
+                    os.environ.pop("PREMARKET_CONFIG", None)
+                else:
+                    os.environ["PREMARKET_CONFIG"] = old
 
-    def test_no_baskets_removes_the_step(self):
-        names = [s.name for s in runner.build_normalizer_steps([], baskets_enabled=False)]
-        assert "baskets" not in names
-        assert "csv-export" in names   # the steps around it are untouched
-        assert "normalize-databento" in names
+    def test_absent_section_means_enabled(self):
+        with self._config("[paths]\ndata_dir = x\n"):
+            assert config.load_baskets().enabled
+            assert "baskets" in [s.name for s in runner.build_normalizer_steps([])]
 
-    def test_no_baskets_beats_naming_it_in_only(self):
-        assert runner.build_normalizer_steps(["baskets"], baskets_enabled=False) == []
+    def test_enabled_one_keeps_the_step(self):
+        with self._config("[baskets]\nenabled = 1\n"):
+            assert "baskets" in [s.name for s in runner.build_normalizer_steps([])]
+
+    def test_enabled_zero_removes_the_step(self):
+        with self._config("[baskets]\nenabled = 0\n"):
+            names = [s.name for s in runner.build_normalizer_steps([])]
+            assert "baskets" not in names
+            assert "csv-export" in names          # steps around it are untouched
+            assert "normalize-databento" in names
+
+    def test_config_beats_naming_baskets_in_only(self):
+        """--only cannot turn a step back on that the config switched off."""
+        with self._config("[baskets]\nenabled = 0\n"):
+            assert runner.build_normalizer_steps(["baskets"]) == []
+
+    def test_baskets_rejects_boolean_spellings_too(self):
+        with self._config("[baskets]\nenabled = true\n"):
+            with pytest.raises(ValueError, match=r"\[baskets\] enabled must be 0 or 1"):
+                config.load_baskets()
+
+    def test_there_is_no_baskets_cli_flag(self):
+        """The knob is config-only; a --no-baskets would reintroduce per-run drift."""
+        parser = cli.create_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["normalize", "--no-baskets"])
 
 
 if __name__ == "__main__":

@@ -75,8 +75,33 @@ class ExchangeCfg:
         return self.stype_in_all_symbols or self.stype_in
 
 
-def _enabled_flag(sec, code: str) -> bool:
-    """Parse a venue's `enabled` as a strict 0/1 flag.
+@dataclass
+class BasketsCfg:
+    """The [baskets] section: whether the baskets step runs at all.
+
+    A config knob and deliberately not a CLI flag. Whether a deployment builds
+    baskets is a property of that deployment, not of the person running the
+    command -- putting it on the command line means every scheduled invocation
+    has to remember to repeat it, and one that forgets silently changes what
+    the run produces.
+    """
+    enabled: bool = True
+
+
+def load_baskets() -> BasketsCfg:
+    """Load [baskets] from config.ini. Absent section means enabled."""
+    config_file = paths.config_ini()
+    if not config_file.exists():
+        return BasketsCfg()
+    cfg = configparser.ConfigParser()
+    cfg.read(config_file)
+    if "baskets" not in cfg:
+        return BasketsCfg()
+    return BasketsCfg(enabled=_enabled_flag(cfg["baskets"], "baskets"))
+
+
+def _enabled_flag(sec, section: str) -> bool:
+    """Parse an `enabled` key as a strict 0/1 flag.
 
     Deliberately not configparser's getboolean, which also accepts true/false,
     yes/no and on/off. One spelling means a config file reads the same way
@@ -90,7 +115,7 @@ def _enabled_flag(sec, code: str) -> bool:
     raw = sec.get("enabled", "1").strip()
     if raw not in ("0", "1"):
         raise ValueError(
-            f"[EXCHANGE:{code}] enabled must be 0 or 1, got {raw!r}. "
+            f"[{section}] enabled must be 0 or 1, got {raw!r}. "
             f"This is a 0/1 flag, not true/false."
         )
     return raw == "1"
@@ -120,7 +145,7 @@ def load_exchanges() -> dict[str, ExchangeCfg]:
         out[code.lower()] = ExchangeCfg(
             venue_name=code,
             feed=sec.get("feed", "databento").strip(),
-            enabled=_enabled_flag(sec, code),
+            enabled=_enabled_flag(sec, f"EXCHANGE:{code}"),
             venue_id=sec.getint("venue_id", 0),
             dataset=sec.get("dataset", "").strip(),
             schema=sec.get("schema", "definition").strip(),

@@ -16,6 +16,15 @@ live_retries = 3
 live_retry_delay_sec = 2
 max_maps = 100000
 
+[baskets]
+# Whether the baskets step runs at all. 0 or 1, written as a digit --
+# NOT true/false, matching [EXCHANGE:*] enabled. Absent section means 1.
+# There is no command-line flag for this: whether a deployment builds
+# baskets is a property of the deployment, not of whoever is running the
+# command, so a scheduled run cannot change it by forgetting an argument.
+# --basket <name> still selects WHICH basket to refresh when the step runs.
+enabled = 1
+
 [fyers]
 base_url = https://public.fyers.in/sym_details
 # Quote required: semicolons in UA are INI comments otherwise.
