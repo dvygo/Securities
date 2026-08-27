@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 
 from .. import export, parquet_export, paths, runner
+from . import session
 
 # Column order matches docs/plugin/pg_data_types.txt exactly.
 PLUGIN_COLUMNS = [
@@ -26,35 +27,6 @@ SEGMENT_BY_TYPE2 = {
 PLUGIN_CHUNK_ROWS = 50_000
 
 
-# A nanosecond timestamp that cannot be real. int64 nanoseconds run out in 2262,
-# so anything at or above this is a sentinel, not a date. Databento leaves an
-# unset timestamp as UINT64_MAX on the wire rather than 0 or blank: on
-# 2026-08-26 that is every one of the 13,201 XNAS equities and the 6,299 OPRA
-# SPOT reference legs. Read literally it is the year 586524, which would sail
-# past any "expired?" test and land in expirydate as 18446744073.
-NS_SENTINEL_FLOOR = 2 ** 63
-
-
-def _as_ns(value) -> int:
-    """Parse a nanosecond-since-epoch field; 0 for missing, unparseable or unset.
-
-    int() before float(): float cannot hold UINT64_MAX exactly, so the sentinel
-    round-trips to 18446744073709551616 and no longer equals itself. float stays
-    as the fallback because pandas widens an int column to float when any value
-    is missing, which renders ids and timestamps as "1787616000000000000.0".
-    """
-    if value in (None, ""):
-        return 0
-    try:
-        ns = int(value)
-    except (TypeError, ValueError):
-        try:
-            ns = int(float(value))
-        except (TypeError, ValueError):
-            return 0
-    return 0 if ns < 0 or ns >= NS_SENTINEL_FLOOR else ns
-
-
 def _expiry_ns(row: dict) -> int:
     """Effective expiry in nanoseconds since epoch UTC. 0 means never expires.
 
@@ -74,14 +46,14 @@ def _expiry_ns(row: dict) -> int:
 
     Canonical `expiration` second, as the fallback for rows where the venue
     gives us nothing: def_expiration is blank for the three Fyers venues, and
-    present-but-unset (UINT64_MAX, see NS_SENTINEL_FLOOR) for every XNAS equity
+    present-but-unset (UINT64_MAX, see session.NS_SENTINEL_FLOOR) for every XNAS equity
     and every OPRA SPOT leg.
 
     0 from both is the genuine never-expires case -- equities and OPRA's SPOT
     reference legs, 42,275 rows on 2026-08-26 -- and must be kept. Treating a 0
     as "expired long ago" would delete every XNAS equity in the file.
     """
-    return _as_ns(row.get("def_expiration")) or _as_ns(row.get("expiration"))
+    return session.as_ns(row.get("def_expiration")) or session.as_ns(row.get("expiration"))
 
 
 def _expiry_seconds(row: dict) -> int:

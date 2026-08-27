@@ -21,6 +21,34 @@ _XCBO_INDEX_SESSION = ((20, 15, 9, 25), (9, 30, 16, 15), (16, 15, 17, 0))
 _XCME_GLOBEX_SESSION = ((18, 0, 9, 30), (9, 30, 16, 15), (16, 15, 17, 0))
 
 
+# A nanosecond timestamp that cannot be real. int64 nanoseconds run out in 2262,
+# so anything at or above this is a sentinel rather than a date. Databento leaves
+# an unset timestamp as UINT64_MAX on the wire, not 0 or blank: that is every
+# XNAS equity and every OPRA SPOT reference leg. Read literally it is the year
+# 586524, which sails past any "has this expired?" test.
+NS_SENTINEL_FLOOR = 2 ** 63
+
+
+def as_ns(value) -> int:
+    """Parse a nanosecond-since-epoch field; 0 for missing, unparseable or unset.
+
+    int() before float(): float cannot hold UINT64_MAX exactly, so the sentinel
+    round-trips to 18446744073709551616 and stops equalling itself. float stays
+    as the fallback because pandas widens an int column to float wherever a
+    value is missing, rendering timestamps as "1787616000000000000.0".
+    """
+    if value in (None, ""):
+        return 0
+    try:
+        ns = int(value)
+    except (TypeError, ValueError):
+        try:
+            ns = int(float(value))
+        except (TypeError, ValueError):
+            return 0
+    return 0 if ns < 0 or ns >= NS_SENTINEL_FLOOR else ns
+
+
 def _et_window_to_utc_slot(ref: date, start_h: int, start_m: int, end_h: int, end_m: int) -> str:
     """Convert one Eastern-local HH:MM-HH:MM window (on `ref` date) to a UTC HHMM-HHMM slot, wrapping past midnight if needed."""
     start_et = datetime(ref.year, ref.month, ref.day, start_h, start_m, tzinfo=US_EASTERN)

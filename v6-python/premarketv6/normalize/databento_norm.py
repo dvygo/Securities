@@ -205,24 +205,58 @@ def parse_occ_symbol(symbol: str) -> Dict[str, Any]:
 GLBX_MONTH_YEAR_REGEX = re.compile(r"([FGHJKMNQUVXZ])(\d)$")
 
 
-def glbx_expiration_ns(symbol_base: str, ref_date=None) -> int:
-    """Extract expiration as nanosecond epoch UTC (matches fields.py's
-    _expiration_ns convention) from a GLBX root's trailing month-code +
-    single-digit year (e.g. "EWN6" -> July, year digit 6). Day is not encoded
-    in the symbol, so it's simplified to the 1st of the month. Returns 0 when
-    the symbol doesn't end in a recognized month/year code (e.g. the "parent"
-    symbology entries GLBX also emits, which carry no contract month at all)."""
+def glbx_expiration_ns(symbol_base: str, ref_date=None, anchor_ns: int = 0) -> int:
+    """The CONTRACT MONTH as nanosecond epoch UTC, from a GLBX root's trailing
+    month-code + single-digit year (e.g. "EWN6" -> July, year digit 6).
+
+    This is the contract's month, not its expiry: the symbol encodes no day, so
+    the day is the 1st of the month, and a contract's last eligible trade often
+    falls in a different month entirely -- 0NGF1 is the January 2031 contract
+    and stops trading 2030-12-28. Use the definition record's own expiration for
+    "when does this stop trading"; use this for "which contract is this", which
+    is what brokerScript1 names.
+
+    `anchor_ns` is that definition expiration when the row has one. The single
+    digit cannot say which decade it means, and guessing from the run date is
+    wrong for anything more than a decade out, so the venue's own expiry
+    resolves it whenever it is available.
+
+    Returns 0 when the symbol doesn't end in a recognized month/year code (e.g.
+    the "parent" symbology entries GLBX also emits, which carry no contract
+    month at all)."""
     match = GLBX_MONTH_YEAR_REGEX.search(symbol_base)
     if not match:
         return 0
     month = CME_MONTHS[match.group(1)]
     year_digit = int(match.group(2))
 
-    anchor_year = ref_date.year if ref_date else datetime.now().year
-    decade_base = anchor_year - (anchor_year % 10)
-    year_full = decade_base + year_digit
-    if year_full < anchor_year - 5:  # single digit wrapped past the decade boundary
-        year_full += 10
+    if anchor_ns > 0:
+        # The venue told us when this contract actually expires, so resolve the
+        # decade against that instead of guessing from today: the contract year
+        # is whichever year ending in year_digit sits closest to it. A December
+        # contract whose last trade rolls into January still resolves to its own
+        # year -- 0BZ0 expires 2031-01-01 and is the Z30 contract, not Z31.
+        anchor_year = datetime.fromtimestamp(anchor_ns / 1e9, tz=timezone.utc).year
+        candidate = anchor_year - (anchor_year % 10) + year_digit
+        year_full = min(
+            (candidate - 10, candidate, candidate + 10),
+            key=lambda y: abs(y - anchor_year),
+        )
+    else:
+        # No definition record for this row (a symbology.resolve basket entry),
+        # so fall back to guessing from the run date. The window is the ten
+        # years starting one year back: GLBX lists contracts forward, and the
+        # single digit cannot reach further than a decade in any case.
+        #
+        # This used to allow five years back, which put every year_digit whose
+        # year had just passed into the wrong decade -- with anchor 2026,
+        # "1" resolved to 2021 rather than 2031, so 0NGF1 came out ten years
+        # early and took brokerScript1's year with it (40,279 rows).
+        anchor_year = ref_date.year if ref_date else datetime.now().year
+        decade_base = anchor_year - (anchor_year % 10)
+        year_full = decade_base + year_digit
+        if year_full < anchor_year - 1:  # single digit wrapped past the decade boundary
+            year_full += 10
 
     dt = datetime(year_full, month, 1, tzinfo=timezone.utc)
     return int(dt.timestamp()) * 10**9
@@ -397,14 +431,26 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         result["scriptInstrumentType"] = "FUTIDX"
         result["scriptInstrumentType2"] = "FUTURE"
 
-    result["expiration"] = glbx_expiration_ns(base, ref_date)
+    # The venue's own last eligible trade time, when this row came from a
+    # definition record. Authoritative, and unavailable on symbology.resolve
+    # basket rows, which carry no definition fields at all.
+    venue_expiration_ns = session.as_ns(row.get("expiration"))
+    contract_ns = glbx_expiration_ns(base, ref_date, anchor_ns=venue_expiration_ns)
+
+    # Prefer what the venue said over what the symbol implies. The symbol gives
+    # only a month code, which lands on the 1st and is a month or more off the
+    # real expiry for most of the book: on 2026-08-26 all 622,952 XCME rows with
+    # a symbol-derived expiration sat on day 1, against real days spread over
+    # the 25th-29th.
+    result["expiration"] = venue_expiration_ns or contract_ns
 
     result["underlying_root"] = base
     result["underlying"] = base
 
-    # Derived from the resolved expiration above, so the year in brokerScript1
-    # always agrees with the expiration column.
-    result["brokerScript1"] = broker_script.from_glbx(symbol, result["expiration"])
+    # Built from the contract month, NOT from result["expiration"]: brokerScript1
+    # names the contract, and a contract keeps its own month even when its last
+    # trade rolls into the next one. 0BZ0 expires 2031-01-01 and is still 0B/Z30.
+    result["brokerScript1"] = broker_script.from_glbx(symbol, contract_ns)
     broker_script.fill_unspecified(result)
 
     return _fill_missing(result)

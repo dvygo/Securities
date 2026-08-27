@@ -281,7 +281,7 @@ class TestPluginExpiry:
 
     def test_undef_survives_the_int_parse_exactly(self):
         """float() cannot hold UINT64_MAX, so it must not be parsed through float."""
-        assert plugin._as_ns(self.UNDEF) == 0
+        assert session.as_ns(self.UNDEF) == 0
         assert int(float(self.UNDEF)) != int(self.UNDEF)
 
     def test_zero_expiration_is_kept_not_stripped(self):
@@ -326,12 +326,81 @@ class TestPluginExpiry:
 
     def test_float_rendered_timestamp_still_parses(self):
         """pandas widens an int column to float when any value is missing."""
-        assert plugin._as_ns("1787616000000000000.0") == 1_787_616_000_000_000_000
+        assert session.as_ns("1787616000000000000.0") == 1_787_616_000_000_000_000
 
     def test_unparseable_and_negative_are_never_expired(self):
         """Fail safe: keep the row rather than silently deleting it."""
         for bad in ("abc", "", None, "-5"):
             assert plugin._is_expired({"expiration": bad}, self.CUTOFF) is False
+
+
+class TestGlbxContractMonth:
+    """GLBX single-digit years are ambiguous across decades; how that is resolved."""
+
+    REF = date(2026, 8, 26)
+
+    @staticmethod
+    def _ns(y, m, d):
+        return int(datetime(y, m, d, tzinfo=timezone.utc).timestamp()) * 10 ** 9
+
+    def _month(self, base, anchor_ns=0):
+        ns = databento_norm.glbx_expiration_ns(base, self.REF, anchor_ns=anchor_ns)
+        if not ns:
+            return None
+        dt = datetime.fromtimestamp(ns / 1e9, tz=timezone.utc)
+        return (dt.year, dt.month)
+
+    def test_anchor_resolves_decade_from_the_venue_expiry(self):
+        """0NGF1 is the January 2031 contract; it stops trading 2030-12-28.
+
+        Guessing the decade from the run date put it in 2021, ten years early,
+        and brokerScript1 inherited the wrong year.
+        """
+        assert self._month("0NGF1", self._ns(2030, 12, 28)) == (2031, 1)
+
+    def test_anchor_keeps_a_december_contract_in_its_own_year(self):
+        """0BZ0 expires 2031-01-01 but is the Z30 contract, not Z31.
+
+        The contract month must not follow the expiry into the next year.
+        """
+        assert self._month("0BZ0", self._ns(2031, 1, 1)) == (2030, 12)
+
+    def test_anchor_leaves_a_current_contract_alone(self):
+        assert self._month("ESZ6", self._ns(2026, 12, 18)) == (2026, 12)
+
+    def test_unanchored_fallback_rolls_a_past_year_forward(self):
+        """Basket rows carry no definition record, so the run date is all there is."""
+        assert self._month("0NGF1") == (2031, 1)
+
+    def test_unanchored_fallback_allows_one_year_back(self):
+        """A just-expired contract stays in the year it belongs to."""
+        assert self._month("ESZ5") == (2025, 12)
+
+    def test_unanchored_fallback_resolves_the_wrap_digit(self):
+        assert self._month("ESZ0") == (2030, 12)
+
+    def test_symbol_with_no_month_code_returns_zero(self):
+        assert databento_norm.glbx_expiration_ns("ES", self.REF) == 0
+
+    def test_xcme_row_expiration_is_the_venue_value_not_the_symbol(self):
+        """map_xcme_row must prefer the definition record's own expiration."""
+        real = self._ns(2026, 12, 18)
+        row = {
+            "stype_in_symbol": "ESZ6",
+            "stype_out": "instrument_id",
+            "instrument_id": 10252,
+            "expiration": str(real),
+        }
+        result = databento_norm.map_xcme_row(row, self.REF)
+        assert result["expiration"] == real
+        # brokerScript1 still names the contract month, not the expiry date.
+        assert result["brokerScript1"] == "ES/Z26"
+
+    def test_xcme_row_falls_back_when_no_definition_expiration(self):
+        row = {"stype_in_symbol": "ESZ6", "stype_out": "instrument_id", "instrument_id": 10252}
+        result = databento_norm.map_xcme_row(row, self.REF)
+        assert result["expiration"] == self._ns(2026, 12, 1)  # contract month, 1st
+        assert result["brokerScript1"] == "ES/Z26"
 
 
 if __name__ == "__main__":

@@ -53,12 +53,15 @@ def format_strike(value: Any) -> str:
 
 
 def _year2_from_expiration_ns(expiration_ns: Any) -> Optional[str]:
-    """Two-digit UTC year from the canonical `expiration` column (epoch ns).
+    """Two-digit UTC year from a GLBX CONTRACT MONTH timestamp (epoch ns).
 
     GLBX symbols encode only a single-digit year ("ESZ6"), which is ambiguous
-    across decades. `expiration` is already resolved on the row, so deriving
-    from it keeps brokerScript1 consistent with the expiration column by
-    construction instead of re-running the decade heuristic independently.
+    across decades, so the caller resolves the decade once and passes the
+    resolved contract month in (databento_norm.glbx_expiration_ns).
+
+    Deliberately not the row's `expiration` column: that is the venue's last
+    eligible trade time, which for a December contract can fall in January and
+    would name the contract a year late. 0BZ0 expires 2031-01-01 and is 0B/Z30.
     """
     try:
         ns = int(float(expiration_ns))
