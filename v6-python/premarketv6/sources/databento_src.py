@@ -635,15 +635,32 @@ def _download_definitions_via_batch(
     since this runs inside an automated pipeline step, not a script someone is
     watching.
     """
-    as_of = dt.datetime.strptime(date_dir, "%Y%m%d").date()
-    # The window opens batch_lookback_days before date_dir and runs to whatever
-    # Databento has. Default 1: an 04:00Z run wants yesterday's complete
-    # snapshot, because today's has not published yet -- OPRA lands ~10:00-11:00Z
-    # and EQUS ~05:00-06:00Z, so a today-only window is empty that early and the
-    # run failed outright. Deduping the overlap is the normalizer's job.
+    # The window comes from metadata.get_dataset_range(), not from date_dir.
+    #
+    # Asking for date_dir and hoping it exists is what kept failing: the venues
+    # publish their definition snapshot at different hours -- GLBX in the
+    # 00:00-01:00Z hour, EQUS ~05:00-06:00Z, OPRA ~10:00-11:00Z -- so any run
+    # before a venue's hour asked for a day that dataset did not have yet and
+    # blocked. Deriving the day from the dataset's own available range instead
+    # means the request is always for a session that exists.
+    #
+    # dataset_range["end"] is EXCLUSIVE (resolve_hist_range documents the same
+    # thing: 2026-08-03 being the last session with data was reported as
+    # end=2026-08-04T00:00:00Z), so the last session carrying data is the day
+    # containing end minus an instant -- not end's own date.
+    available_end = _available_end(client, venue_cfg.dataset, venue_cfg.schema)
+    as_of = (available_end - dt.timedelta(microseconds=1)).date()
     start = as_of - dt.timedelta(days=venue_cfg.batch_lookback_days)
     midnight = dt.datetime.combine(start, dt.time.min, tzinfo=dt.timezone.utc)
     day_end = dt.datetime.combine(as_of, dt.time.min, tzinfo=dt.timezone.utc) + dt.timedelta(days=1)
+    if as_of.strftime("%Y%m%d") != date_dir:
+        # date_dir still decides where the file lands; the data inside it is
+        # whatever session the dataset actually has. Said out loud because the
+        # two can now disagree -- a 03:00Z run writes 20260827/XCBO/ holding
+        # 08-26's OPRA snapshot, which is correct but worth not discovering
+        # from a filename.
+        print(f"  {venue_cfg.dataset}: latest session with data is "
+              f"{as_of.isoformat()}, writing under date_dir {date_dir}", flush=True)
 
     # [EXCHANGE:<CODE>] batch_start_time/batch_end_time narrow the day; they can
     # never widen it. max()/min() against the plain day is what enforces that,
@@ -663,7 +680,6 @@ def _download_definitions_via_batch(
               f"{start.isoformat()}. Pin batch_start_time = 00:00 unless you "
               f"know exactly why you are not.", flush=True)
     configured_end = min(day_end, _offset_into_day(midnight, venue_cfg.batch_end_time, day_end))
-    available_end = _available_end(client, venue_cfg.dataset, venue_cfg.schema)
     end = min(configured_end, available_end)
     if end <= start_ts:
         raise RuntimeError(

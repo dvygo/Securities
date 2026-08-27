@@ -113,13 +113,18 @@ exchanges = XCME,XCBO
 #                           window, never widen it -- and an unclamped fixed end
 #                           is exactly what produces 422
 #                           data_end_after_available_end on every intraday run.
-#   batch_lookback_days     days before date_dir that the window opens. 1 =
-#                           "yesterday 00:00Z through latest available". Keeps
-#                           an early run useful: OPRA does not publish today's
-#                           snapshot until ~10:00-11:00Z and EQUS until
+#   batch_lookback_days     days before date_dir that the window opens.
+#                           0 (default) = date_dir itself, 00:00Z through
+#                           whatever the dataset has -- the end is always
+#                           clamped to the live available range, never a fixed
+#                           clock value.
+#                           Raise to 1 to also take the previous day. That
+#                           makes an early run useful when today has not
+#                           published yet -- OPRA lands ~10:00-11:00Z and EQUS
 #                           ~05:00-06:00Z, so a today-only window is empty
-#                           before then and the run fails outright. The overlap
-#                           is the normalizer's to dedupe. 0 = single day.
+#                           before then and the readiness guard blocks the run
+#                           rather than writing a thin file. The overlap is
+#                           then the normalizer's to dedupe.
 #   definition_ready_ratio  fraction of the previous session's definition count
 #                           the window must reach before a batch job is
 #                           submitted. Guards the thin-file case: the clamp
@@ -159,7 +164,7 @@ stype_in_all_symbols = raw_symbol
 all_symbols_default = true
 batch_start_time = 00:00
 batch_end_time =
-batch_lookback_days = 1
+batch_lookback_days = 0
 definition_ready_ratio = 0.5
 hist_pin_latest_session = false
 hist_lookback_days = 7
@@ -174,7 +179,7 @@ stype_in_all_symbols = parent
 all_symbols_default = true
 batch_start_time = 00:00
 batch_end_time =
-batch_lookback_days = 1
+batch_lookback_days = 0
 definition_ready_ratio = 0.5
 # OPRA reassigns instrument_id every trading day, so resolving against any date
 # other than the latest complete session returns a token space that shares
@@ -192,7 +197,7 @@ stype_in_all_symbols = raw_symbol
 all_symbols_default = true
 batch_start_time = 00:00
 batch_end_time =
-batch_lookback_days = 1
+batch_lookback_days = 0
 definition_ready_ratio = 0.5
 hist_pin_latest_session = false
 hist_lookback_days = 7
