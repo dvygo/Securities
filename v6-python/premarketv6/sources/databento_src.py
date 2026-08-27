@@ -635,32 +635,35 @@ def _download_definitions_via_batch(
     since this runs inside an automated pipeline step, not a script someone is
     watching.
     """
-    # The window comes from metadata.get_dataset_range(), not from date_dir.
-    #
-    # Asking for date_dir and hoping it exists is what kept failing: the venues
-    # publish their definition snapshot at different hours -- GLBX in the
-    # 00:00-01:00Z hour, EQUS ~05:00-06:00Z, OPRA ~10:00-11:00Z -- so any run
-    # before a venue's hour asked for a day that dataset did not have yet and
-    # blocked. Deriving the day from the dataset's own available range instead
-    # means the request is always for a session that exists.
+    # date_dir is the day being asked for, and the dataset must actually have
+    # it. metadata.get_dataset_range() decides that up front.
     #
     # dataset_range["end"] is EXCLUSIVE (resolve_hist_range documents the same
     # thing: 2026-08-03 being the last session with data was reported as
-    # end=2026-08-04T00:00:00Z), so the last session carrying data is the day
+    # end=2026-08-04T00:00:00Z), so the newest session carrying data is the day
     # containing end minus an instant -- not end's own date.
+    #
+    # The venues publish at different hours -- GLBX in the 00:00-01:00Z hour,
+    # EQUS ~05:00-06:00Z, OPRA ~10:00-11:00Z -- so a run early enough will find
+    # a venue has not updated. That is fatal rather than quietly substituted:
+    # silently downloading the previous session under today's date_dir would
+    # put stale contracts behind a filename claiming today, and for OPRA the
+    # instrument_ids in it belong to a token space the live feed no longer
+    # uses (see hist_pin_latest_session).
+    as_of = dt.datetime.strptime(date_dir, "%Y%m%d").date()
     available_end = _available_end(client, venue_cfg.dataset, venue_cfg.schema)
-    as_of = (available_end - dt.timedelta(microseconds=1)).date()
+    latest_session = (available_end - dt.timedelta(microseconds=1)).date()
+    if latest_session < as_of:
+        raise RuntimeError(
+            f"today's contract files are not updated yet, please check back later "
+            f"-- {venue_cfg.dataset} has data through {latest_session.isoformat()}, "
+            f"asked for {as_of.isoformat()}. "
+            f"GLBX publishes ~00:00-01:00Z, EQUS ~05:00-06:00Z, OPRA ~10:00-11:00Z."
+        )
+
     start = as_of - dt.timedelta(days=venue_cfg.batch_lookback_days)
     midnight = dt.datetime.combine(start, dt.time.min, tzinfo=dt.timezone.utc)
     day_end = dt.datetime.combine(as_of, dt.time.min, tzinfo=dt.timezone.utc) + dt.timedelta(days=1)
-    if as_of.strftime("%Y%m%d") != date_dir:
-        # date_dir still decides where the file lands; the data inside it is
-        # whatever session the dataset actually has. Said out loud because the
-        # two can now disagree -- a 03:00Z run writes 20260827/XCBO/ holding
-        # 08-26's OPRA snapshot, which is correct but worth not discovering
-        # from a filename.
-        print(f"  {venue_cfg.dataset}: latest session with data is "
-              f"{as_of.isoformat()}, writing under date_dir {date_dir}", flush=True)
 
     # [EXCHANGE:<CODE>] batch_start_time/batch_end_time narrow the day; they can
     # never widen it. max()/min() against the plain day is what enforces that,
