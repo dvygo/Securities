@@ -11,14 +11,28 @@ that design:
 
   A skipped day cannot be backfilled. Day N+1 chains off whatever manifest
   existed when it ran, so inserting day N afterwards leaves the two
-  disagreeing. Measured on a 12-day simulation with one gap: 4 scripts changed
-  token between consecutive days, and 8 tokens named a DIFFERENT script on
-  consecutive days -- the second is worse, because a cross-date join then
-  returns wrong rows rather than no rows.
+  disagreeing.
+
+  Measured on OPRA, 2026-08-24..27, Wednesday skipped and then backfilled once
+  Thursday had already chained past it. Of 1,996,937 scripts present on both
+  the backfilled Wednesday and Thursday:
+
+      counterTokenV2   8,695 scripts changed token between consecutive days
+                      18,382 tokens named a DIFFERENT script across them
+      counterTokenV3       0 and 0
+
+  The second number is the dangerous one: a cross-date join on v2 does not
+  return fewer rows, it returns wrong ones, with nothing to signal it.
+
+  What drives it is ordinary OPRA churn -- 14,308 contracts departed across
+  that window, releasing their offsets into the free pool, and Wednesday and
+  Thursday each allocated from Tuesday independently and so consumed that pool
+  differently. Nothing exotic is required; a venue with 0DTE options produces
+  this every week.
 
   Numbers are recycled. When a script stops appearing its offset returns to a
   free pool and the next new script takes it. That is what makes a token
-  ambiguous over time.
+  ambiguous over time, and it is the mechanism behind the 18,382 above.
 
 v3 fixes both by not computing anything. A token is looked up; if the
 instrument has never been seen, one is appended. Nothing about an existing
