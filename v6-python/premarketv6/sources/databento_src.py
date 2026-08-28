@@ -663,6 +663,71 @@ def _download_definitions_via_batch(
     # dataset_range["end"] is EXCLUSIVE, the same thing resolve_hist_range
     # documents, so the newest session with data is the day containing end minus
     # an instant rather than end's own date.
+    start_ts, end = _prepare_batch_window(client, venue_cfg, stype_in, date_dir)
+    job_id = _submit_batch_job(client, venue_cfg, stype_in, start_ts, end)
+    _await_batch_job(client, job_id)
+    return _download_batch_job(client, job_id, dest_dir)
+
+
+def download_definitions_for_dates(client, venue_cfg, stype_in: str,
+                                   date_dirs) -> dict:
+    """Submit one batch job per date, then wait on them together.
+
+    Submitted up front rather than one-at-a-time-to-completion because the wait
+    dominates: a job can sit queued for a while and the poll ceiling is 45
+    minutes EACH, so three dates run serially could spend over two hours mostly
+    idle. Databento does the work server-side, so N jobs in flight cost the same
+    wall clock as the slowest one.
+
+    Every date is validated before ANY job is submitted. A date whose
+    definitions have not published yet, or that the dataset does not reach,
+    fails the whole call at that point -- better than discovering it after
+    paying for two other jobs.
+
+    A date whose venue directory already holds a definition file is skipped,
+    matching the single-day path: that file is either an operator's drop or a
+    previous successful run, and re-fetching it is only waste.
+
+    Returns {date_dir: bytes_written}, and raises on the first date that fails
+    to download after the jobs are in flight -- the others are already
+    submitted and can be collected by re-running, since the skip-if-present
+    check makes a re-run cheap.
+    """
+    pending = {}
+    for date_dir in date_dirs:
+        dest_dir = paths.manual_venue_dir(date_dir, venue_cfg.venue_name)
+        if dest_dir.is_dir() and any(p.name.endswith((".dbn", ".dbn.zst")) for p in dest_dir.iterdir()):
+            print(f"  {date_dir}: {dest_dir} already has a definition file -- skipping")
+            continue
+        start_ts, end = _prepare_batch_window(client, venue_cfg, stype_in, date_dir)
+        pending[date_dir] = (_submit_batch_job(client, venue_cfg, stype_in, start_ts, end), dest_dir)
+
+    if not pending:
+        print("  Nothing to submit -- every requested date already has a file")
+        return {}
+
+    print(f"  {len(pending)} job(s) in flight: "
+          f"{', '.join(f'{d}={j}' for d, (j, _) in sorted(pending.items()))}", flush=True)
+
+    written = {}
+    for date_dir, (job_id, dest_dir) in sorted(pending.items()):
+        print(f"  {date_dir}: waiting on job {job_id}", flush=True)
+        _await_batch_job(client, job_id)
+        written[date_dir] = _download_batch_job(client, job_id, dest_dir)
+        print(f"  {date_dir}: wrote {written[date_dir]:,} byte(s) to {dest_dir}", flush=True)
+    return written
+
+
+def _prepare_batch_window(client, venue_cfg, stype_in: str, date_dir: str):
+    """Validate one day and return the (start, end) window to request for it.
+
+    Split out of _download_definitions_via_batch so a multi-date run can
+    validate and submit every day up front, then wait on them together. Each
+    day is checked exactly as a single-day run checks it -- the availability
+    clamp and the definition_ready_ratio floor both apply per day, so one
+    unpublished date in a list is caught before any job is submitted rather
+    than producing a thin file.
+    """
     as_of = dt.datetime.strptime(date_dir, "%Y%m%d").date()
     start_ts = dt.datetime.combine(as_of, dt.time.min, tzinfo=dt.timezone.utc)
     day_end = start_ts + dt.timedelta(days=1)
@@ -700,6 +765,11 @@ def _download_definitions_via_batch(
     print(f"  Submitting batch job: {venue_cfg.dataset} ALL_SYMBOLS definition, "
           f"{start_ts.isoformat()}..{end.isoformat()}{clamped}{baseline}, "
           f"encoding=dbn compression=zstd", flush=True)
+    return start_ts, end
+
+
+def _submit_batch_job(client, venue_cfg, stype_in: str, start_ts, end) -> str:
+    """Submit one definition job and return its id, without waiting for it."""
     ack = client.batch.submit_job(
         dataset=venue_cfg.dataset,
         symbols=ALL_SYMBOLS_SENTINEL,
@@ -713,9 +783,13 @@ def _download_definitions_via_batch(
         delivery="download",
     )
     job_id = ack["id"]
-    state = ack.get("state", "")
-    print(f"    job {job_id}: {state}", flush=True)
+    print(f"    job {job_id}: {ack.get('state', '')}", flush=True)
+    return job_id
 
+
+def _await_batch_job(client, job_id: str) -> None:
+    """Poll one job to completion. Raises if it stalls or expires."""
+    state = ""
     elapsed = 0
     while state not in ("done", "expired"):
         if elapsed >= DEFINITION_BATCH_POLL_CEILING_SEC:
@@ -732,6 +806,9 @@ def _download_definitions_via_batch(
     if state == "expired":
         raise RuntimeError(f"batch job {job_id} expired before it could be downloaded")
 
+
+def _download_batch_job(client, job_id: str, dest_dir: Path) -> int:
+    """Move a finished job's .dbn/.dbn.zst files into dest_dir. Returns bytes written."""
     files = client.batch.list_files(job_id)
     data_files = sorted(
         str(f["filename"]) for f in files

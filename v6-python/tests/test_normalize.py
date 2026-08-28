@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 import pytest
 
 from premarketv6 import cli, config, paths, postgres_export_plugin, runner
+from premarketv6.sources import databento_src
 from premarketv6.normalize import broker_script, databento_norm, fields, plugin, price, session
 from premarketv6.sources import fyers_src
 
@@ -732,6 +733,66 @@ class TestPluginColumnFills:
         row = plugin.map_row({}, "2026-08-27", "XNSE")
         for col in plugin.PLUGIN_COLUMNS:
             assert col in row, col
+
+
+class TestBackfillDates:
+    """--dates: one batch job per date, submitted up front."""
+
+    def test_parses_a_comma_separated_list(self):
+        assert cli._date_list("20260827,20260825,20260101") == ("20260827", "20260825", "20260101")
+
+    def test_orders_newest_first(self):
+        """The readiness check compares against the prior session, so an
+        unpublished newest date should fail before older jobs are submitted."""
+        assert cli._date_list("20260101,20260827,20260825")[0] == "20260827"
+
+    def test_tolerates_whitespace_and_dedupes(self):
+        assert cli._date_list(" 20260827 , 20260827 ") == ("20260827",)
+
+    def test_rejects_a_non_yyyymmdd_date(self):
+        """Silently dropping it would submit fewer jobs than the user listed."""
+        with pytest.raises(SystemExit, match="not a YYYYMMDD date"):
+            cli._date_list("2026-08-27")
+
+    def test_rejects_an_impossible_date(self):
+        with pytest.raises(SystemExit, match="not a YYYYMMDD date"):
+            cli._date_list("20260231")
+
+    def test_rejects_an_empty_list(self):
+        with pytest.raises(SystemExit, match="contained no dates"):
+            cli._date_list(" , , ")
+
+    def test_dates_flag_exists_on_a_venue_parser(self):
+        args = cli.create_parser().parse_args(["xcbo", "--all-symbols", "--dates=20260827"])
+        assert args.dates == "20260827"
+        assert args.all_symbols is True
+
+    def test_today_flag_exists_and_defaults_off(self):
+        args = cli.create_parser().parse_args(["xcbo", "--all-symbols"])
+        assert args.today is False
+        assert cli.create_parser().parse_args(["xcbo", "--today"]).today is True
+
+    def test_a_date_that_already_has_a_file_submits_nothing(self, tmp_path, monkeypatch):
+        """A present file is an operator drop or a prior success -- refetching is waste."""
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        venue_cfg = config.load_exchanges()["xcbo"]
+        have = paths.manual_venue_dir("20260825", "XCBO")
+        have.mkdir(parents=True)
+        (have / "opra.definition.dbn.zst").write_bytes(b"x")
+
+        submitted = []
+
+        class FakeClient:
+            class batch:
+                @staticmethod
+                def submit_job(**kw):
+                    submitted.append(kw)
+                    return {"id": "J", "state": "received"}
+
+        written = databento_src.download_definitions_for_dates(
+            FakeClient(), venue_cfg, "raw_symbol", ("20260825",))
+        assert submitted == []
+        assert written == {}
 
 
 if __name__ == "__main__":

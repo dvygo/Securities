@@ -3,7 +3,7 @@ import argparse
 import sys
 from datetime import datetime
 
-from . import config, runlog, runner
+from . import config, paths, runlog, runner
 from .sources import databento_src
 
 
@@ -84,6 +84,19 @@ def create_parser() -> argparse.ArgumentParser:
             "--symbols-file",
             help="Path to symbols file",
         )
+        venue_parser.add_argument(
+            "--dates",
+            help="Comma-separated YYYYMMDD list to backfill, e.g. "
+                 "--dates=20260827,20260825,20260101. One batch job per date, all "
+                 "submitted before any is waited on. Each date lands in its own "
+                 "venue directory. Mutually exclusive with --today/--date-dir.",
+        )
+        venue_parser.add_argument(
+            "--today",
+            action="store_true",
+            help="Today's date. The default already, so this only states it "
+                 "explicitly -- useful next to --dates in a script.",
+        )
 
     # Normalize subcommand
     normalize_parser = subparsers.add_parser("normalize", help="Normalize downloaded data")
@@ -141,6 +154,51 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def run_backfill(venue: str, args: argparse.Namespace, dates: tuple) -> int:
+    """--dates: one definition batch job per date, all submitted before any is awaited."""
+    import databento as db
+    from .sources import databento_src
+
+    cleanup, log_path = runlog.setup(f"premarketv6-{venue}", dates[0])
+    try:
+        print(f"Log: {log_path}", file=sys.stderr)
+        venue_cfg = databento_src.VENUE_CONFIGS[venue]
+        if not venue_cfg.enabled:
+            raise SystemExit(
+                f"{venue} ({venue_cfg.venue_name}) is disabled: set enabled = 1 in "
+                f"config.ini [EXCHANGE:{venue_cfg.venue_name}] to download it")
+
+        # --dates is the ALL_SYMBOLS definition path and nothing else. The basket
+        # route resolves symbols per day against a different API and has no batch
+        # job to track, so accepting --dates there would silently mean something
+        # entirely different.
+        if not getattr(args, "all_symbols", venue_cfg.all_symbols_default):
+            raise SystemExit("--dates requires --all-symbols (it drives the definition batch path)")
+
+        print(f"Backfilling {venue_cfg.venue_name} for {len(dates)} date(s): {', '.join(dates)}")
+        if args.dry_run:
+            for d in dates:
+                print(f"DRY RUN: would submit a {venue_cfg.dataset} definition job for {d} "
+                      f"-> {paths.manual_venue_dir(d, venue_cfg.venue_name)}")
+            return 0
+
+        cfg = config.load_databento()
+        api_key = cfg.keys.get(venue_cfg.venue_name, "")
+        if not api_key:
+            raise SystemExit(
+                f"No Databento API key for {venue} ({venue_cfg.venue_name}); "
+                f"set key_{venue_cfg.venue_name} in conf/keys.ini")
+
+        client = db.Historical(key=api_key)
+        written = databento_src.download_definitions_for_dates(
+            client, venue_cfg, "raw_symbol", dates)
+        total = sum(written.values())
+        print(f"Backfill complete: {len(written)} date(s), {total:,} byte(s)")
+        return 0
+    finally:
+        cleanup()
 
 
 def run_download(venue: str, args: argparse.Namespace) -> int:
@@ -216,6 +274,34 @@ def run_normalize(args: argparse.Namespace) -> int:
         cleanup()
 
 
+def _date_list(raw: str) -> tuple:
+    """Parse --dates into a tuple of YYYYMMDD, newest first, rejecting junk.
+
+    Newest first because a backfill is usually wanted most-recent-first, and
+    because the definition_ready_ratio check in _prepare_batch_window compares
+    against the prior session -- hitting the newest date first surfaces an
+    unpublished today before the older jobs are submitted.
+    """
+    seen, out = set(), []
+    for part in str(raw).split(","):
+        stamp = part.strip()
+        if not stamp:
+            continue
+        try:
+            datetime.strptime(stamp, "%Y%m%d")
+        except ValueError:
+            raise SystemExit(
+                f"--dates: {stamp!r} is not a YYYYMMDD date. "
+                f"Expected e.g. --dates=20260827,20260825"
+            )
+        if stamp not in seen:
+            seen.add(stamp)
+            out.append(stamp)
+    if not out:
+        raise SystemExit("--dates was given but contained no dates")
+    return tuple(sorted(out, reverse=True))
+
+
 def _venue_selection(raw: list) -> tuple:
     """Normalise --venue values to a tuple of MICs, rejecting unknown ones.
 
@@ -256,6 +342,11 @@ def main() -> int:
         if args.command == "india":
             return run_download("india", args)
         elif args.command in databento_src.VENUE_CONFIGS:
+            raw_dates = getattr(args, "dates", None)
+            if raw_dates and getattr(args, "today", False):
+                raise SystemExit("--dates and --today are mutually exclusive")
+            if raw_dates:
+                return run_backfill(args.command, args, _date_list(raw_dates))
             return run_download(args.command, args)
         elif args.command == "normalize":
             return run_normalize(args)
