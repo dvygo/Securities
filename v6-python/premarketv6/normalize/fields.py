@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 from .. import config, parquet_export, paths, runner
 from ..sources import fyers_src
-from . import broker_script, counter_token, price, session
+from . import broker_script, counter_token, price, session, token_registry
 
 
 # Broad category for scriptInstrumentType2.
@@ -217,6 +217,16 @@ def run(opts: runner.Opts) -> None:
             for row in all_rows:
                 row["counterTokenV2"] = tokens.token(row.get("script", ""))
             counter_token.merge_into_manifest(opts.date_dir, mic, tokens)
+
+            # counterTokenV3: registry lookup, independent of the carry-forward
+            # above and of which days ran before this one. The Fyers feed has no
+            # activation field, so first_seen falls back to the run date.
+            v3 = token_registry.TokenRegistry(paths.token_registry_db())
+            v3_tokens = v3.assign(mic, scripts, opts.date_dir)
+            for row in all_rows:
+                row["counterTokenV3"] = str(v3_tokens.get(row.get("script", ""), ""))
+            print(f"    {mic} counterTokenV3: {len(v3_tokens):,} script(s) in registry "
+                  f"(total {v3.stats()['total']:,})")
             reused = len(tokens.assigned) - (
                 0 if previous is None
                 else len(set(tokens.assigned) & set(previous.assigned)))

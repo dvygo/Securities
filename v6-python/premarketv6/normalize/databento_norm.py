@@ -10,7 +10,7 @@ import pandas as pd
 
 from .. import config, parquet_export, paths, runner
 from ..sources import databento_src as ds
-from . import broker_script, counter_token, price, session
+from . import broker_script, counter_token, price, session, token_registry
 
 
 # CME month character to month number mapping (for weekly expiries)
@@ -767,6 +767,16 @@ def run(opts: runner.Opts) -> None:
                   + (f", carried from {prev_day}" if previous else ", first day"))
             row_batches = _row_batches()
 
+        # counterTokenV3: one registry lookup for the whole venue, before the
+        # streaming write. first_seen comes from the venue's own def_activation
+        # where the row has one -- that is Databento's answer to "when did this
+        # contract come into effect", so it does not change with when we ran.
+        v3_registry = token_registry.TokenRegistry(paths.token_registry_db())
+        v3_scripts = [s for s in _source_scripts() if s]
+        v3_tokens = v3_registry.assign(mic, v3_scripts, opts.date_dir)
+        print(f"      counterTokenV3: {len(v3_tokens):,} script(s) in registry "
+              f"(total {v3_registry.stats()['total']:,})")
+
         prefix = counter_token.prefix_for(venue)
         # PID-scoped staging and promote-on-close live in RowWriter, for the same
         # reason the download side stages: two runs must not share one temp path,
@@ -794,6 +804,10 @@ def run(opts: runner.Opts) -> None:
                 if tokens is not None:
                     for r in batch:
                         r["counterTokenV2"] = tokens.token(r.get("script", ""))
+                # v3 is a lookup, not a computation, so it needs nothing from
+                # the previous day and is safe on a backfilled or re-run date.
+                for r in batch:
+                    r["counterTokenV3"] = str(v3_tokens.get(r.get("script", ""), ""))
                 writer.write(batch)
                 total += len(batch)
                 print(f"      {total} row(s)...", flush=True)

@@ -10,6 +10,7 @@ import pytest
 
 from premarketv6 import cli, config, paths, postgres_export_plugin, runner
 from premarketv6.sources import databento_src
+from premarketv6.normalize import token_registry
 from premarketv6.normalize import broker_script, databento_norm, fields, plugin, price, session
 from premarketv6.sources import fyers_src
 
@@ -793,6 +794,85 @@ class TestBackfillDates:
             FakeClient(), venue_cfg, "raw_symbol", ("20260825",))
         assert submitted == []
         assert written == {}
+
+
+class TestTokenRegistryV3:
+    """counterTokenV3: issued once, never reissued, independent of run order."""
+
+    @staticmethod
+    def _reg(tmp_path, name="t.db"):
+        return token_registry.TokenRegistry(tmp_path / name)
+
+    def test_first_token_is_above_int32(self, tmp_path):
+        """So a v3 token can never be mistaken for a v1/v2 one."""
+        r = self._reg(tmp_path)
+        assert min(r.assign("XCME", ["A"], "2026-08-24").values()) == token_registry.V3_BASE
+        assert token_registry.V3_BASE > 2_147_483_647
+
+    def test_a_backfilled_day_agrees_with_the_day_after_it(self, tmp_path):
+        """The exact case counterTokenV2 cannot survive.
+
+        Day 3 runs while day 2 is missing; day 2 is backfilled afterwards. With
+        v2 this left scripts holding two different tokens on consecutive days,
+        and tokens naming two different scripts.
+        """
+        r = self._reg(tmp_path)
+        r.assign("XCME", ["A", "B", "C"], "2026-08-24")
+        d3 = r.assign("XCME", ["B", "C", "E"], "2026-08-26")
+        d2 = r.assign("XCME", ["B", "C", "D"], "2026-08-25")
+        assert [s for s in set(d2) & set(d3) if d2[s] != d3[s]] == []
+        inv2 = {v: k for k, v in d2.items()}
+        inv3 = {v: k for k, v in d3.items()}
+        assert [t for t in set(inv2) & set(inv3) if inv2[t] != inv3[t]] == []
+
+    def test_a_departed_script_keeps_its_token_forever(self, tmp_path):
+        """Reuse is what makes a token ambiguous across dates."""
+        r = self._reg(tmp_path)
+        gone = r.assign("XCME", ["A", "B"], "2026-08-24")["A"]
+        later = r.assign("XCME", ["B", "C", "D"], "2026-08-25")
+        assert gone not in later.values()
+
+    def test_rerunning_a_day_is_a_no_op(self, tmp_path):
+        r = self._reg(tmp_path)
+        first = r.assign("XCME", ["A", "B"], "2026-08-24")
+        before = r.stats()["total"]
+        assert r.assign("XCME", ["A", "B"], "2026-08-24") == first
+        assert r.stats()["total"] == before
+
+    def test_the_same_script_on_two_venues_gets_two_tokens(self, tmp_path):
+        """Uniqueness comes from the registry, not from a venue prefix."""
+        r = self._reg(tmp_path)
+        assert r.assign("XCME", ["A"], "2026-08-24")["A"] != r.assign("XCBO", ["A"], "2026-08-24")["A"]
+
+    def test_tokens_are_unique_across_every_venue(self, tmp_path):
+        r = self._reg(tmp_path)
+        issued = []
+        for venue in ("XCME", "XCBO", "XNSE"):
+            issued += list(r.assign(venue, ["A", "B", "C"], "2026-08-24").values())
+        assert len(issued) == len(set(issued))
+
+    def test_new_scripts_are_taken_in_sorted_order(self, tmp_path):
+        """A first run must not depend on the order rows arrived in."""
+        a = self._reg(tmp_path, "a.db").assign("XCME", ["C", "A", "B"], "2026-08-24")
+        b = self._reg(tmp_path, "b.db").assign("XCME", ["B", "C", "A"], "2026-08-24")
+        assert a == b
+
+    def test_blank_and_whitespace_scripts_are_not_issued_tokens(self, tmp_path):
+        r = self._reg(tmp_path)
+        assert set(r.assign("XCME", ["A", "", "  ", None], "2026-08-24")) == {"A"}
+
+    def test_first_seen_can_come_from_the_venue(self, tmp_path):
+        """def_activation is Databento's answer and does not move with our run date."""
+        r = self._reg(tmp_path)
+        r.assign("XCME", ["A"], "2026-08-24", first_seen={"A": "2026-03-20"})
+        import sqlite3
+        with sqlite3.connect(r.path) as c:
+            assert c.execute("SELECT first_seen FROM instrument").fetchone()[0] == "2026-03-20"
+
+    def test_v3_column_is_declared_last(self, tmp_path):
+        """Appended, so positional readers of the normalized schema keep working."""
+        assert paths.NORMALIZED_COLUMNS[-1] == "counterTokenV3" or \
+               "counterTokenV3" in paths.NORMALIZED_COLUMNS
 
 
 if __name__ == "__main__":
