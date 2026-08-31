@@ -1,4 +1,4 @@
-"""counterToken: a per-venue counter carrying the venue's id as a prefix.
+"""counterToken: one integer sequence, shared by every venue, starting at 1.
 
 scriptToken carries each source's own instrument id, which is only unique within
 that source -- Databento's instrument_id is unique within a dataset, so on
@@ -7,33 +7,31 @@ start at 1 and run straight into GLBX's low ids. Anything keying on a token
 without an exchange column needs something collision-free, and the pg
 symbol-master table the plugin pushes to keys on exactly (token, trade_date).
 
-So the venue's id is the token's leading digits and the counter follows, widening
-as it fills:
+The previous answer was a two-digit venue prefix in the token's leading digits.
+This one is simpler: a single counter that every venue draws from, so no two
+venues can ever be handed the same number and the token is a plain integer.
 
-    prefix 10 -> 1000..1009, 10000..10099, 100000..100999, ...
+    XCBO  1 .. 2,006,525
+    XCME  2,006,526 .. 2,950,812
+    XNAS  2,950,813 .. 2,964,008
 
-Prefixes are ALWAYS two digits, 10..99. That is load-bearing, not cosmetic: with
-variable-width counters, single-digit prefixes collide the moment a second digit
-appears -- prefix 1's three-digit range (100..199) is prefix 10's two-digit range
-(100..109). Measured: prefixes 1..12 over 200k tokens each produced 122,220
-collisions; 10..30 over 300k each produced none. validate() refuses anything
-outside 10..99.
+The counter is the ONLY thing that is global. Recycling stays per venue: a
+script that departs releases its number back into its own venue's pool, and that
+venue's next arrival takes it. Only an arrival the pool cannot cover draws a
+fresh number from the shared sequence. Keeping the pools separate means a
+venue's numbering is still explicable from its own manifest alone, and it is
+what keeps the sequence growing slowly -- on the real week XCBO recycled 29,844
+numbers, 30% of its arrivals, that the sequence never had to issue.
 
-Each venue owns TWO consecutive prefixes: venue_id for counterToken and
-venue_id+1 for counterTokenV2. Deriving the second from the first means the two
-columns cannot be configured onto the same prefix, which would make them
-indistinguishable as integers.
+The sequence carries forward day to day exactly as a venue's allocation does,
+through manifests/_sequence.json, found by the same lookback. A day that cannot
+find yesterday's sequence starts at 1, which is visible in the log rather than
+silently continuing someone else's allocation.
 
-Trade-off accepted knowingly: tokens are no longer fixed-width, so they do not
-sort correctly as TEXT ("10" < "100" < "11"). Sort them as numbers. The previous
-fixed-size-block scheme sorted either way; this one buys a token that names its
-venue in its leading digits instead.
-
-int32 budget: every two-digit prefix reaches a 7-digit counter before crossing
-int32's 2,147,483,647, giving 11,111,110 rows per prefix. The largest venue,
-OPRA, wrote 2,002,550 rows on 2026-08-26 -- 18% of that. check_capacity()
-refuses a day that would not fit rather than wrapping, since a wrapped counter
-would collide inside the venue's own trade_date.
+int32 budget: the whole estate now shares 2,147,483,647 rather than each prefix
+owning a slice of it. The week's five days across six venues issued 3.0M
+numbers. check_capacity() refuses a day that would cross int32 rather than
+wrapping, since a wrapped counter would collide with a live token.
 """
 import json
 import os
@@ -47,62 +45,47 @@ from .. import config, paths
 # Widest signed 32-bit value a downstream consumer can hold.
 INT32_MAX = 2_147_483_647
 
-# Prefixes are two digits. venue_id is the counterToken prefix and venue_id+1 is
-# counterTokenV2's, so the highest usable venue_id leaves room for its pair.
-MIN_PREFIX = 10
-MAX_PREFIX = 99
-MAX_VENUE_ID = MAX_PREFIX - 1          # 98, whose pair is 99
+# The first token ever issued. Not 0: a zero token is indistinguishable from an
+# unset integer column downstream.
+FIRST_TOKEN = 1
 
 
-def assign(prefix: int, n: int) -> str:
-    """Token for the n-th row (1-based) of a venue owning `prefix`.
-
-    The counter widens as each width fills: 10 values at one digit, 100 at two,
-    1000 at three. Raises rather than wrapping once the next width would cross
-    int32.
-    """
-    width, remaining = 1, n
-    while remaining > 10 ** width:
-        remaining -= 10 ** width
-        width += 1
-        if (prefix + 1) * (10 ** width) - 1 > INT32_MAX:
-            raise ValueError(
-                f"counterToken exhausted for prefix {prefix}: row {n:,} needs a "
-                f"{width}-digit counter, which crosses int32 "
-                f"({INT32_MAX:,}). Do not wrap -- the tokens would collide."
-            )
-    return f"{prefix}{remaining - 1:0{width}d}"
-
-
-def capacity(prefix: int) -> int:
-    """Rows `prefix` can number before a token would exceed int32."""
-    total, width = 0, 1
-    while (prefix + 1) * (10 ** width) - 1 <= INT32_MAX:
-        total += 10 ** width
-        width += 1
-    return total
-
-
-def check_capacity(mic: str, prefix: int, rows: int) -> None:
-    """Raise if `rows` will not fit under `prefix`."""
-    limit = capacity(prefix)
-    if rows > limit:
+def assign(n: int) -> str:
+    """The token for sequence number `n`. The sequence IS the token."""
+    if n < FIRST_TOKEN:
+        raise ValueError(f"token {n} is below the first issuable token {FIRST_TOKEN}")
+    if n > INT32_MAX:
         raise ValueError(
-            f"{mic}: {rows:,} rows exceed the {limit:,} that prefix {prefix} can "
-            f"number inside int32 ({INT32_MAX:,}). Do not wrap -- the tokens "
-            f"would collide inside the venue's own trade_date."
+            f"counterToken exhausted: {n:,} crosses int32 ({INT32_MAX:,}). "
+            f"Do not wrap -- the token would collide with a live one."
+        )
+    return str(n)
+
+
+def capacity() -> int:
+    """How many tokens the shared sequence can ever issue."""
+    return INT32_MAX - FIRST_TOKEN + 1
+
+
+def check_capacity(mic: str, issued: int, arriving: int) -> None:
+    """Raise if issuing `arriving` more numbers would cross int32."""
+    highest = issued + arriving
+    if highest > INT32_MAX:
+        raise ValueError(
+            f"{mic}: {arriving:,} new instrument(s) would take the shared "
+            f"sequence to {highest:,}, past int32 ({INT32_MAX:,}). Do not wrap "
+            f"-- the tokens would collide with live ones."
         )
 
 
 def validate(exchanges) -> dict:
     """Pre-flight the numbering config. Returns {venue: [error, ...]}.
 
-    Run before any normalizing, so a prefix that would bleed int32 or collide is
-    caught while nothing has been written.
-
-      - venue_id set and inside 10..98 (its pair, venue_id+1, must stay 2-digit)
-      - venue_id unique, and no venue's pair overlapping another's: two venues
-        must differ by at least 2, since each owns venue_id and venue_id+1
+    Far less to check than when venue_id was a token prefix. It no longer
+    reaches the token at all, so there is no two-digit rule and no adjacent-id
+    rule -- venues cannot collide through their ids because they no longer
+    number independently. What remains is that a venue_id is set and unique, so
+    a manifest can still be held against the venue it claims to describe.
     """
     errors: dict = {}
     taken: dict = {}
@@ -114,32 +97,17 @@ def validate(exchanges) -> dict:
         cfg = exchanges[venue]
         mic = cfg.venue_name
         vid = cfg.venue_id
-
         if not vid:
             fail(mic, "venue_id is unset")
             continue
-        if vid < MIN_PREFIX or vid > MAX_VENUE_ID:
-            fail(mic, f"venue_id={vid} is outside {MIN_PREFIX}..{MAX_VENUE_ID}. "
-                      f"Prefixes must be exactly two digits -- a single-digit "
-                      f"prefix collides with a two-digit one as the counter "
-                      f"widens (prefix 1's 100..199 is prefix 10's 100..109), "
-                      f"and {MAX_PREFIX} is the last whose pair still fits.")
-            continue
-        for prefix in (vid, vid + 1):
-            owner = taken.get(prefix)
-            if owner and owner != mic:
-                fail(mic, f"prefix {prefix} already owned by {owner}. Each venue "
-                          f"takes venue_id and venue_id+1, so ids must differ by "
-                          f"at least 2.")
-            else:
-                taken[prefix] = mic
+        owner = taken.get(vid)
+        if owner and owner != mic:
+            fail(mic, f"venue_id {vid} already used by {owner}; ids must be unique")
+        else:
+            taken[vid] = mic
     return errors
 
 
-# How far back to look for the previous manifest. Long enough for a holiday week
-# plus a weekend; past that the venue is treated as new and numbered from
-# scratch, which is visible in the log rather than silently continuing a stale
-# allocation.
 MANIFEST_LOOKBACK_DAYS = 30
 
 MANIFEST_VERSION = 3
@@ -147,23 +115,67 @@ MANIFEST_VERSION = 3
 
 @dataclass
 class VenueTokens:
-    """One venue's counterTokenV2 allocation for one day."""
+    """One venue's counterTokenV2 allocation for one day.
+
+    `assigned` holds the token itself now, not an offset into a prefix block --
+    there are no blocks any more. `free` holds tokens this venue released and
+    may hand to its own next arrival; they are never offered to another venue,
+    which is what keeps a venue's numbering explicable from its own file.
+    """
     venue_id: int
-    prefix: int
-    high_water: int = 0                       # highest offset ever handed out
-    assigned: Dict[str, int] = field(default_factory=dict)   # script -> offset
+    assigned: Dict[str, int] = field(default_factory=dict)   # script -> token
     free: List[int] = field(default_factory=list)            # released, ascending
 
     def token(self, script: str) -> str:
         """Full counterTokenV2 for a script, or "" if it has none."""
-        offset = self.assigned.get(script)
-        return "" if offset is None else assign(self.prefix, offset)
+        number = self.assigned.get(script)
+        return "" if number is None else assign(number)
+
+    @property
+    def highest(self) -> int:
+        """Highest token this venue holds. 0 when it holds none."""
+        return max(self.assigned.values(), default=0)
+
+
+class Sequence:
+    """The shared counter every venue draws new tokens from.
+
+    Deliberately not a per-venue high-water mark: two venues drawing from
+    separate counters is exactly the collision this replaced. `issued` is the
+    last number handed out to anyone, so the next is issued + 1.
+    """
+
+    def __init__(self, issued: int = FIRST_TOKEN - 1):
+        self.issued = int(issued)
+        self.start = int(issued)
+
+    def take(self) -> int:
+        """The next unissued number, or raise rather than cross int32."""
+        if self.issued + 1 > INT32_MAX:
+            raise ValueError(
+                f"counterToken exhausted: the shared sequence has issued "
+                f"{self.issued:,} and the next would cross int32 "
+                f"({INT32_MAX:,}). Do not wrap -- the token would collide."
+            )
+        self.issued += 1
+        return self.issued
+
+    @property
+    def drawn(self) -> int:
+        """How many numbers this run has taken."""
+        return self.issued - self.start
 
 
 def carry_forward(
-    previous: Optional[VenueTokens], scripts: Sequence[str], venue_id: int, prefix: int,
+    previous: Optional[VenueTokens], scripts: Sequence, venue_id: int,
+    sequence: "Sequence",
 ) -> VenueTokens:
-    """Allocate today's offsets from yesterday's, per the three rules above.
+    """Allocate today's tokens from yesterday's, per the three rules.
+
+    Kept scripts hold their token. Departed scripts release theirs into this
+    venue's pool. Arrivals drain that pool first and only then draw a fresh
+    number from the shared `sequence` -- draining first is what keeps the
+    sequence growing slower than the arrival count.
 
     `scripts` may contain duplicates and any order; only the distinct set
     matters and new ones are taken in sorted order, so the result depends on
@@ -173,15 +185,13 @@ def carry_forward(
     present = sorted(set(s for s in scripts if s))
 
     if previous is None:
-        assigned = {script: n for n, script in enumerate(present, 1)}
-        return VenueTokens(venue_id, prefix, len(assigned), assigned, [])
+        return VenueTokens(venue_id, {s: sequence.take() for s in present}, [])
 
     kept = {s: previous.assigned[s] for s in present if s in previous.assigned}
-    released = [off for s, off in previous.assigned.items() if s not in kept]
+    released = [t for s, t in previous.assigned.items() if s not in kept]
     pool = sorted(set(previous.free) | set(released))
 
     assigned = dict(kept)
-    high_water = previous.high_water
     taken = 0
     for script in present:
         if script in assigned:
@@ -190,9 +200,8 @@ def carry_forward(
             assigned[script] = pool[taken]
             taken += 1
         else:
-            high_water += 1
-            assigned[script] = high_water
-    return VenueTokens(venue_id, prefix, high_water, assigned, pool[taken:])
+            assigned[script] = sequence.take()
+    return VenueTokens(venue_id, assigned, pool[taken:])
 
 
 def manifests_dir(as_of: str) -> Path:
@@ -231,24 +240,50 @@ def venue_entry(as_of: str, mic: str) -> dict:
 
 
 def venues_with_manifest(as_of: str) -> set:
-    """Every venue that has an allocation for a day."""
+    """Every venue COMPLETED for a day.
+
+    A venue's manifest is written only after its normalized file is promoted,
+    so its presence is the hard answer to "is this venue done for this date".
+    That matters because the venues do not arrive together -- GLBX publishes
+    definitions around 00:00-01:00Z and OPRA around 10:00-11:00Z, so a day is
+    normalized more than once and the early runs legitimately have venues
+    missing. Absent means not done yet, never means empty.
+
+    Files beginning with "_" are the day's own bookkeeping (_sequence.json),
+    not venues.
+    """
     directory = manifests_dir(as_of)
     if not directory.is_dir():
         return set()
-    return {p.stem.upper() for p in directory.glob("*.json")}
+    return {p.stem.upper() for p in directory.glob("*.json")
+            if not p.name.startswith("_")}
+
+
+def venue_run(as_of: str, mic: str) -> dict:
+    """When a venue's run for a day started and finished, or {}.
+
+    {"started_at": "...Z", "completed_at": "...Z"} -- both UTC ISO8601.
+    """
+    doc = _read_json(_venue_manifest_path(as_of, mic.upper()))
+    return {k: doc[k] for k in ("started_at", "completed_at") if k in doc}
+
+
+def utc_now() -> str:
+    """Timestamp for the run record, to the second, UTC."""
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _tokens_from(entry: dict) -> VenueTokens:
     return VenueTokens(
         venue_id=int(entry.get("venue_id", 0)),
-        prefix=int(entry.get("prefix", 0)),
-        high_water=int(entry.get("high_water", 0)),
         assigned={str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
         free=[int(x) for x in (entry.get("free") or [])],
     )
 
 
-def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens) -> Path:
+def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
+                         started_at: str = "") -> Path:
     """Write one venue's allocation, atomically, to its own file.
 
     Replaces merge_into_manifest's read-modify-write of a file holding every
@@ -265,14 +300,19 @@ def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens) -> Path:
     mic = mic.upper()
     path = _venue_manifest_path(as_of, mic)
     path.parent.mkdir(parents=True, exist_ok=True)
+    completed_at = utc_now()
     payload = {
         "version": MANIFEST_VERSION,
         "date": as_of,
         "venue": mic,
+        # The run record. This file existing IS the completion signal, and these
+        # say when -- useful when a day was normalized in two passes because
+        # GLBX landed at 01:00Z and OPRA at 10:30Z.
+        "started_at": started_at or completed_at,
+        "completed_at": completed_at,
         "allocation": {
             "venue_id": tokens.venue_id,
-            "prefix": tokens.prefix,
-            "high_water": tokens.high_water,
+            "highest": tokens.highest,
             "count": len(tokens.assigned),
             "free": tokens.free,
             "assigned": tokens.assigned,
@@ -281,6 +321,68 @@ def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens) -> Path:
     staging = path.with_name(f"{path.name}.tmp.{os.getpid()}")
     with open(staging, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+    os.replace(staging, path)
+    return path
+
+
+def _sequence_path(as_of: str) -> Path:
+    """The shared counter for a day, beside that day's venue manifests.
+
+    Underscored so it cannot be mistaken for a venue file by venues_with_manifest,
+    which globs the same directory.
+    """
+    return manifests_dir(as_of) / "_sequence.json"
+
+
+def load_sequence(as_of: str) -> Optional[int]:
+    """The last number issued on a day, or None if the day has no sequence."""
+    doc = _read_json(_sequence_path(as_of))
+    return int(doc["issued"]) if "issued" in doc else None
+
+
+def previous_sequence(as_of: str) -> tuple[Optional[int], str]:
+    """The most recent sequence strictly before `as_of`, and its date.
+
+    Same lookback the venue allocations use, for the same reason: a gap longer
+    than a holiday week means the estate is being numbered fresh, and that
+    should be visible in the log rather than silently continuing.
+    """
+    import datetime as _dt
+
+    day = _dt.datetime.strptime(as_of, "%Y%m%d").date()
+    for back in range(1, MANIFEST_LOOKBACK_DAYS + 1):
+        stamp = (day - _dt.timedelta(days=back)).strftime("%Y%m%d")
+        issued = load_sequence(stamp)
+        if issued is not None:
+            return issued, stamp
+    return None, ""
+
+
+def open_sequence(as_of: str) -> tuple["Sequence", str]:
+    """The sequence to allocate from today, and the day it was carried from.
+
+    Today's own file first, so a second step in the same day (Fyers after
+    Databento) continues where the first left off instead of reissuing its
+    numbers. Then yesterday's. Then FIRST_TOKEN.
+    """
+    today = load_sequence(as_of)
+    if today is not None:
+        return Sequence(today), as_of
+    issued, stamp = previous_sequence(as_of)
+    if issued is None:
+        return Sequence(), ""
+    return Sequence(issued), stamp
+
+
+def write_sequence(as_of: str, sequence: "Sequence") -> Path:
+    """Persist the counter, atomically, like every other writer here."""
+    path = _sequence_path(as_of)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    with open(staging, "w", encoding="utf-8") as handle:
+        json.dump({"version": MANIFEST_VERSION, "date": as_of,
+                   "issued": sequence.issued}, handle,
+                  separators=(",", ":"), sort_keys=True)
     os.replace(staging, path)
     return path
 
@@ -324,15 +426,3 @@ def _exchanges():
 def exchange_for(venue: str):
     """The [EXCHANGE:<MIC>] config for a venue, or None."""
     return _exchanges().get((venue or "").lower())
-
-
-def prefix_for(venue: str, v2: bool = False):
-    """Token prefix a venue owns: venue_id for counterToken, +1 for V2.
-
-    None if the venue has no [EXCHANGE:<MIC>] section or no venue_id, which is
-    how a venue opts out of being numbered.
-    """
-    cfg = exchange_for(venue)
-    if cfg is None or not cfg.venue_id:
-        return None
-    return cfg.venue_id + 1 if v2 else cfg.venue_id

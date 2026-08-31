@@ -801,108 +801,110 @@ class TestBackfillDates:
 
 
 class TestCounterTokenV2Numbering:
-    """assign(): the prefix-plus-widening-counter contract (normalize/counter_token.py)."""
+    """One shared sequence starting at 1 (normalize/counter_token.py).
 
-    def test_the_first_row_sits_directly_on_the_prefix(self):
-        assert counter_token.assign(10, 1) == "100"
-        assert counter_token.assign(21, 1) == "210"
+    The prefix scheme these tests used to pin is gone. A token is now just the
+    sequence number, so the properties worth pinning moved: not "does the
+    prefix survive widening" but "can two venues ever be handed the same
+    number", which is what the pg key (token, trade_date) depends on.
+    """
 
-    def test_the_counter_widens_when_a_width_fills(self):
-        """10 values at one digit, then 100 at two, then 1000 at three."""
-        assert counter_token.assign(10, 10) == "109"
-        assert counter_token.assign(10, 11) == "1000"
-        assert counter_token.assign(10, 110) == "1099"
-        assert counter_token.assign(10, 111) == "10000"
+    def test_the_first_token_is_one(self):
+        assert counter_token.assign(counter_token.FIRST_TOKEN) == "1"
 
-    def test_the_first_two_digits_always_name_the_venue(self):
-        """What makes a token self-describing, and what a 1-digit prefix breaks."""
-        for n in (1, 10, 11, 110, 111, 50_000):
-            assert counter_token.assign(13, n).startswith("13")
+    def test_the_token_is_the_sequence_number(self):
+        assert counter_token.assign(42) == "42"
+        assert counter_token.assign(2_006_525) == "2006525"
 
-    def test_it_is_injective_for_one_prefix(self):
-        """Two rows must never be handed the same number."""
-        issued = [counter_token.assign(11, n) for n in range(1, 5_000)]
-        assert len(set(issued)) == len(issued)
+    def test_zero_is_not_issuable(self):
+        """A zero token is indistinguishable from an unset integer downstream."""
+        with pytest.raises(ValueError):
+            counter_token.assign(0)
 
-    def test_two_venues_never_produce_the_same_token(self):
-        """Two-digit prefixes 2 apart, which is what validate() enforces."""
-        a = {counter_token.assign(11, n) for n in range(1, 3_000)}
-        b = {counter_token.assign(13, n) for n in range(1, 3_000)}
-        assert a & b == set()
+    def test_it_refuses_to_cross_int32(self):
+        assert counter_token.assign(counter_token.INT32_MAX) == str(counter_token.INT32_MAX)
+        with pytest.raises(ValueError, match="exhausted"):
+            counter_token.assign(counter_token.INT32_MAX + 1)
 
-    def test_v1_and_v2_of_one_venue_never_collide(self):
-        """venue_id and venue_id+1: the reason a venue owns two prefixes."""
-        v1 = {counter_token.assign(10, n) for n in range(1, 3_000)}
-        v2 = {counter_token.assign(11, n) for n in range(1, 3_000)}
-        assert v1 & v2 == set()
+    def test_a_sequence_hands_out_consecutive_numbers(self):
+        seq = counter_token.Sequence()
+        assert [seq.take() for _ in range(3)] == [1, 2, 3]
+        assert seq.issued == 3 and seq.drawn == 3
 
-    def test_a_token_decodes_back_to_its_row(self):
-        """The validator re-derives offsets this way, so the inverse must hold."""
-        for n in (1, 9, 10, 11, 110, 111, 1_110, 12_345):
-            assert counter_token_qa.decode(11, counter_token.assign(11, n)) == n
+    def test_a_sequence_resumes_where_it_was_left(self):
+        """The second run of a day must not reissue the first run's numbers."""
+        seq = counter_token.Sequence(2_006_525)
+        assert seq.take() == 2_006_526
+        assert seq.drawn == 1
 
-    def test_decoding_a_token_from_another_prefix_returns_nothing(self):
-        assert counter_token_qa.decode(11, counter_token.assign(13, 5)) is None
-        assert counter_token_qa.decode(11, "") is None
-        assert counter_token_qa.decode(11, "not-a-token") is None
+    def test_two_venues_cannot_be_handed_the_same_number(self):
+        """The property the venue prefix used to provide.
+
+        Now it comes from both venues drawing from one counter, which is the
+        only thing standing between the plugin push and a duplicate key on
+        (token, trade_date).
+        """
+        seq = counter_token.Sequence()
+        a = counter_token.carry_forward(None, ["A", "B", "C"], 10, seq)
+        b = counter_token.carry_forward(None, ["A", "B", "C"], 12, seq)
+        assert set(a.assigned.values()) & set(b.assigned.values()) == set()
+
+    def test_the_sequence_refuses_to_wrap(self):
+        seq = counter_token.Sequence(counter_token.INT32_MAX)
+        with pytest.raises(ValueError, match="exhausted"):
+            seq.take()
 
 
 class TestCounterTokenV2Capacity:
-    """int32 is the ceiling, and it is refused rather than wrapped."""
+    """int32 is now one budget for the whole estate, not a slice per prefix."""
 
-    def test_every_two_digit_prefix_holds_at_least_11m_rows(self):
-        """The docstring's floor. OPRA's biggest observed day is 2,041,412."""
-        assert min(counter_token.capacity(p) for p in range(10, 100)) >= 11_111_110
+    def test_the_whole_estate_shares_int32(self):
+        assert counter_token.capacity() == counter_token.INT32_MAX
 
-    def test_the_last_token_a_prefix_can_issue_fits_int32(self):
-        for prefix in (10, 21, 99):
-            last = int(counter_token.assign(prefix, counter_token.capacity(prefix)))
-            assert last <= counter_token.INT32_MAX
+    def test_a_real_week_is_a_rounding_error_against_it(self):
+        """Five days, six venues, ~3.0M numbers issued."""
+        counter_token.check_capacity("XCBO", 3_000_000, 2_076_251)
 
-    def test_one_row_past_capacity_raises(self):
-        """A wrapped counter is a number already meaning another instrument."""
-        with pytest.raises(ValueError, match="exhausted"):
-            counter_token.assign(21, counter_token.capacity(21) + 1)
+    def test_it_refuses_a_day_that_would_cross_int32(self):
+        with pytest.raises(ValueError, match="past int32"):
+            counter_token.check_capacity("XCBO", counter_token.INT32_MAX - 10, 11)
 
-    def test_check_capacity_names_the_venue_and_the_limit(self):
-        with pytest.raises(ValueError, match=r"XCBO.*11,111,110"):
-            counter_token.check_capacity("XCBO", 21, counter_token.capacity(21) + 1)
-
-    def test_check_capacity_passes_a_real_opra_day(self):
-        counter_token.check_capacity("XCBO", 11, 2_041_412)
+    def test_the_error_names_the_venue_and_the_ceiling(self):
+        with pytest.raises(ValueError, match=r"XCME.*2,147,483,647"):
+            counter_token.check_capacity("XCME", counter_token.INT32_MAX, 1)
 
 
 class TestCounterTokenV2Validate:
-    """The config pre-flight, run before anything is written."""
+    """The config pre-flight. venue_id no longer reaches the token."""
 
     @staticmethod
     def _venues(**ids):
         return {name.lower(): config.ExchangeCfg(venue_name=name, venue_id=vid)
                 for name, vid in ids.items()}
 
-    def test_ids_two_apart_are_accepted(self):
+    def test_unique_ids_are_accepted(self):
         assert counter_token.validate(self._venues(XCBO=10, XCME=12, XNAS=14)) == {}
 
-    def test_an_unset_venue_id_is_an_error(self):
-        errors = counter_token.validate(self._venues(XCBO=0))
-        assert "unset" in errors["XCBO"][0]
+    def test_adjacent_ids_are_now_fine(self):
+        """They were not, when a venue owned venue_id AND venue_id+1 as prefixes.
 
-    @pytest.mark.parametrize("bad", [1, 9, 99, 100])
-    def test_a_prefix_outside_10_to_98_is_refused(self, bad):
-        """9 and 100 are not two digits; 99 has no room for its pair."""
-        assert "XCBO" in counter_token.validate(self._venues(XCBO=bad))
+        Nothing is derived from venue_id any more, so ids only have to be
+        unique.
+        """
+        assert counter_token.validate(self._venues(XCBO=10, XCME=11)) == {}
 
-    def test_adjacent_ids_collide_because_each_venue_owns_two_prefixes(self):
-        """XCBO 10 takes 10 and 11, so XCME cannot start at 11."""
-        errors = counter_token.validate(self._venues(XCBO=10, XCME=11))
-        assert any("already owned by" in m for m in errors["XCME"])
+    def test_a_single_digit_id_is_now_fine(self):
+        """The two-digit rule existed only to stop widening prefixes colliding."""
+        assert counter_token.validate(self._venues(XCBO=1, XCME=2)) == {}
 
-    def test_a_duplicated_id_is_reported(self):
-        errors = counter_token.validate(self._venues(XCBO=10, XCME=10))
-        assert "XCME" in errors
+    def test_an_unset_venue_id_is_still_an_error(self):
+        assert "unset" in counter_token.validate(self._venues(XCBO=0))["XCBO"][0]
+
+    def test_a_duplicated_id_is_still_an_error(self):
+        """A manifest has to be holdable against the venue it claims to describe."""
+        assert "XCME" in counter_token.validate(self._venues(XCBO=10, XCME=10))
 
     def test_the_live_config_passes(self):
-        """config.ini itself, so a bad edit fails here rather than mid-run."""
         assert counter_token.validate(config.load_exchanges()) == {}
 
 
@@ -910,60 +912,62 @@ class TestCounterTokenV2CarryForward:
     """carry_forward(): keep what stayed, recycle what left, extend for the rest."""
 
     def test_a_first_day_numbers_from_one(self):
-        tokens = counter_token.carry_forward(None, ["B", "A", "C"], 10, 11)
+        tokens = counter_token.carry_forward(None, ["B", "A", "C"], 10, counter_token.Sequence())
         assert tokens.assigned == {"A": 1, "B": 2, "C": 3}
-        assert tokens.high_water == 3
+        assert tokens.highest == 3
 
     def test_a_surviving_script_keeps_its_offset(self):
         """The whole point of v2: the number is joinable across dates."""
-        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, 11)
-        day2 = counter_token.carry_forward(day1, ["A", "B", "C"], 10, 11)
+        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, counter_token.Sequence())
+        day2 = counter_token.carry_forward(day1, ["A", "B", "C"], 10, counter_token.Sequence())
         assert day2.assigned == day1.assigned
 
-    def test_a_departed_scripts_offset_is_recycled(self):
+    def test_a_departed_scripts_token_is_recycled(self):
         """And this is exactly what makes a v2 token ambiguous across dates."""
-        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, 11)
-        day2 = counter_token.carry_forward(day1, ["A", "C", "D"], 10, 11)
+        seq = counter_token.Sequence()
+        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, seq)
+        day2 = counter_token.carry_forward(day1, ["A", "C", "D"], 10, seq)
         assert day2.assigned["D"] == day1.assigned["B"]        # B's number, now D's
-        assert day2.high_water == day1.high_water              # no growth needed
+        assert seq.drawn == 3                                  # nothing new drawn
 
-    def test_the_free_pool_is_drained_before_high_water_grows(self):
-        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, 11)
-        day2 = counter_token.carry_forward(day1, ["A", "D", "E", "F"], 10, 11)
+    def test_the_free_pool_is_drained_before_the_sequence_is_drawn_from(self):
+        seq = counter_token.Sequence()
+        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, seq)
+        day2 = counter_token.carry_forward(day1, ["A", "D", "E", "F"], 10, seq)
         assert sorted(day2.assigned.values()) == [1, 2, 3, 4]
-        assert day2.high_water == 4
+        assert seq.issued == 4          # only one number ever drawn beyond day 1
 
     def test_leftover_free_offsets_survive_to_the_next_day(self):
-        day1 = counter_token.carry_forward(None, ["A", "B", "C", "D"], 10, 11)
-        day2 = counter_token.carry_forward(day1, ["A"], 10, 11)
+        day1 = counter_token.carry_forward(None, ["A", "B", "C", "D"], 10, counter_token.Sequence())
+        day2 = counter_token.carry_forward(day1, ["A"], 10, counter_token.Sequence())
         assert day2.free == [2, 3, 4]
-        day3 = counter_token.carry_forward(day2, ["A", "Z"], 10, 11)
+        day3 = counter_token.carry_forward(day2, ["A", "Z"], 10, counter_token.Sequence())
         assert day3.assigned["Z"] == 2 and day3.free == [3, 4]
 
     def test_free_and_assigned_never_overlap(self):
         """An offset in both pools would be handed out while still live."""
-        day1 = counter_token.carry_forward(None, list("ABCDEF"), 10, 11)
-        day2 = counter_token.carry_forward(day1, list("ACEG"), 10, 11)
+        day1 = counter_token.carry_forward(None, list("ABCDEF"), 10, counter_token.Sequence())
+        day2 = counter_token.carry_forward(day1, list("ACEG"), 10, counter_token.Sequence())
         assert set(day2.free) & set(day2.assigned.values()) == set()
 
     def test_row_order_and_duplicates_do_not_change_the_result(self):
         """What makes a re-run byte-identical."""
-        a = counter_token.carry_forward(None, ["C", "A", "B", "A"], 10, 11)
-        b = counter_token.carry_forward(None, ["B", "C", "A"], 10, 11)
+        a = counter_token.carry_forward(None, ["C", "A", "B", "A"], 10, counter_token.Sequence())
+        b = counter_token.carry_forward(None, ["B", "C", "A"], 10, counter_token.Sequence())
         assert a.assigned == b.assigned
 
     def test_blank_scripts_are_not_numbered(self):
-        tokens = counter_token.carry_forward(None, ["A", "", None, "B"], 10, 11)
+        tokens = counter_token.carry_forward(None, ["A", "", None, "B"], 10, counter_token.Sequence())
         assert set(tokens.assigned) == {"A", "B"}
 
-    def test_token_renders_on_the_v2_prefix(self):
-        tokens = counter_token.carry_forward(None, ["A", "B"], 10, 11)
-        assert tokens.token("A") == "110"
-        assert tokens.token("B") == "111"
+    def test_token_renders_as_the_plain_sequence_number(self):
+        tokens = counter_token.carry_forward(None, ["A", "B"], 10, counter_token.Sequence())
+        assert tokens.token("A") == "1"
+        assert tokens.token("B") == "2"
 
     def test_an_unknown_script_gets_an_empty_token_not_a_wrong_one(self):
         """The validator's "populated" check is what turns this into a failure."""
-        assert counter_token.carry_forward(None, ["A"], 10, 11).token("Z") == ""
+        assert counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()).token("Z") == ""
 
     def test_a_backfilled_day_disagrees_with_the_day_after_it(self):
         """The failure v2 cannot avoid, pinned rather than left to be discovered.
@@ -973,9 +977,9 @@ class TestCounterTokenV2CarryForward:
         too and gave that offset to E. One number, two instruments, on consecutive
         dates. That is the case the registry-issued column was built for.
         """
-        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, 11)
-        day3 = counter_token.carry_forward(day1, ["A", "C", "E"], 10, 11)
-        day2 = counter_token.carry_forward(day1, ["A", "C", "D"], 10, 11)
+        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, counter_token.Sequence())
+        day3 = counter_token.carry_forward(day1, ["A", "C", "E"], 10, counter_token.Sequence())
+        day2 = counter_token.carry_forward(day1, ["A", "C", "D"], 10, counter_token.Sequence())
         clash = {t for t in set(day2.assigned.values()) & set(day3.assigned.values())
                  if {s for s, o in day2.assigned.items() if o == t} !=
                     {s for s, o in day3.assigned.items() if o == t}}
@@ -1001,15 +1005,14 @@ class TestCounterTokenV2Manifest:
 
     def test_a_written_manifest_reads_back_unchanged(self, tmp_path):
         with self._tree(tmp_path):
-            tokens = counter_token.carry_forward(None, ["A", "B", "C"], 10, 11)
+            tokens = counter_token.carry_forward(None, ["A", "B", "C"], 10, counter_token.Sequence())
             tokens.free = [7, 9]
             counter_token.write_venue_manifest("20260824", "XCBO", tokens)
             back, stamp = counter_token.previous_tokens("20260825", "XCBO", 10)
             assert stamp == "20260824"
             assert back.assigned == tokens.assigned
             assert back.free == [7, 9]
-            assert back.high_water == tokens.high_water
-            assert back.prefix == 11
+            assert back.venue_id == 10
 
     def test_each_venue_owns_its_own_file(self, tmp_path):
         """Databento and Fyers normalize the same day as separate steps.
@@ -1019,11 +1022,11 @@ class TestCounterTokenV2Manifest:
         """
         with self._tree(tmp_path):
             counter_token.write_venue_manifest(
-                "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+                "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
             counter_token.write_venue_manifest(
-                "20260824", "XNSE", counter_token.carry_forward(None, ["N"], 16, 17))
+                "20260824", "XNSE", counter_token.carry_forward(None, ["N"], 16, counter_token.Sequence()))
             assert counter_token.venues_with_manifest("20260824") == {"XCBO", "XNSE"}
-            assert counter_token.venue_entry("20260824", "XNSE")["prefix"] == 17
+            assert counter_token.venue_entry("20260824", "XNSE")["venue_id"] == 16
             assert set(counter_token.venue_entry("20260824", "XCBO")["assigned"]) == {"A"}
 
     def test_a_missing_manifest_is_absent_not_an_error(self, tmp_path):
@@ -1042,7 +1045,7 @@ class TestCounterTokenV2Manifest:
     def test_the_lookback_reaches_across_a_weekend(self, tmp_path):
         with self._tree(tmp_path):
             counter_token.write_venue_manifest(
-                "20260821", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+                "20260821", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
             _, stamp = counter_token.previous_tokens("20260824", "XCBO", 10)
             assert stamp == "20260821"
 
@@ -1050,14 +1053,14 @@ class TestCounterTokenV2Manifest:
         """Past the window the venue is renumbered, and that shows in the log."""
         with self._tree(tmp_path):
             counter_token.write_venue_manifest(
-                "20260101", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+                "20260101", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
             assert counter_token.previous_tokens("20260824", "XCBO", 10) == (None, "")
 
     def test_it_takes_the_nearest_day_not_the_first_it_finds(self, tmp_path):
         with self._tree(tmp_path):
             for day, scripts in (("20260820", ["A"]), ("20260821", ["A", "B"])):
                 counter_token.write_venue_manifest(
-                    day, "XCBO", counter_token.carry_forward(None, scripts, 10, 11))
+                    day, "XCBO", counter_token.carry_forward(None, scripts, 10, counter_token.Sequence()))
             back, stamp = counter_token.previous_tokens("20260824", "XCBO", 10)
             assert stamp == "20260821" and len(back.assigned) == 2
 
@@ -1065,14 +1068,14 @@ class TestCounterTokenV2Manifest:
         """venue_id moves the venue onto different blocks, so continuity is gone."""
         with self._tree(tmp_path):
             counter_token.write_venue_manifest(
-                "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+                "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
             with pytest.raises(ValueError, match="venue_id is 30 in config.ini"):
                 counter_token.previous_tokens("20260825", "XCBO", 30)
 
     def test_the_manifest_is_never_left_half_written(self, tmp_path):
         with self._tree(tmp_path):
             counter_token.write_venue_manifest(
-                "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+                "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
             leftovers = list(counter_token.manifests_dir("20260824").glob("*.tmp*"))
             assert leftovers == []
 
@@ -1086,7 +1089,7 @@ class TestCounterTokenV2Validator:
     """
 
     @staticmethod
-    def _write(day, mic, rows, prefix):
+    def _write(day, mic, rows):
         """One venue's normalized parquet, under whatever the `tree` fixture set."""
         import pyarrow as pa
         import pyarrow.parquet as pq
@@ -1095,18 +1098,16 @@ class TestCounterTokenV2Validator:
         pq.write_table(
             pa.table({
                 "script": [r[0] for r in rows],
-                "counterToken": [counter_token.assign(prefix - 1, n)
-                                 for n in range(1, len(rows) + 1)],
+                # positional, and deliberately allowed to overlap v2
+                "counterToken": [str(n) for n in range(1, len(rows) + 1)],
                 "counterTokenV2": [r[1] for r in rows],
             }),
             directory / f"{mic}-DATABENTO-normalized.parquet")
 
     @staticmethod
-    def _manifest(day, mic, assigned, venue_id, prefix, high_water=None, free=()):
+    def _manifest(day, mic, assigned, venue_id, free=()):
         counter_token.write_venue_manifest(day, mic, counter_token.VenueTokens(
-            venue_id=venue_id, prefix=prefix,
-            high_water=high_water if high_water is not None else max(assigned.values(), default=0),
-            assigned=dict(assigned), free=list(free)))
+            venue_id=venue_id, assigned=dict(assigned), free=list(free)))
 
     @staticmethod
     def _named(checks, name):
@@ -1119,78 +1120,74 @@ class TestCounterTokenV2Validator:
 
     def _good_day(self, day="20260824", scripts=("A", "B", "C")):
         assigned = {s: n for n, s in enumerate(sorted(scripts), 1)}
-        rows = [(s, counter_token.assign(11, n)) for s, n in sorted(assigned.items())]
-        self._write(day, "XCBO", rows, 11)
-        self._manifest(day, "XCBO", assigned, 10, 11)
+        rows = [(s, counter_token.assign(n)) for s, n in sorted(assigned.items())]
+        self._write(day, "XCBO", rows)
+        self._manifest(day, "XCBO", assigned, 10)
         return assigned
 
     def test_a_clean_day_passes_every_check(self, tree):
         self._good_day()
         checks = counter_token_qa.check_day("20260824", ["XCBO"])
         assert [c.name for c in checks if not c.ok] == []
-        assert {"populated", "numeric int32", "prefix", "one-to-one",
-                "v1 disjoint", "manifest internal", "manifest agrees"} <= {c.name for c in checks}
+        assert {"populated", "numeric int32", "one-to-one",
+                "manifest internal", "manifest agrees"} <= {c.name for c in checks}
 
     def test_a_blank_token_fails_populated(self, tree):
-        self._write("20260824", "XCBO", [("A", "110"), ("B", "")], 11)
-        self._manifest("20260824", "XCBO", {"A": 1, "B": 2}, 10, 11)
+        self._write("20260824", "XCBO", [("A", "1"), ("B", "")])
+        self._manifest("20260824", "XCBO", {"A": 1, "B": 2}, 10)
         assert not self._named(counter_token_qa.check_day("20260824", ["XCBO"]), "populated").ok
 
     def test_a_token_past_int32_fails(self, tree):
-        self._write("20260824", "XCBO", [("A", str(counter_token.INT32_MAX + 1))], 11)
-        self._manifest("20260824", "XCBO", {"A": 1}, 10, 11)
+        self._write("20260824", "XCBO", [("A", str(counter_token.INT32_MAX + 1))])
+        self._manifest("20260824", "XCBO", {"A": 1}, 10)
         assert not self._named(counter_token_qa.check_day("20260824", ["XCBO"]), "numeric int32").ok
-
-    def test_a_token_on_the_wrong_prefix_fails(self, tree):
-        self._write("20260824", "XCBO", [("A", counter_token.assign(13, 1))], 11)
-        self._manifest("20260824", "XCBO", {"A": 1}, 10, 11)
-        assert not self._named(counter_token_qa.check_day("20260824", ["XCBO"]), "prefix").ok
 
     def test_two_scripts_sharing_a_token_fails_one_to_one(self, tree):
         """The collision the pg key (token, trade_date) cannot survive."""
-        self._write("20260824", "XCBO", [("A", "110"), ("B", "110")], 11)
-        self._manifest("20260824", "XCBO", {"A": 1, "B": 1}, 10, 11)
+        self._write("20260824", "XCBO", [("A", "1"), ("B", "1")])
+        self._manifest("20260824", "XCBO", {"A": 1, "B": 1}, 10)
         assert not self._named(counter_token_qa.check_day("20260824", ["XCBO"]), "one-to-one").ok
 
     def test_a_token_the_manifest_does_not_explain_fails(self, tree):
-        self._write("20260824", "XCBO", [("A", "110"), ("B", "111")], 11)
-        self._manifest("20260824", "XCBO", {"A": 1}, 10, 11)
+        self._write("20260824", "XCBO", [("A", "1"), ("B", "2")])
+        self._manifest("20260824", "XCBO", {"A": 1}, 10)
         assert not self._named(counter_token_qa.check_day("20260824", ["XCBO"]), "manifest agrees").ok
 
-    def test_a_manifest_offset_that_does_not_re_derive_fails(self, tree):
-        self._write("20260824", "XCBO", [("A", "119")], 11)
-        self._manifest("20260824", "XCBO", {"A": 1}, 10, 11)
+    def test_a_manifest_token_that_does_not_re_derive_fails(self, tree):
+        self._write("20260824", "XCBO", [("A", "99")])
+        self._manifest("20260824", "XCBO", {"A": 1}, 10)
         assert not self._named(counter_token_qa.check_day("20260824", ["XCBO"]), "manifest agrees").ok
 
     def test_an_offset_in_both_free_and_assigned_fails(self, tree):
         self._good_day()
-        self._manifest("20260824", "XCBO", {"A": 1, "B": 2, "C": 3}, 10, 11, free=[2])
+        self._manifest("20260824", "XCBO", {"A": 1, "B": 2, "C": 3}, 10, free=[2])
         assert not self._named(
             counter_token_qa.check_day("20260824", ["XCBO"]), "manifest internal").ok
 
-    def test_a_high_water_below_the_top_offset_fails(self, tree):
+    def test_a_token_past_int32_in_the_manifest_fails(self, tree):
         self._good_day()
-        self._manifest("20260824", "XCBO", {"A": 1, "B": 2, "C": 3}, 10, 11, high_water=1)
+        self._manifest("20260824", "XCBO",
+                       {"A": 1, "B": 2, "C": counter_token.INT32_MAX + 1}, 10)
         assert not self._named(
             counter_token_qa.check_day("20260824", ["XCBO"]), "manifest internal").ok
 
     def test_a_manifest_with_no_parquet_is_reported(self, tree):
         """The hazard that cost a day of the v3 gap test: deleting a day's data
         does not delete it from the chain, so the next run still carries it."""
-        self._manifest("20260824", "XCBO", {"A": 1}, 10, 11)
+        self._manifest("20260824", "XCBO", {"A": 1}, 10)
         paths.normalized_dir("20260824").mkdir(parents=True, exist_ok=True)
         assert not self._named(
             counter_token_qa.check_day("20260824", ["XCBO"]), "manifest has data").ok
 
     def test_a_parquet_with_no_manifest_is_reported(self, tree):
-        self._write("20260824", "XCBO", [("A", "110")], 11)
+        self._write("20260824", "XCBO", [("A", "1")])
         assert not self._named(
             counter_token_qa.check_day("20260824", ["XCBO"]), "manifest present").ok
 
     def test_two_venues_sharing_a_token_fails(self, tree):
         self._good_day()
-        self._write("20260824", "XCME", [("Z", "110")], 13)
-        self._manifest("20260824", "XCME", {"Z": 1}, 12, 13)
+        self._write("20260824", "XCME", [("Z", "1")])
+        self._manifest("20260824", "XCME", {"Z": 1}, 12)
         assert not self._named(counter_token_qa.check_day("20260824"), "venues disjoint").ok
 
     def test_a_stable_pair_passes(self, tree):
@@ -1202,8 +1199,8 @@ class TestCounterTokenV2Validator:
     def test_a_script_that_moved_fails_hard(self, tree):
         """A broken chain, not a v2 quirk -- v2 promises this cannot happen."""
         self._good_day("20260824")
-        self._write("20260825", "XCBO", [("A", "111"), ("B", "110")], 11)
-        self._manifest("20260825", "XCBO", {"A": 2, "B": 1}, 10, 11)
+        self._write("20260825", "XCBO", [("A", "2"), ("B", "1")])
+        self._manifest("20260825", "XCBO", {"A": 2, "B": 1}, 10)
         moved = self._named(counter_token_qa.check_pair("20260824", "20260825", ["XCBO"]), "stable")
         assert not moved.ok and moved.hard
 
@@ -1211,8 +1208,8 @@ class TestCounterTokenV2Validator:
         """v2 does this by design; the count is worth watching, not failing."""
         self._good_day("20260824", ("A", "B", "C"))
         self._write("20260825", "XCBO",
-                    [("A", "110"), ("C", "112"), ("D", "111")], 11)   # D took B's number
-        self._manifest("20260825", "XCBO", {"A": 1, "C": 3, "D": 2}, 10, 11)
+                    [("A", "1"), ("C", "3"), ("D", "2")])   # D took B's number
+        self._manifest("20260825", "XCBO", {"A": 1, "C": 3, "D": 2}, 10)
         checks = counter_token_qa.check_pair("20260824", "20260825", ["XCBO"])
         assert self._named(checks, "stable").ok
         reuse = self._named(checks, "no reuse")
@@ -1533,10 +1530,14 @@ class TestV2Recycling:
         monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
         return tmp_path
 
-    @staticmethod
-    def _day(day, scripts, previous=None):
+    SEQ = None
+
+    @classmethod
+    def _day(cls, day, scripts, previous=None):
         """Run the real carry_forward and write the manifest it produces."""
-        tokens = counter_token.carry_forward(previous, scripts, 10, 11)
+        if previous is None:
+            cls.SEQ = counter_token.Sequence()
+        tokens = counter_token.carry_forward(previous, scripts, 10, cls.SEQ)
         counter_token.write_venue_manifest(day, "XCBO", tokens)
         return tokens
 
@@ -1554,16 +1555,16 @@ class TestV2Recycling:
         checks = self._checks()
         assert [c.name for c in checks if not c.ok] == []
         drained = self._named(checks, "pool drained first")
-        assert "1 took a released offset" in drained.detail
-        assert "high_water +0" in drained.detail
+        assert "1 reused a released token" in drained.detail
+        assert "0 drew a new one" in drained.detail
 
-    def test_the_pool_is_drained_before_high_water_grows(self, tree):
-        """Two dead offsets, three arrivals: two recycled, one new. Never the reverse."""
+    def test_the_pool_is_drained_before_the_sequence_is_drawn_from(self, tree):
+        """Two dead tokens, three arrivals: two recycled, one new. Never the reverse."""
         day1 = self._day("20260824", ["A", "B", "C"])
         self._day("20260825", ["A", "D", "E", "F"], day1)
         drained = self._named(self._checks(), "pool drained first")
         assert drained.ok
-        assert "2 took a released offset" in drained.detail and "high_water +1" in drained.detail
+        assert "2 reused a released token" in drained.detail and "1 drew a new one" in drained.detail
 
     def test_leftover_offsets_survive_to_the_next_day(self, tree):
         """Three depart, one arrives -- the other two numbers must not be lost."""
@@ -1582,23 +1583,22 @@ class TestV2Recycling:
         checks = self._checks()
         assert [c.name for c in checks if not c.ok] == []
         assert "0 script(s) departed" in self._named(checks, "offsets released").detail
-        assert "high_water +1" in self._named(checks, "pool drained first").detail
+        assert "1 drew a new one" in self._named(checks, "pool drained first").detail
 
-    def test_growing_high_water_while_the_pool_had_room_fails(self, tree):
+    def test_drawing_a_new_number_while_the_pool_had_room_fails(self, tree):
         """The failure these checks exist to catch: numbers leaked, not reused."""
-        day1 = self._day("20260824", ["A", "B", "C"])
+        self._day("20260824", ["A", "B", "C"])
         counter_token.write_venue_manifest("20260825", "XCBO", counter_token.VenueTokens(
-            venue_id=10, prefix=11, high_water=4,
-            assigned={"A": 1, "C": 3, "D": 4},        # D took a NEW offset...
+            venue_id=10,
+            assigned={"A": 1, "C": 3, "D": 4},        # D drew a NEW number...
             free=[2]))                                # ...while 2 sat free
         assert not self._named(self._checks(), "pool drained first").ok
 
     def test_a_lost_leftover_fails(self, tree):
         """Dropping the free pool silently shrinks the venue's usable space."""
-        day1 = self._day("20260824", ["A", "B", "C", "D"])
+        self._day("20260824", ["A", "B", "C", "D"])
         counter_token.write_venue_manifest("20260825", "XCBO", counter_token.VenueTokens(
-            venue_id=10, prefix=11, high_water=4,
-            assigned={"A": 1}, free=[]))              # 2, 3, 4 released and lost
+            venue_id=10, assigned={"A": 1}, free=[]))  # 2, 3, 4 released and lost
         assert not self._named(self._checks(), "pool carried").ok
 
     def test_a_missing_manifest_warns_rather_than_fails(self, tree):
@@ -1642,7 +1642,7 @@ class TestPerVenueManifest:
 
     def test_a_venue_writes_to_its_own_file(self, tree):
         counter_token.write_venue_manifest(
-            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
         assert (counter_token.manifests_dir("20260824") / "XCBO.json").exists()
         assert not (paths.day_dir("20260824") / "manifest.json").exists()
 
@@ -1663,40 +1663,164 @@ class TestPerVenueManifest:
         neither can touch the other's, so they cannot clobber each other.
         """
         counter_token.write_venue_manifest(
-            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
         counter_token.write_venue_manifest(
-            "20260824", "XNSE", counter_token.carry_forward(None, ["N"], 16, 17))
+            "20260824", "XNSE", counter_token.carry_forward(None, ["N"], 16, counter_token.Sequence()))
         assert counter_token.venues_with_manifest("20260824") == {"XCBO", "XNSE"}
-        assert counter_token.venue_entry("20260824", "XNSE")["prefix"] == 17
+        assert counter_token.venue_entry("20260824", "XNSE")["venue_id"] == 16
         assert set(counter_token.venue_entry("20260824", "XCBO")["assigned"]) == {"A"}
 
     def test_one_venues_unreadable_file_does_not_hide_another(self, tree):
         """The combined file made every venue share one blast radius."""
         counter_token.write_venue_manifest(
-            "20260824", "XNSE", counter_token.carry_forward(None, ["N"], 16, 17))
+            "20260824", "XNSE", counter_token.carry_forward(None, ["N"], 16, counter_token.Sequence()))
         (counter_token.manifests_dir("20260824") / "XCBO.json").write_text('{"version":3,"alloc')
         assert counter_token.venue_entry("20260824", "XCBO") == {}
         assert counter_token.venue_entry("20260824", "XNSE")["assigned"] == {"N": 1}
 
     def test_carry_forward_still_works_across_days(self, tree):
         counter_token.write_venue_manifest(
-            "20260824", "XCBO", counter_token.carry_forward(None, ["A", "B"], 10, 11))
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A", "B"], 10, counter_token.Sequence()))
         previous, stamp = counter_token.previous_tokens("20260825", "XCBO", 10)
         assert stamp == "20260824" and previous.assigned == {"A": 1, "B": 2}
 
     def test_a_venue_id_change_is_still_refused(self, tree):
         counter_token.write_venue_manifest(
-            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
         with pytest.raises(ValueError, match="venue_id is 30 in config.ini"):
             counter_token.previous_tokens("20260825", "XCBO", 30)
 
     def test_the_written_file_is_the_new_version(self, tree):
         counter_token.write_venue_manifest(
-            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
         doc = json.loads((counter_token.manifests_dir("20260824") / "XCBO.json").read_text())
         assert doc["version"] == counter_token.MANIFEST_VERSION == 3
         assert doc["venue"] == "XCBO" and doc["date"] == "20260824"
 
+
+
+
+class TestSharedSequence:
+    """The one counter every venue draws from, and its day-to-day carry.
+
+    This is what replaced the two-digit venue prefix. Nothing in a token says
+    which venue issued it any more, so cross-venue uniqueness rests entirely on
+    every venue drawing from this.
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    def test_a_day_with_no_history_starts_at_one(self, tree):
+        seq, carried = counter_token.open_sequence("20260824")
+        assert seq.issued == counter_token.FIRST_TOKEN - 1 and carried == ""
+        assert seq.take() == 1
+
+    def test_it_round_trips(self, tree):
+        seq = counter_token.Sequence()
+        for _ in range(5):
+            seq.take()
+        counter_token.write_sequence("20260824", seq)
+        assert counter_token.load_sequence("20260824") == 5
+
+    def test_a_later_day_continues_yesterdays_numbers(self, tree):
+        counter_token.write_sequence("20260824", counter_token.Sequence(2_006_525))
+        seq, carried = counter_token.open_sequence("20260825")
+        assert carried == "20260824"
+        assert seq.take() == 2_006_526
+
+    def test_a_second_run_of_the_same_day_continues_rather_than_restarts(self, tree):
+        """The case that matters operationally.
+
+        GLBX definitions publish around 00:00-01:00Z and OPRA around
+        10:00-11:00Z, so a day is normalized twice. The second pass must not
+        reissue the numbers the first pass already handed out.
+        """
+        first = counter_token.Sequence()
+        counter_token.carry_forward(None, ["A", "B", "C"], 12, first)
+        counter_token.write_sequence("20260824", first)
+
+        second, carried = counter_token.open_sequence("20260824")
+        assert carried == "20260824"
+        later = counter_token.carry_forward(None, ["X", "Y"], 10, second)
+        assert set(later.assigned.values()) == {4, 5}
+
+    def test_the_lookback_stops_rather_than_reaching_a_stale_month(self, tree):
+        counter_token.write_sequence("20260101", counter_token.Sequence(999))
+        seq, carried = counter_token.open_sequence("20260824")
+        assert carried == "" and seq.issued == counter_token.FIRST_TOKEN - 1
+
+    def test_the_sequence_file_is_not_mistaken_for_a_venue(self, tree):
+        counter_token.write_sequence("20260824", counter_token.Sequence(3))
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO",
+            counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
+        assert counter_token.venues_with_manifest("20260824") == {"XCBO"}
+
+    def test_no_two_venues_on_one_day_share_a_number(self, tree):
+        seq, _ = counter_token.open_sequence("20260824")
+        issued = []
+        for venue_id, scripts in ((10, ["A", "B"]), (12, ["A", "B"]), (14, ["A"])):
+            issued += list(counter_token.carry_forward(
+                None, scripts, venue_id, seq).assigned.values())
+        assert len(issued) == len(set(issued)) == 5
+
+    def test_it_is_written_atomically(self, tree):
+        counter_token.write_sequence("20260824", counter_token.Sequence(1))
+        assert list(counter_token.manifests_dir("20260824").glob("*.tmp*")) == []
+
+
+class TestVenueCompletionRecord:
+    """A venue's manifest IS the answer to "is this venue done for this date".
+
+    The venues do not arrive together, so a day is normalized more than once and
+    the early passes legitimately have venues missing. Absent has to mean "not
+    done yet", never "empty".
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _write(day, mic, venue_id, started_at=""):
+        return counter_token.write_venue_manifest(
+            day, mic,
+            counter_token.carry_forward(None, ["A"], venue_id, counter_token.Sequence()),
+            started_at=started_at)
+
+    def test_a_completed_venue_is_listed(self, tree):
+        self._write("20260824", "XCME", 12)
+        assert counter_token.venues_with_manifest("20260824") == {"XCME"}
+
+    def test_a_venue_not_yet_run_is_simply_absent(self, tree):
+        """XCME lands ~01:00Z and XCBO ~10:30Z; between them XCBO is not done."""
+        self._write("20260824", "XCME", 12)
+        assert "XCBO" not in counter_token.venues_with_manifest("20260824")
+        assert counter_token.venue_run("20260824", "XCBO") == {}
+
+    def test_the_second_pass_adds_without_disturbing_the_first(self, tree):
+        self._write("20260824", "XCME", 12)
+        self._write("20260824", "XCBO", 10)
+        assert counter_token.venues_with_manifest("20260824") == {"XCME", "XCBO"}
+
+    def test_both_timestamps_are_recorded(self, tree):
+        self._write("20260824", "XCME", 12, started_at="2026-08-24T01:02:03Z")
+        run = counter_token.venue_run("20260824", "XCME")
+        assert run["started_at"] == "2026-08-24T01:02:03Z"
+        assert run["completed_at"].endswith("Z")
+
+    def test_started_at_defaults_to_completion_when_not_given(self, tree):
+        self._write("20260824", "XCME", 12)
+        run = counter_token.venue_run("20260824", "XCME")
+        assert run["started_at"] == run["completed_at"]
+
+    def test_the_timestamps_are_utc_to_the_second(self, tree):
+        stamp = counter_token.utc_now()
+        datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
 
 
 if __name__ == "__main__":

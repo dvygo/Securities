@@ -187,23 +187,20 @@ def run(opts: runner.Opts) -> None:
                 if norm_row.get("script") and norm_row.get("exchange"):
                     all_rows.append(norm_row)
 
-        # Number this MIC's rows into its reserved block, after the script/exchange
-        # filter above so the sequence has no gaps. One counter per output file,
-        # which is what has to be internally unique -- XNSE and XBOM each merge
-        # several source feeds into a single file.
-        prefix = counter_token.prefix_for(mic)
-        if prefix is not None:
-            # Row count is known here, so capacity is checked before numbering
-            # rather than discovered by assign() partway through.
-            counter_token.check_capacity(mic, prefix, len(all_rows))
+        # Number this MIC's rows. counterToken is positional: row order within
+        # this venue-day, after the script/exchange filter above so it has no
+        # gaps. One counter per output file -- XNSE and XBOM each merge several
+        # source feeds into a single file. NOT joinable across dates or venues.
+        started_at = counter_token.utc_now()
+        tokens = sequence = None
+        exchange_cfg = counter_token.exchange_for(mic)
+        if exchange_cfg is not None and exchange_cfg.venue_id:
             for n, row in enumerate(all_rows, 1):
-                row["counterToken"] = counter_token.assign(prefix, n)
+                row["counterToken"] = str(n)
 
             # counterTokenV2: stable across days. Every row is already in
             # memory here, so the whole symbol set is known and the carry-
             # forward needs no extra pass.
-            exchange_cfg = counter_token.exchange_for(mic)
-            v2_prefix = exchange_cfg.counter_prefix_v2
             try:
                 previous, prev_day = counter_token.previous_tokens(
                     opts.date_dir, mic, exchange_cfg.venue_id)
@@ -211,19 +208,21 @@ def run(opts: runner.Opts) -> None:
                 print(f"  CRITICAL: skipping Fyers {mic} -- {exc}")
                 continue
             scripts = [r.get("script", "") for r in all_rows]
+            sequence, seq_from = counter_token.open_sequence(opts.date_dir)
+            counter_token.check_capacity(mic, sequence.issued, len(scripts))
             tokens = counter_token.carry_forward(
-                previous, scripts, exchange_cfg.venue_id, v2_prefix)
-            counter_token.check_capacity(mic, v2_prefix, tokens.high_water)
+                previous, scripts, exchange_cfg.venue_id, sequence)
             for row in all_rows:
                 row["counterTokenV2"] = tokens.token(row.get("script", ""))
-            counter_token.write_venue_manifest(opts.date_dir, mic, tokens)
 
             reused = len(tokens.assigned) - (
                 0 if previous is None
                 else len(set(tokens.assigned) & set(previous.assigned)))
             print(f"    {mic} counterTokenV2: {len(tokens.assigned):,} symbol(s), "
-                  f"{reused:,} new, high-water {tokens.high_water:,}"
-                  + (f", carried from {prev_day}" if previous else ", first day"))
+                  f"{reused:,} new, {sequence.drawn:,} drawn from the shared "
+                  f"sequence (now {sequence.issued:,})"
+                  + (f", carried from {prev_day}" if previous else ", first day")
+                  + (f", sequence from {seq_from}" if seq_from else ", sequence from 1"))
 
         # Write normalized Parquet
         output_path = normalized_dir / output_csv
@@ -231,6 +230,15 @@ def run(opts: runner.Opts) -> None:
             # RowWriter fills a missing key with "" and orders by the column list,
             # so the frame-shaping the CSV path needed is gone.
             parquet_export.write_rows(output_path, paths.NORMALIZED_COLUMNS, all_rows)
+            # Only after the file exists. The manifest IS the completion record
+            # for this venue-day, so writing it beside a file that failed to
+            # appear would report a venue done that produced nothing. Sequence
+            # first, so a crash between the two leaks numbers rather than
+            # letting a re-run reissue live ones.
+            if tokens is not None:
+                counter_token.write_sequence(opts.date_dir, sequence)
+                counter_token.write_venue_manifest(
+                    opts.date_dir, mic, tokens, started_at=started_at)
             print(f"    Wrote {len(all_rows)} rows to {output_path}")
         else:
             # Nothing is written for an empty MIC. A schema-only file would look

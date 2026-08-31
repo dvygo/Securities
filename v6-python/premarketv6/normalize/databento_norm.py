@@ -740,14 +740,15 @@ def run(opts: runner.Opts) -> None:
         output_path = normalized_dir / f"{venue.upper()}-DATABENTO-normalized{parquet_export.SUFFIX}"
 
         # counterTokenV2 needs the whole day's symbol set before it can allocate:
-        # which offsets are free depends on which of yesterday's scripts are
+        # which numbers are free depends on which of yesterday's scripts are
         # absent today, and that is not known until the last row. This path
         # streams in chunks and cannot buffer 2M mapped rows, so the symbol set
         # is collected in a cheap first pass over the same source -- script_of
         # instead of the full mapper -- and the write below stays streaming.
         mic = venue_cfg.venue_name
+        started_at = counter_token.utc_now()
         exchange_cfg = counter_token.exchange_for(venue)
-        tokens = None
+        tokens = sequence = None
         if exchange_cfg is not None and exchange_cfg.venue_id:
             try:
                 previous, prev_day = counter_token.previous_tokens(
@@ -756,18 +757,22 @@ def run(opts: runner.Opts) -> None:
                 print(f"      CRITICAL: skipping {venue} -- {exc}")
                 continue
             scripts = [script for script in _source_scripts() if script]
+            # Opened per venue, not once per run: the venues do not arrive
+            # together, so a day is normalized more than once and the later pass
+            # has to continue the sequence the earlier one left, not restart it.
+            sequence, seq_from = counter_token.open_sequence(opts.date_dir)
+            counter_token.check_capacity(mic, sequence.issued, len(scripts))
             tokens = counter_token.carry_forward(
-                previous, scripts, exchange_cfg.venue_id, exchange_cfg.counter_prefix_v2)
-            counter_token.check_capacity(mic, exchange_cfg.counter_prefix_v2, tokens.high_water)
+                previous, scripts, exchange_cfg.venue_id, sequence)
             new_count = len(tokens.assigned) - (
                 0 if previous is None
                 else len(set(tokens.assigned) & set(previous.assigned)))
             print(f"      counterTokenV2: {len(tokens.assigned):,} symbol(s), "
-                  f"{new_count:,} new, high-water {tokens.high_water:,}"
-                  + (f", carried from {prev_day}" if previous else ", first day"))
+                  f"{new_count:,} new, {sequence.drawn:,} drawn from the shared "
+                  f"sequence (now {sequence.issued:,})"
+                  + (f", carried from {prev_day}" if previous else ", first day")
+                  + (f", sequence from {seq_from}" if seq_from else ", sequence from 1"))
             row_batches = _row_batches()
-
-        prefix = counter_token.prefix_for(venue)
         # PID-scoped staging and promote-on-close live in RowWriter, for the same
         # reason the download side stages: two runs must not share one temp path,
         # and readers must never see a partial file. A staging name that still
@@ -788,9 +793,11 @@ def run(opts: runner.Opts) -> None:
                 # Numbered after the script filter so the sequence has no gaps.
                 # `total` carries the counter across chunks, keeping it gapless
                 # and unique for the whole venue rather than per batch.
-                if prefix is not None:
-                    for n, r in enumerate(batch, total + 1):
-                        r["counterToken"] = counter_token.assign(prefix, n)
+                # counterToken is positional: row order within this venue-day,
+                # nothing more. It is NOT joinable across dates or venues -- v2
+                # is the column for that.
+                for n, r in enumerate(batch, total + 1):
+                    r["counterToken"] = str(n)
                 if tokens is not None:
                     for r in batch:
                         r["counterTokenV2"] = tokens.token(r.get("script", ""))
@@ -808,7 +815,13 @@ def run(opts: runner.Opts) -> None:
             # Only after the file is promoted: a manifest naming tokens that no
             # output actually carries would be read as tomorrow's truth.
             if tokens is not None:
-                counter_token.write_venue_manifest(opts.date_dir, mic, tokens)
+                # Sequence BEFORE the manifest, always. If a crash lands between
+                # them the sequence is merely ahead -- some numbers leak, which
+                # costs nothing out of 2.1 billion. The other order would let a
+                # re-run hand a live number to a different instrument.
+                counter_token.write_sequence(opts.date_dir, sequence)
+                counter_token.write_venue_manifest(
+                    opts.date_dir, mic, tokens, started_at=started_at)
             print(f"      Wrote {total} rows to {output_path.name}")
         else:
             print(f"      No rows for {venue}")

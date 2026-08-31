@@ -31,20 +31,6 @@ from ..normalize import counter_token
 from .report import ALL, V2, Check, report
 
 
-def decode(prefix: int, token: str) -> Optional[int]:
-    """The 1-based row `assign(prefix, n)` would have numbered `token`.
-
-    The inverse of assign(): strip the two prefix digits, and the width of what
-    is left says which block it came from. None when the token is not on this
-    prefix at all, which is itself the finding.
-    """
-    head = str(prefix)
-    if not token.isdigit() or not token.startswith(head) or len(token) <= len(head):
-        return None
-    rest = token[len(head):]
-    return sum(10 ** w for w in range(1, len(rest))) + int(rest) + 1
-
-
 def _venue_files(date_dir: str) -> Dict[str, List[Path]]:
     """MIC -> the normalized parquet(s) written for it that day."""
     found: Dict[str, List[Path]] = {}
@@ -79,7 +65,6 @@ def _allocation(date_dir: str, mic: str):
     return {
         "assigned": {str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
         "free": sorted(int(x) for x in (entry.get("free") or [])),
-        "high_water": int(entry.get("high_water", 0)),
     }
 
 
@@ -89,13 +74,13 @@ def check_pair_recycling(previous: str, current: str, mic: str) -> List[Check]:
     The other pair checks read the tokens in the files. These read the
     ALLOCATION that produced them, which is where reuse either happens or
     silently does not -- and no token-level check can tell the two apart. A
-    venue whose high_water grows by exactly its arrival count every day looks
+    venue that draws exactly its arrival count from the sequence every day looks
     identical to one that recycled nothing because it had nothing to recycle;
     only the pool arithmetic distinguishes them.
 
-    Measured on the real week: XCBO 24->25 released 11,058 offsets and gave
-    7,083 of them to arrivals without high_water moving at all, while XCME had
-    zero departures all week and so never exercised the path.
+    Measured on the real week: XCBO 24->25 released 11,058 tokens and gave
+    7,083 of them to arrivals without drawing from the sequence at all, while
+    XCME had zero departures all week and so never exercised the path.
     """
     before, after = _allocation(previous, mic), _allocation(current, mic)
     span = f"{previous} -> {current}"
@@ -110,10 +95,10 @@ def check_pair_recycling(previous: str, current: str, mic: str) -> List[Check]:
 
     released = sorted({before["assigned"][s] for s in departed})
     available = sorted(set(before["free"]) | set(released))
-    taken = sorted(o for o in (after["assigned"][s] for s in arrived)
-                   if o <= before["high_water"])
-    growth = after["high_water"] - before["high_water"]
-    extended = [s for s in arrived if after["assigned"][s] > before["high_water"]]
+    available_set = set(available)
+    taken = sorted(after["assigned"][s] for s in arrived
+                   if after["assigned"][s] in available_set)
+    extended = [s for s in arrived if after["assigned"][s] not in available_set]
 
     return [
         # Rule 2: a departed script's offset goes back in the pool.
@@ -122,15 +107,14 @@ def check_pair_recycling(previous: str, current: str, mic: str) -> List[Check]:
               f"{len(departed):,} script(s) departed, {len(released):,} offset(s) "
               f"released; pool in {len(before['free']):,} -> {len(available):,} available",
               tag=V2),
-        # Rule 3, and the one that actually matters: the pool is drained BEFORE
-        # high_water is allowed to grow. Growing early would leak numbers.
+        # Rule 3, and the one that actually matters: the venue's pool is drained
+        # BEFORE a fresh number is drawn from the shared sequence. Drawing early
+        # leaks numbers out of a space every venue now shares.
         Check(span, mic, "pool drained first",
-              len(taken) == min(len(arrived), len(available))
-              and growth == len(extended)
-              and set(taken).issubset(available),
-              f"{len(arrived):,} arrival(s): {len(taken):,} took a released offset "
-              f"(available {len(available):,}), {len(extended):,} needed a new one, "
-              f"high_water +{growth:,}",
+              len(taken) == min(len(arrived), len(available)),
+              f"{len(arrived):,} arrival(s): {len(taken):,} reused a released "
+              f"token (available {len(available):,}), {len(extended):,} drew a "
+              f"new one from the shared sequence",
               tag=V2),
         # Leftovers have to survive the day or the numbers are lost for good.
         Check(span, mic, "pool carried",
@@ -177,7 +161,6 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
         cfg = exchanges.get(mic)
         if cfg is None or not cfg.venue_id:
             continue                       # opted out of numbering; nothing to check
-        prefix = cfg.counter_prefix_v2
 
         table = pq.read_table(files[mic], columns=["script", "counterToken", "counterTokenV2"])
         rows = table.num_rows
@@ -205,12 +188,6 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
             f"(int32 {counter_token.INT32_MAX:,})",
         ))
 
-        off_prefix = rows - (pc.sum(pc.starts_with(v2, str(prefix))).as_py() or 0)
-        checks.append(Check(
-            date_dir, mic, "prefix", off_prefix == 0,
-            f"prefix {prefix} (venue_id {cfg.venue_id} + 1), {off_prefix:,} off it",
-        ))
-
         # One-to-one both ways. A script with two tokens breaks any join on the
         # token; a token naming two scripts breaks the pg key (token, trade_date)
         # the plugin pushes to.
@@ -226,24 +203,17 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
         ))
         seen_tokens[mic] = set(pairs.column("counterTokenV2").to_pylist())
 
-        # v1 and v2 are separate columns of one row and must stay separable as
-        # integers -- that is the whole reason a venue owns venue_id AND
-        # venue_id+1 rather than sharing one prefix.
-        v1 = _column(table, "counterToken")
-        overlap = 0
-        if v1 is not None:
-            distinct_v1 = pc.unique(v1)
-            overlap = pc.sum(pc.is_in(pairs.column("counterTokenV2"),
-                                      value_set=distinct_v1)).as_py() or 0
-        checks.append(Check(
-            date_dir, mic, "v1 disjoint", overlap == 0,
-            f"{overlap:,} counterTokenV2 value(s) also appear as a counterToken",
-        ))
+        # There is deliberately no "v1 disjoint" check any more. counterToken is
+        # positional 1..N within a venue-day and counterTokenV2 comes from the
+        # shared sequence, so the two overlap by construction. They are told
+        # apart by column, not by value -- which is why only v2 is ever joined
+        # on, and only v2 is what the plugin pushes.
 
-        checks.extend(_check_manifest(date_dir, mic, cfg, prefix, pairs, entries.get(mic)))
+        checks.extend(_check_manifest(date_dir, mic, cfg, pairs, entries.get(mic)))
 
-    # Two venues sharing a token defeats the (token, trade_date) key just as
-    # surely as a within-venue collision does.
+    # With one shared sequence this is no longer protected by a prefix in the
+    # token -- it is protected by every venue drawing from the same counter. So
+    # it is the check that actually proves the scheme, not a formality.
     if len(seen_tokens) > 1:
         total = sum(len(t) for t in seen_tokens.values())
         union = len(set().union(*seen_tokens.values()))
@@ -252,12 +222,25 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
             f"{total - union:,} token(s) shared between venues "
             f"({', '.join(sorted(seen_tokens))})",
         ))
+
+    issued = counter_token.load_sequence(date_dir)
+    if issued is not None:
+        highest = max((max((int(t) for t in tokens), default=0)
+                       for tokens in seen_tokens.values()), default=0)
+        checks.append(Check(
+            date_dir, "*", "sequence covers", highest <= issued,
+            f"sequence issued up to {issued:,}; highest token in any file "
+            f"{highest:,}"
+            + ("" if highest <= issued else
+               " -- a file carries a token the sequence never issued, so a "
+               "later day could hand that number to another instrument"),
+        ))
     for check in checks:
         check.tag = V2
     return checks
 
 
-def _check_manifest(date_dir, mic, cfg, prefix, pairs, entry) -> List[Check]:
+def _check_manifest(date_dir, mic, cfg, pairs, entry) -> List[Check]:
     """The parquet against the manifest written beside it.
 
     The manifest is what tomorrow reads. If it disagrees with today's file,
@@ -272,26 +255,24 @@ def _check_manifest(date_dir, mic, cfg, prefix, pairs, entry) -> List[Check]:
 
     assigned = {str(k): int(v) for k, v in (entry.get("assigned") or {}).items()}
     free = [int(x) for x in (entry.get("free") or [])]
-    high_water = int(entry.get("high_water", 0))
     checks = []
 
     problems = []
     if int(entry.get("venue_id", 0)) != cfg.venue_id:
         problems.append(f"venue_id {entry.get('venue_id')} != config {cfg.venue_id}")
-    if int(entry.get("prefix", 0)) != prefix:
-        problems.append(f"prefix {entry.get('prefix')} != venue_id+1 {prefix}")
     if int(entry.get("count", -1)) != len(assigned):
         problems.append(f"count {entry.get('count')} != {len(assigned)} assigned")
-    if assigned and high_water < max(assigned.values()):
-        problems.append(f"high_water {high_water} below the highest offset "
-                        f"{max(assigned.values())}")
+    over = [t for t in assigned.values() if t > counter_token.INT32_MAX]
+    if over:
+        problems.append(f"{len(over):,} token(s) past int32")
     reissued = set(free) & set(assigned.values())
     if reissued:
         problems.append(f"{len(reissued):,} offset(s) in both free and assigned -- "
                         "the pool would hand out a live number")
     checks.append(Check(date_dir, mic, "manifest internal", not problems,
                         "; ".join(problems) or
-                        f"high_water {high_water:,}, {len(assigned):,} assigned, "
+                        f"highest {max(assigned.values(), default=0):,}, "
+                        f"{len(assigned):,} assigned, "
                         f"{len(free):,} free"))
 
     # Every token in the file re-derived from the manifest offset. This is the
@@ -302,8 +283,16 @@ def _check_manifest(date_dir, mic, cfg, prefix, pairs, entry) -> List[Check]:
         offset = assigned.get(script)
         if offset is None:
             missing += 1
-        elif counter_token.assign(prefix, offset) != token:
-            wrong += 1
+        else:
+            try:
+                rendered = counter_token.assign(offset)
+            except ValueError:
+                # An unissuable number in the manifest is exactly what
+                # "does not re-derive" means; assign() refusing it is the
+                # finding, not a reason to stop checking.
+                rendered = None
+            if rendered != token:
+                wrong += 1
     orphans = len(assigned) - (pairs.num_rows - missing)
     checks.append(Check(
         date_dir, mic, "manifest agrees", missing == wrong == 0 and orphans == 0,
