@@ -822,7 +822,7 @@ def run(opts: runner.Opts) -> None:
             # Only after the file is promoted: a manifest naming tokens that no
             # output actually carries would be read as tomorrow's truth.
             if tokens is not None:
-                counter_token.merge_into_manifest(opts.date_dir, mic, tokens)
+                counter_token.write_venue_manifest(opts.date_dir, mic, tokens)
             print(f"      Wrote {total} rows to {output_path.name}")
         else:
             print(f"      No rows for {venue}")

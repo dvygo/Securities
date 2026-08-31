@@ -216,7 +216,7 @@ def run(opts: runner.Opts) -> None:
             counter_token.check_capacity(mic, v2_prefix, tokens.high_water)
             for row in all_rows:
                 row["counterTokenV2"] = tokens.token(row.get("script", ""))
-            counter_token.merge_into_manifest(opts.date_dir, mic, tokens)
+            counter_token.write_venue_manifest(opts.date_dir, mic, tokens)
 
             # counterTokenV3: registry lookup, independent of the carry-forward
             # above and of which days ran before this one. The Fyers feed has no

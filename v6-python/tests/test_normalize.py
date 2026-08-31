@@ -1,5 +1,6 @@
 """Unit tests for normalization modules."""
 import configparser
+import json
 import contextlib
 import os
 import pathlib
@@ -1100,7 +1101,7 @@ class TestCounterTokenV2Manifest:
         with self._tree(tmp_path):
             tokens = counter_token.carry_forward(None, ["A", "B", "C"], 10, 11)
             tokens.free = [7, 9]
-            counter_token.write_manifest("20260824", {"XCBO": tokens})
+            counter_token.write_venue_manifest("20260824", "XCBO", tokens)
             back, stamp = counter_token.previous_tokens("20260825", "XCBO", 10)
             assert stamp == "20260824"
             assert back.assigned == tokens.assigned
@@ -1108,65 +1109,69 @@ class TestCounterTokenV2Manifest:
             assert back.high_water == tokens.high_water
             assert back.prefix == 11
 
-    def test_merging_one_venue_leaves_the_others_alone(self, tmp_path):
-        """Databento and Fyers normalize the same day as separate steps."""
+    def test_each_venue_owns_its_own_file(self, tmp_path):
+        """Databento and Fyers normalize the same day as separate steps.
+
+        With one shared file each step rewrote every venue's allocation; now
+        neither can touch the other's, so they cannot clobber each other.
+        """
         with self._tree(tmp_path):
-            xcbo = counter_token.carry_forward(None, ["A"], 10, 11)
-            xnse = counter_token.carry_forward(None, ["N"], 16, 17)
-            counter_token.merge_into_manifest("20260824", "XCBO", xcbo)
-            counter_token.merge_into_manifest("20260824", "XNSE", xnse)
-            venues = counter_token.load_manifest("20260824")["venues"]
-            assert set(venues) == {"XCBO", "XNSE"}
-            assert venues["XNSE"]["prefix"] == 17
+            counter_token.write_venue_manifest(
+                "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+            counter_token.write_venue_manifest(
+                "20260824", "XNSE", counter_token.carry_forward(None, ["N"], 16, 17))
+            assert counter_token.venues_with_manifest("20260824") == {"XCBO", "XNSE"}
+            assert counter_token.venue_entry("20260824", "XNSE")["prefix"] == 17
+            assert set(counter_token.venue_entry("20260824", "XCBO")["assigned"]) == {"A"}
 
     def test_a_missing_manifest_is_absent_not_an_error(self, tmp_path):
         with self._tree(tmp_path):
-            assert counter_token.load_manifest("20260824") == {}
+            assert counter_token.venue_entry("20260824", "XCBO") == {}
             assert counter_token.previous_tokens("20260825", "XCBO", 10) == (None, "")
 
     def test_a_corrupt_manifest_is_treated_as_absent(self, tmp_path):
         """A half-written file read as truth would re-issue live tokens."""
         with self._tree(tmp_path):
-            path = paths.day_dir("20260824") / "manifest.json"
+            path = counter_token.manifests_dir("20260824") / "XCBO.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('{"version":2,"venues":{"XCBO":{"assig')
-            assert counter_token.load_manifest("20260824") == {}
+            path.write_text('{"version":3,"allocation":{"assig')
+            assert counter_token.venue_entry("20260824", "XCBO") == {}
 
     def test_the_lookback_reaches_across_a_weekend(self, tmp_path):
         with self._tree(tmp_path):
-            counter_token.write_manifest(
-                "20260821", {"XCBO": counter_token.carry_forward(None, ["A"], 10, 11)})
+            counter_token.write_venue_manifest(
+                "20260821", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
             _, stamp = counter_token.previous_tokens("20260824", "XCBO", 10)
             assert stamp == "20260821"
 
     def test_the_lookback_stops_rather_than_chaining_a_stale_month(self, tmp_path):
         """Past the window the venue is renumbered, and that shows in the log."""
         with self._tree(tmp_path):
-            counter_token.write_manifest(
-                "20260101", {"XCBO": counter_token.carry_forward(None, ["A"], 10, 11)})
+            counter_token.write_venue_manifest(
+                "20260101", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
             assert counter_token.previous_tokens("20260824", "XCBO", 10) == (None, "")
 
     def test_it_takes_the_nearest_day_not_the_first_it_finds(self, tmp_path):
         with self._tree(tmp_path):
             for day, scripts in (("20260820", ["A"]), ("20260821", ["A", "B"])):
-                counter_token.write_manifest(
-                    day, {"XCBO": counter_token.carry_forward(None, scripts, 10, 11)})
+                counter_token.write_venue_manifest(
+                    day, "XCBO", counter_token.carry_forward(None, scripts, 10, 11))
             back, stamp = counter_token.previous_tokens("20260824", "XCBO", 10)
             assert stamp == "20260821" and len(back.assigned) == 2
 
     def test_a_changed_venue_id_refuses_to_carry_forward(self, tmp_path):
         """venue_id moves the venue onto different blocks, so continuity is gone."""
         with self._tree(tmp_path):
-            counter_token.write_manifest(
-                "20260824", {"XCBO": counter_token.carry_forward(None, ["A"], 10, 11)})
+            counter_token.write_venue_manifest(
+                "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
             with pytest.raises(ValueError, match="venue_id is 30 in config.ini"):
                 counter_token.previous_tokens("20260825", "XCBO", 30)
 
     def test_the_manifest_is_never_left_half_written(self, tmp_path):
         with self._tree(tmp_path):
-            counter_token.write_manifest(
-                "20260824", {"XCBO": counter_token.carry_forward(None, ["A"], 10, 11)})
-            leftovers = list(paths.day_dir("20260824").glob("manifest.json.tmp*"))
+            counter_token.write_venue_manifest(
+                "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+            leftovers = list(counter_token.manifests_dir("20260824").glob("*.tmp*"))
             assert leftovers == []
 
 
@@ -1201,7 +1206,7 @@ class TestCounterTokenV2Validator:
 
     @staticmethod
     def _manifest(day, mic, assigned, venue_id, prefix, high_water=None, free=()):
-        counter_token.merge_into_manifest(day, mic, counter_token.VenueTokens(
+        counter_token.write_venue_manifest(day, mic, counter_token.VenueTokens(
             venue_id=venue_id, prefix=prefix,
             high_water=high_water if high_water is not None else max(assigned.values(), default=0),
             assigned=dict(assigned), free=list(free)))
@@ -1718,7 +1723,7 @@ class TestV2Recycling:
     def _day(day, scripts, previous=None):
         """Run the real carry_forward and write the manifest it produces."""
         tokens = counter_token.carry_forward(previous, scripts, 10, 11)
-        counter_token.merge_into_manifest(day, "XCBO", tokens)
+        counter_token.write_venue_manifest(day, "XCBO", tokens)
         return tokens
 
     @staticmethod
@@ -1768,7 +1773,7 @@ class TestV2Recycling:
     def test_growing_high_water_while_the_pool_had_room_fails(self, tree):
         """The failure these checks exist to catch: numbers leaked, not reused."""
         day1 = self._day("20260824", ["A", "B", "C"])
-        counter_token.merge_into_manifest("20260825", "XCBO", counter_token.VenueTokens(
+        counter_token.write_venue_manifest("20260825", "XCBO", counter_token.VenueTokens(
             venue_id=10, prefix=11, high_water=4,
             assigned={"A": 1, "C": 3, "D": 4},        # D took a NEW offset...
             free=[2]))                                # ...while 2 sat free
@@ -1777,7 +1782,7 @@ class TestV2Recycling:
     def test_a_lost_leftover_fails(self, tree):
         """Dropping the free pool silently shrinks the venue's usable space."""
         day1 = self._day("20260824", ["A", "B", "C", "D"])
-        counter_token.merge_into_manifest("20260825", "XCBO", counter_token.VenueTokens(
+        counter_token.write_venue_manifest("20260825", "XCBO", counter_token.VenueTokens(
             venue_id=10, prefix=11, high_water=4,
             assigned={"A": 1}, free=[]))              # 2, 3, 4 released and lost
         assert not self._named(self._checks(), "pool carried").ok
@@ -1791,6 +1796,93 @@ class TestV2Recycling:
         day1 = self._day("20260824", ["A", "B"])
         self._day("20260825", ["A", "C"], day1)
         assert {c.tag for c in self._checks()} == {"v2"}
+
+
+
+class TestPerVenueManifest:
+    """One manifest per venue. No combined manifest.json, and no fallback to it.
+
+    The fallback was written and then removed on purpose: it makes a day whose
+    write failed indistinguishable from a day that legitimately had no
+    allocation, and those two want opposite responses.
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _combined(day, venues):
+        """A pre-cutover manifest.json, written by hand. Nothing should read it."""
+        path = paths.day_dir(day) / "manifest.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "version": 2, "date": day,
+            "venues": {mic: {"venue_id": vid, "prefix": vid + 1,
+                             "high_water": len(scripts), "count": len(scripts),
+                             "free": [], "assigned": {s: n for n, s in enumerate(scripts, 1)}}
+                       for mic, (vid, scripts) in venues.items()},
+        }))
+        return path
+
+    def test_a_venue_writes_to_its_own_file(self, tree):
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+        assert (counter_token.manifests_dir("20260824") / "XCBO.json").exists()
+        assert not (paths.day_dir("20260824") / "manifest.json").exists()
+
+    def test_the_combined_manifest_is_not_read(self, tree):
+        """The point of "no legacy fallback": an old layout is simply absent."""
+        self._combined("20260824", {"XCBO": (10, ["A", "B"])})
+        assert counter_token.venue_entry("20260824", "XCBO") == {}
+        assert counter_token.venues_with_manifest("20260824") == set()
+
+    def test_an_old_layout_day_renumbers_rather_than_half_chaining(self, tree):
+        self._combined("20260824", {"XCBO": (10, ["A", "B"])})
+        assert counter_token.previous_tokens("20260825", "XCBO", 10) == (None, "")
+
+    def test_each_venue_owns_its_own_file(self, tree):
+        """Databento and Fyers normalize the same day as separate steps.
+
+        With one shared file each step rewrote every venue's allocation; now
+        neither can touch the other's, so they cannot clobber each other.
+        """
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+        counter_token.write_venue_manifest(
+            "20260824", "XNSE", counter_token.carry_forward(None, ["N"], 16, 17))
+        assert counter_token.venues_with_manifest("20260824") == {"XCBO", "XNSE"}
+        assert counter_token.venue_entry("20260824", "XNSE")["prefix"] == 17
+        assert set(counter_token.venue_entry("20260824", "XCBO")["assigned"]) == {"A"}
+
+    def test_one_venues_unreadable_file_does_not_hide_another(self, tree):
+        """The combined file made every venue share one blast radius."""
+        counter_token.write_venue_manifest(
+            "20260824", "XNSE", counter_token.carry_forward(None, ["N"], 16, 17))
+        (counter_token.manifests_dir("20260824") / "XCBO.json").write_text('{"version":3,"alloc')
+        assert counter_token.venue_entry("20260824", "XCBO") == {}
+        assert counter_token.venue_entry("20260824", "XNSE")["assigned"] == {"N": 1}
+
+    def test_carry_forward_still_works_across_days(self, tree):
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A", "B"], 10, 11))
+        previous, stamp = counter_token.previous_tokens("20260825", "XCBO", 10)
+        assert stamp == "20260824" and previous.assigned == {"A": 1, "B": 2}
+
+    def test_a_venue_id_change_is_still_refused(self, tree):
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+        with pytest.raises(ValueError, match="venue_id is 30 in config.ini"):
+            counter_token.previous_tokens("20260825", "XCBO", 30)
+
+    def test_the_written_file_is_the_new_version(self, tree):
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, 11))
+        doc = json.loads((counter_token.manifests_dir("20260824") / "XCBO.json").read_text())
+        assert doc["version"] == counter_token.MANIFEST_VERSION == 3
+        assert doc["venue"] == "XCBO" and doc["date"] == "20260824"
+
 
 
 if __name__ == "__main__":

@@ -72,8 +72,8 @@ def _allocation(date_dir: str, mic: str):
     checks need two days in hand at once, so everything but the venue asked for
     is dropped as soon as it is extracted.
     """
-    entry = (counter_token.load_manifest(date_dir).get("venues") or {}).get(mic)
-    if entry is None:
+    entry = counter_token.venue_entry(date_dir, mic)
+    if not entry:
         return None
     return {
         "assigned": {str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
@@ -231,8 +231,9 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
     wanted = {v.upper() for v in venues}
     files = _venue_files(date_dir)
     exchanges = _configured()
-    manifest = counter_token.load_manifest(date_dir)
-    entries = (manifest.get("venues") or {})
+    entries = {mic: counter_token.venue_entry(date_dir, mic)
+               for mic in counter_token.venues_with_manifest(date_dir)}
+    entries = {mic: entry for mic, entry in entries.items() if entry}
 
     checks: List[Check] = []
     v3_checks: List[Check] = []

@@ -142,7 +142,7 @@ def validate(exchanges) -> dict:
 # allocation.
 MANIFEST_LOOKBACK_DAYS = 30
 
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 
 
 @dataclass
@@ -195,13 +195,16 @@ def carry_forward(
     return VenueTokens(venue_id, prefix, high_water, assigned, pool[taken:])
 
 
-def _manifest_path(as_of: str) -> Path:
-    return paths.day_dir(as_of) / "manifest.json"
+def manifests_dir(as_of: str) -> Path:
+    """data/YYYYMMDD/v6/manifests/ -- one file per venue."""
+    return paths.day_dir(as_of) / "manifests"
 
 
-def load_manifest(as_of: str) -> dict:
-    """One day's manifest, or {} if it has none / is unreadable."""
-    path = _manifest_path(as_of)
+def _venue_manifest_path(as_of: str, mic: str) -> Path:
+    return manifests_dir(as_of) / f"{mic.upper()}.json"
+
+
+def _read_json(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
@@ -210,6 +213,76 @@ def load_manifest(as_of: str) -> dict:
     except (json.JSONDecodeError, OSError) as exc:
         print(f"      manifest {path} unreadable ({exc}) -- treating as absent")
         return {}
+
+
+def venue_entry(as_of: str, mic: str) -> dict:
+    """One venue's allocation for a day: {venue_id, prefix, high_water, count,
+    free, assigned}, or {} when the day has none.
+
+    Per-venue file and nothing else. There is deliberately NO fallback to the
+    combined manifest.json this replaced: a silent fallback makes a day whose
+    write failed indistinguishable from a day that legitimately had no
+    allocation, and those two want opposite responses. A day in the old layout
+    now numbers from scratch, visibly in the log, rather than half-chaining to
+    a layout nothing maintains.
+    """
+    doc = _read_json(_venue_manifest_path(as_of, mic.upper()))
+    return doc.get("allocation") or {}
+
+
+def venues_with_manifest(as_of: str) -> set:
+    """Every venue that has an allocation for a day."""
+    directory = manifests_dir(as_of)
+    if not directory.is_dir():
+        return set()
+    return {p.stem.upper() for p in directory.glob("*.json")}
+
+
+def _tokens_from(entry: dict) -> VenueTokens:
+    return VenueTokens(
+        venue_id=int(entry.get("venue_id", 0)),
+        prefix=int(entry.get("prefix", 0)),
+        high_water=int(entry.get("high_water", 0)),
+        assigned={str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
+        free=[int(x) for x in (entry.get("free") or [])],
+    )
+
+
+def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens) -> Path:
+    """Write one venue's allocation, atomically, to its own file.
+
+    Replaces merge_into_manifest's read-modify-write of a file holding every
+    venue. That pattern had two costs beyond the obvious one: the Databento and
+    Fyers steps normalize the same day and each rewrote the whole file, so the
+    later one could clobber the earlier if they ever overlapped; and reading one
+    venue meant parsing all of them, which on an OPRA week is 85MB to answer a
+    question about a venue with 20,000 scripts.
+
+    Staged under a PID-scoped name and replaced on success, as before: a
+    half-written manifest read as tomorrow's carry-forward would silently
+    re-issue live tokens.
+    """
+    mic = mic.upper()
+    path = _venue_manifest_path(as_of, mic)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": MANIFEST_VERSION,
+        "date": as_of,
+        "venue": mic,
+        "allocation": {
+            "venue_id": tokens.venue_id,
+            "prefix": tokens.prefix,
+            "high_water": tokens.high_water,
+            "count": len(tokens.assigned),
+            "free": tokens.free,
+            "assigned": tokens.assigned,
+        },
+    }
+    staging = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    with open(staging, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+    os.replace(staging, path)
+    return path
 
 
 def previous_tokens(as_of: str, mic: str, venue_id: int) -> tuple[Optional[VenueTokens], str]:
@@ -226,8 +299,7 @@ def previous_tokens(as_of: str, mic: str, venue_id: int) -> tuple[Optional[Venue
     day = _dt.datetime.strptime(as_of, "%Y%m%d").date()
     for back in range(1, MANIFEST_LOOKBACK_DAYS + 1):
         stamp = (day - _dt.timedelta(days=back)).strftime("%Y%m%d")
-        venues = (load_manifest(stamp) or {}).get("venues") or {}
-        entry = venues.get(mic)
+        entry = venue_entry(stamp, mic)
         if not entry:
             continue
         stored_id = int(entry.get("venue_id", 0))
@@ -239,68 +311,8 @@ def previous_tokens(as_of: str, mic: str, venue_id: int) -> tuple[Optional[Venue
                 f"carry the old allocation forward. Restore venue_id={stored_id}, "
                 f"or delete the manifests to renumber from scratch."
             )
-        return (
-            VenueTokens(
-                venue_id=stored_id,
-                prefix=int(entry.get("prefix", 0)),
-                high_water=int(entry.get("high_water", 0)),
-                assigned={str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
-                free=[int(x) for x in (entry.get("free") or [])],
-            ),
-            stamp,
-        )
+        return _tokens_from(entry), stamp
     return None, ""
-
-
-def write_manifest(as_of: str, venues: Dict[str, VenueTokens]) -> Path:
-    """Write the day's manifest atomically.
-
-    Staged under a PID-scoped name and replaced on success, like every other
-    writer here: a half-written manifest read as tomorrow's carry-forward would
-    silently re-issue live tokens.
-    """
-    path = _manifest_path(as_of)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "version": MANIFEST_VERSION,
-        "date": as_of,
-        "venues": {
-            mic: {
-                "venue_id": tokens.venue_id,
-                "prefix": tokens.prefix,
-                "high_water": tokens.high_water,
-                "count": len(tokens.assigned),
-                "free": tokens.free,
-                "assigned": tokens.assigned,
-            }
-            for mic, tokens in sorted(venues.items())
-        },
-    }
-    staging = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    with open(staging, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
-    os.replace(staging, path)
-    return path
-
-
-def merge_into_manifest(as_of: str, mic: str, tokens: VenueTokens) -> Path:
-    """Add/replace one venue in the day's manifest, keeping the others.
-
-    The Databento and Fyers normalizers run as separate steps over the same day,
-    so each merges its own venues rather than rewriting the whole file.
-    """
-    existing = load_manifest(as_of)
-    venues: Dict[str, VenueTokens] = {}
-    for name, entry in (existing.get("venues") or {}).items():
-        venues[name] = VenueTokens(
-            venue_id=int(entry.get("venue_id", 0)),
-            prefix=int(entry.get("prefix", 0)),
-            high_water=int(entry.get("high_water", 0)),
-            assigned={str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
-            free=[int(x) for x in (entry.get("free") or [])],
-        )
-    venues[mic] = tokens
-    return write_manifest(as_of, venues)
 
 
 @lru_cache(maxsize=1)

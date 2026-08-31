@@ -1,4 +1,4 @@
-# check-lineage [v2]  2026-08-31 05:46:42Z
+# check-lineage [v2]  2026-08-31 06:14:46Z
 # 20 check(s): 20 pass, 0 fail, 0 warn
 [v2] PASS 20260824              XCBO  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
 [v2] PASS 20260824              XCME  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script

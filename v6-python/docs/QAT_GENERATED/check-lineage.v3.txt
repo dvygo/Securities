@@ -1,4 +1,4 @@
-# check-lineage [v3]  2026-08-31 05:46:42Z
+# check-lineage [v3]  2026-08-31 06:14:46Z
 # 30 check(s): 30 pass, 0 fail, 0 warn
 [v3] PASS 20260824              XCBO  v3 issued          0 row(s) with no counterTokenV3
 [v3] PASS 20260824              XCME  v3 issued          0 row(s) with no counterTokenV3
