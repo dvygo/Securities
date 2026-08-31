@@ -38,7 +38,7 @@ from typing import Dict, List, Sequence
 from .. import config, paths
 from ..normalize import counter_token, token_registry
 from ..plugin import build as plugin_build
-from .report import Check, report
+from .report import ALL, V2, V3, Check, report
 
 
 def _read(path: Path, columns: Sequence[str]):
@@ -205,7 +205,7 @@ def check_normalized(date_dir: str, mic: str, path: Path, scan: dict) -> List[Ch
                                  pc.equal(table.column("counterTokenV3"), ""))).as_py() or 0
         checks.append(Check(
             date_dir, mic, "v3 issued", blank_v3 == 0,
-            f"{blank_v3:,} row(s) with no counterTokenV3",
+            f"{blank_v3:,} row(s) with no counterTokenV3", tag=V3,
         ))
     return checks
 
@@ -250,7 +250,7 @@ def check_plugin(date_dir: str, mic: str, normalized: Path, plugin: Path) -> Lis
     checks.append(Check(
         date_dir, mic, "token carried", broken == 0,
         f"{broken:,} plugin row(s) whose token is not the counterTokenV2 of the "
-        f"normalized row with the same script",
+        f"normalized row with the same script", tag=V2,
     ))
 
     empty = {c: n for c in out.schema.names
@@ -280,7 +280,7 @@ def check_registry(date_dir: str, venues: Dict[str, Path]) -> List[Check]:
         checks.append(Check(
             date_dir, mic, "v3 matches registry", not wrong,
             f"{len(pairs):,} script/token pair(s) in the file, {len(wrong):,} that "
-            f"the registry does not agree with",
+            f"the registry does not agree with", tag=V3,
         ))
     return checks
 
@@ -346,6 +346,7 @@ def _check_plugin_key(date_dir: str, plugin_dir: Path, wanted) -> List[Check]:
         date_dir, "*", "pg key unique", len(tokens) == rows,
         f"{rows:,} row(s) across {len(files)} venue file(s), {len(tokens):,} distinct "
         f"token(s) -- (token, trade_date) is the primary key the push upserts on",
+        tag=V2,
     )]
 
 
@@ -353,4 +354,4 @@ def run(dates: Sequence[str], venues: Sequence[str] = ()) -> int:
     checks: List[Check] = []
     for day in sorted(set(dates)):
         checks.extend(check_day(day, venues))
-    return report(checks)
+    return report(checks, suite="check-lineage")

@@ -71,6 +71,19 @@ def data_root() -> Path:
     return _configured_dir("PREMARKET_DATA_ROOT", "data_dir", repo_root().parent / "data")
 
 
+def qat_dir() -> Path:
+    """Where the check commands write their reports: docs/QAT_GENERATED/.
+
+    Under docs/ and not under data/, because these are the artefact you keep and
+    quote -- a data directory gets pruned, and a report that vanished with the
+    day it described cannot be cited. Honours PREMARKET_QAT_DIR so a test or a
+    CI job can redirect them.
+    """
+    if env := os.getenv("PREMARKET_QAT_DIR"):
+        return Path(env)
+    return repo_root() / "docs" / "QAT_GENERATED"
+
+
 def day_dir(as_of: str) -> Path:
     """Day directory: data/YYYYMMDD/v6/ -- nested under v6/ so this pipeline's
     output never collides with v5-python's data/YYYYMMDD/ tree even though

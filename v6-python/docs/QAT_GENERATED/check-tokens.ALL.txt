@@ -1,0 +1,217 @@
+# check-tokens [ALL]  2026-08-31 04:35:04Z
+# 215 check(s): 208 pass, 0 fail, 7 warn
+[v2] PASS 20260824              XCBO  populated          2,006,525 row(s), 0 blank
+[v2] PASS 20260824              XCBO  numeric int32      0 non-numeric, highest 110,895,414 (int32 2,147,483,647)
+[v2] PASS 20260824              XCBO  prefix             prefix 11 (venue_id 10 + 1), 0 off it
+[v2] PASS 20260824              XCBO  one-to-one         2,006,525 distinct pair(s), 2,006,525 script(s), 2,006,525 token(s)
+[v2] PASS 20260824              XCBO  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260824              XCBO  manifest internal  high_water 2,006,525, 2,006,525 assigned, 0 free
+[v2] PASS 20260824              XCBO  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260824              XCME  populated          944,287 row(s), 0 blank
+[v2] PASS 20260824              XCME  numeric int32      0 non-numeric, highest 13,833,176 (int32 2,147,483,647)
+[v2] PASS 20260824              XCME  prefix             prefix 13 (venue_id 12 + 1), 0 off it
+[v2] PASS 20260824              XCME  one-to-one         944,287 distinct pair(s), 944,287 script(s), 944,287 token(s)
+[v2] PASS 20260824              XCME  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260824              XCME  manifest internal  high_water 944,287, 944,287 assigned, 0 free
+[v2] PASS 20260824              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260824              XNAS  populated          13,196 row(s), 0 blank
+[v2] PASS 20260824              XNAS  numeric int32      0 non-numeric, highest 1,502,085 (int32 2,147,483,647)
+[v2] PASS 20260824              XNAS  prefix             prefix 15 (venue_id 14 + 1), 0 off it
+[v2] PASS 20260824              XNAS  one-to-one         13,196 distinct pair(s), 13,196 script(s), 13,196 token(s)
+[v2] PASS 20260824              XNAS  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260824              XNAS  manifest internal  high_water 13,196, 13,196 assigned, 0 free
+[v2] PASS 20260824              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260824              *     venues disjoint    0 token(s) shared between venues (XCBO, XCME, XNAS)
+[v3] PASS 20260824              XCBO  v3 populated       2,006,525 distinct pair(s), 0 blank
+[v3] PASS 20260824              XCBO  v3 int32           1,000,000,000..1,002,006,524 (base 1,000,000,000, int32 2,147,483,647), headroom 1,145,477,123
+[v3] PASS 20260824              XCBO  v3 one-to-one      2,006,525 script(s), 2,006,525 token(s)
+[v3] PASS 20260824              XCME  v3 populated       944,287 distinct pair(s), 0 blank
+[v3] PASS 20260824              XCME  v3 int32           1,002,066,770..1,003,011,056 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,472,591
+[v3] PASS 20260824              XCME  v3 one-to-one      944,287 script(s), 944,287 token(s)
+[v3] PASS 20260824              XNAS  v3 populated       13,196 distinct pair(s), 0 blank
+[v3] PASS 20260824              XNAS  v3 int32           1,003,011,057..1,003,024,252 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,459,395
+[v3] PASS 20260824              XNAS  v3 one-to-one      13,196 script(s), 13,196 token(s)
+[v2] PASS 20260825              XCBO  populated          2,002,550 row(s), 0 blank
+[v2] PASS 20260825              XCBO  numeric int32      0 non-numeric, highest 110,895,414 (int32 2,147,483,647)
+[v2] PASS 20260825              XCBO  prefix             prefix 11 (venue_id 10 + 1), 0 off it
+[v2] PASS 20260825              XCBO  one-to-one         2,002,550 distinct pair(s), 2,002,550 script(s), 2,002,550 token(s)
+[v2] PASS 20260825              XCBO  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260825              XCBO  manifest internal  high_water 2,006,525, 2,002,550 assigned, 3,975 free
+[v2] PASS 20260825              XCBO  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260825              XCME  populated          996,084 row(s), 0 blank
+[v2] PASS 20260825              XCME  numeric int32      0 non-numeric, highest 13,884,973 (int32 2,147,483,647)
+[v2] PASS 20260825              XCME  prefix             prefix 13 (venue_id 12 + 1), 0 off it
+[v2] PASS 20260825              XCME  one-to-one         996,084 distinct pair(s), 996,084 script(s), 996,084 token(s)
+[v2] PASS 20260825              XCME  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260825              XCME  manifest internal  high_water 996,084, 996,084 assigned, 0 free
+[v2] PASS 20260825              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260825              XNAS  populated          13,201 row(s), 0 blank
+[v2] PASS 20260825              XNAS  numeric int32      0 non-numeric, highest 1,502,090 (int32 2,147,483,647)
+[v2] PASS 20260825              XNAS  prefix             prefix 15 (venue_id 14 + 1), 0 off it
+[v2] PASS 20260825              XNAS  one-to-one         13,201 distinct pair(s), 13,201 script(s), 13,201 token(s)
+[v2] PASS 20260825              XNAS  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260825              XNAS  manifest internal  high_water 13,201, 13,201 assigned, 0 free
+[v2] PASS 20260825              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260825              *     venues disjoint    0 token(s) shared between venues (XCBO, XCME, XNAS)
+[v3] PASS 20260825              XCBO  v3 populated       2,002,550 distinct pair(s), 0 blank
+[v3] PASS 20260825              XCBO  v3 int32           1,000,000,000..1,002,013,607 (base 1,000,000,000, int32 2,147,483,647), headroom 1,145,470,040
+[v3] PASS 20260825              XCBO  v3 one-to-one      2,002,550 script(s), 2,002,550 token(s)
+[v3] PASS 20260825              XCME  v3 populated       996,084 distinct pair(s), 0 blank
+[v3] PASS 20260825              XCME  v3 int32           1,002,066,770..1,003,076,049 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,407,598
+[v3] PASS 20260825              XCME  v3 one-to-one      996,084 script(s), 996,084 token(s)
+[v3] PASS 20260825              XNAS  v3 populated       13,201 distinct pair(s), 0 blank
+[v3] PASS 20260825              XNAS  v3 int32           1,003,011,057..1,003,076,057 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,407,590
+[v3] PASS 20260825              XNAS  v3 one-to-one      13,201 script(s), 13,201 token(s)
+[v2] PASS 20260826              XCBO  populated          2,006,624 row(s), 0 blank
+[v2] PASS 20260826              XCBO  numeric int32      0 non-numeric, highest 110,895,513 (int32 2,147,483,647)
+[v2] PASS 20260826              XCBO  prefix             prefix 11 (venue_id 10 + 1), 0 off it
+[v2] PASS 20260826              XCBO  one-to-one         2,006,624 distinct pair(s), 2,006,624 script(s), 2,006,624 token(s)
+[v2] PASS 20260826              XCBO  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260826              XCBO  manifest internal  high_water 2,006,624, 2,006,624 assigned, 0 free
+[v2] PASS 20260826              XCBO  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260826              XCME  populated          998,696 row(s), 0 blank
+[v2] PASS 20260826              XCME  numeric int32      0 non-numeric, highest 13,887,585 (int32 2,147,483,647)
+[v2] PASS 20260826              XCME  prefix             prefix 13 (venue_id 12 + 1), 0 off it
+[v2] PASS 20260826              XCME  one-to-one         998,696 distinct pair(s), 998,696 script(s), 998,696 token(s)
+[v2] PASS 20260826              XCME  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260826              XCME  manifest internal  high_water 998,696, 998,696 assigned, 0 free
+[v2] PASS 20260826              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260826              XNAS  populated          13,201 row(s), 0 blank
+[v2] PASS 20260826              XNAS  numeric int32      0 non-numeric, highest 1,502,090 (int32 2,147,483,647)
+[v2] PASS 20260826              XNAS  prefix             prefix 15 (venue_id 14 + 1), 0 off it
+[v2] PASS 20260826              XNAS  one-to-one         13,201 distinct pair(s), 13,201 script(s), 13,201 token(s)
+[v2] PASS 20260826              XNAS  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260826              XNAS  manifest internal  high_water 13,201, 13,201 assigned, 0 free
+[v2] PASS 20260826              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260826              *     venues disjoint    0 token(s) shared between venues (XCBO, XCME, XNAS)
+[v3] PASS 20260826              XCBO  v3 populated       2,006,624 distinct pair(s), 0 blank
+[v3] PASS 20260826              XCBO  v3 int32           1,000,000,000..1,002,066,769 (base 1,000,000,000, int32 2,147,483,647), headroom 1,145,416,878
+[v3] PASS 20260826              XCBO  v3 one-to-one      2,006,624 script(s), 2,006,624 token(s)
+[v3] PASS 20260826              XCME  v3 populated       998,696 distinct pair(s), 0 blank
+[v3] PASS 20260826              XCME  v3 int32           1,002,066,770..1,003,078,669 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,404,978
+[v3] PASS 20260826              XCME  v3 one-to-one      998,696 script(s), 998,696 token(s)
+[v3] PASS 20260826              XNAS  v3 populated       13,201 distinct pair(s), 0 blank
+[v3] PASS 20260826              XNAS  v3 int32           1,003,011,057..1,003,076,057 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,407,590
+[v3] PASS 20260826              XNAS  v3 one-to-one      13,201 script(s), 13,201 token(s)
+[v2] PASS 20260827              XCBO  populated          2,041,412 row(s), 0 blank
+[v2] PASS 20260827              XCBO  numeric int32      0 non-numeric, highest 110,930,301 (int32 2,147,483,647)
+[v2] PASS 20260827              XCBO  prefix             prefix 11 (venue_id 10 + 1), 0 off it
+[v2] PASS 20260827              XCBO  one-to-one         2,041,412 distinct pair(s), 2,041,412 script(s), 2,041,412 token(s)
+[v2] PASS 20260827              XCBO  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260827              XCBO  manifest internal  high_water 2,041,412, 2,041,412 assigned, 0 free
+[v2] PASS 20260827              XCBO  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260827              XCME  populated          1,048,598 row(s), 0 blank
+[v2] PASS 20260827              XCME  numeric int32      0 non-numeric, highest 13,937,487 (int32 2,147,483,647)
+[v2] PASS 20260827              XCME  prefix             prefix 13 (venue_id 12 + 1), 0 off it
+[v2] PASS 20260827              XCME  one-to-one         1,048,598 distinct pair(s), 1,048,598 script(s), 1,048,598 token(s)
+[v2] PASS 20260827              XCME  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260827              XCME  manifest internal  high_water 1,048,598, 1,048,598 assigned, 0 free
+[v2] PASS 20260827              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260827              XNAS  populated          13,213 row(s), 0 blank
+[v2] PASS 20260827              XNAS  numeric int32      0 non-numeric, highest 1,502,102 (int32 2,147,483,647)
+[v2] PASS 20260827              XNAS  prefix             prefix 15 (venue_id 14 + 1), 0 off it
+[v2] PASS 20260827              XNAS  one-to-one         13,213 distinct pair(s), 13,213 script(s), 13,213 token(s)
+[v2] PASS 20260827              XNAS  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260827              XNAS  manifest internal  high_water 13,213, 13,213 assigned, 0 free
+[v2] PASS 20260827              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260827              *     venues disjoint    0 token(s) shared between venues (XCBO, XCME, XNAS)
+[v3] PASS 20260827              XCBO  v3 populated       2,041,412 distinct pair(s), 0 blank
+[v3] PASS 20260827              XCBO  v3 int32           1,000,000,000..1,002,066,751 (base 1,000,000,000, int32 2,147,483,647), headroom 1,145,416,896
+[v3] PASS 20260827              XCBO  v3 one-to-one      2,041,412 script(s), 2,041,412 token(s)
+[v3] PASS 20260827              XCME  v3 populated       1,048,598 distinct pair(s), 0 blank
+[v3] PASS 20260827              XCME  v3 int32           1,002,066,770..1,003,128,571 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,355,076
+[v3] PASS 20260827              XCME  v3 one-to-one      1,048,598 script(s), 1,048,598 token(s)
+[v3] PASS 20260827              XNAS  v3 populated       13,213 distinct pair(s), 0 blank
+[v3] PASS 20260827              XNAS  v3 int32           1,003,011,057..1,003,128,609 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,355,038
+[v3] PASS 20260827              XNAS  v3 one-to-one      13,213 script(s), 13,213 token(s)
+[v2] PASS 20260828              XCBO  populated          2,076,251 row(s), 0 blank
+[v2] PASS 20260828              XCBO  numeric int32      0 non-numeric, highest 110,965,140 (int32 2,147,483,647)
+[v2] PASS 20260828              XCBO  prefix             prefix 11 (venue_id 10 + 1), 0 off it
+[v2] PASS 20260828              XCBO  one-to-one         2,076,251 distinct pair(s), 2,076,251 script(s), 2,076,251 token(s)
+[v2] PASS 20260828              XCBO  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260828              XCBO  manifest internal  high_water 2,076,251, 2,076,251 assigned, 0 free
+[v2] PASS 20260828              XCBO  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260828              XCME  populated          1,142,375 row(s), 0 blank
+[v2] PASS 20260828              XCME  numeric int32      0 non-numeric, highest 130,031,264 (int32 2,147,483,647)
+[v2] PASS 20260828              XCME  prefix             prefix 13 (venue_id 12 + 1), 0 off it
+[v2] PASS 20260828              XCME  one-to-one         1,142,375 distinct pair(s), 1,142,375 script(s), 1,142,375 token(s)
+[v2] PASS 20260828              XCME  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260828              XCME  manifest internal  high_water 1,142,375, 1,142,375 assigned, 0 free
+[v2] PASS 20260828              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260828              XNAS  populated          13,204 row(s), 0 blank
+[v2] PASS 20260828              XNAS  numeric int32      0 non-numeric, highest 1,502,102 (int32 2,147,483,647)
+[v2] PASS 20260828              XNAS  prefix             prefix 15 (venue_id 14 + 1), 0 off it
+[v2] PASS 20260828              XNAS  one-to-one         13,204 distinct pair(s), 13,204 script(s), 13,204 token(s)
+[v2] PASS 20260828              XNAS  v1 disjoint        0 counterTokenV2 value(s) also appear as a counterToken
+[v2] PASS 20260828              XNAS  manifest internal  high_water 13,213, 13,204 assigned, 9 free
+[v2] PASS 20260828              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260828              *     venues disjoint    0 token(s) shared between venues (XCBO, XCME, XNAS)
+[v3] PASS 20260828              XCBO  v3 populated       2,076,251 distinct pair(s), 0 blank
+[v3] PASS 20260828              XCBO  v3 int32           1,000,000,000..1,003,261,583 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,222,064
+[v3] PASS 20260828              XCBO  v3 one-to-one      2,076,251 script(s), 2,076,251 token(s)
+[v3] PASS 20260828              XCME  v3 populated       1,142,375 distinct pair(s), 0 blank
+[v3] PASS 20260828              XCME  v3 int32           1,002,066,770..1,003,222,386 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,261,261
+[v3] PASS 20260828              XCME  v3 one-to-one      1,142,375 script(s), 1,142,375 token(s)
+[v3] PASS 20260828              XNAS  v3 populated       13,204 distinct pair(s), 0 blank
+[v3] PASS 20260828              XNAS  v3 int32           1,003,011,057..1,003,261,592 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,222,055
+[v3] PASS 20260828              XNAS  v3 one-to-one      13,204 script(s), 13,204 token(s)
+[v2] PASS 20260824 -> 20260825  XCBO  stable             1,995,467 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260824 -> 20260825  XCBO  no reuse           7,083 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260824 -> 20260825  XCBO  chained from       carried from 20260824
+[v2] PASS 20260824 -> 20260825  XCME  stable             944,287 script(s) on both days, 0 moved to a different token
+[v2] PASS 20260824 -> 20260825  XCME  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260824 -> 20260825  XCME  chained from       carried from 20260824
+[v2] PASS 20260824 -> 20260825  XNAS  stable             13,193 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260824 -> 20260825  XNAS  no reuse           3 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260824 -> 20260825  XNAS  chained from       carried from 20260824
+[v3] PASS 20260824 -> 20260825  XCBO  v3 stable          1,995,467 script(s) on both days, 0 moved
+[v3] PASS 20260824 -> 20260825  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260824 -> 20260825  XCME  v3 stable          944,287 script(s) on both days, 0 moved
+[v3] PASS 20260824 -> 20260825  XCME  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260824 -> 20260825  XNAS  v3 stable          13,193 script(s) on both days, 0 moved
+[v3] PASS 20260824 -> 20260825  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v2] PASS 20260825 -> 20260826  XCBO  stable             1,997,911 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260825 -> 20260826  XCBO  no reuse           4,639 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260825 -> 20260826  XCBO  chained from       carried from 20260825
+[v2] PASS 20260825 -> 20260826  XCME  stable             996,084 script(s) on both days, 0 moved to a different token
+[v2] PASS 20260825 -> 20260826  XCME  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260825 -> 20260826  XCME  chained from       carried from 20260825
+[v2] PASS 20260825 -> 20260826  XNAS  stable             13,201 script(s) on both days, 0 moved to a different token
+[v2] PASS 20260825 -> 20260826  XNAS  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260825 -> 20260826  XNAS  chained from       carried from 20260825
+[v3] PASS 20260825 -> 20260826  XCBO  v3 stable          1,997,911 script(s) on both days, 0 moved
+[v3] PASS 20260825 -> 20260826  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260825 -> 20260826  XCME  v3 stable          996,084 script(s) on both days, 0 moved
+[v3] PASS 20260825 -> 20260826  XCME  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260825 -> 20260826  XNAS  v3 stable          13,201 script(s) on both days, 0 moved
+[v3] PASS 20260825 -> 20260826  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v2] PASS 20260826 -> 20260827  XCBO  stable             1,996,937 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260826 -> 20260827  XCBO  no reuse           9,687 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260826 -> 20260827  XCBO  chained from       carried from 20260826
+[v2] PASS 20260826 -> 20260827  XCME  stable             998,696 script(s) on both days, 0 moved to a different token
+[v2] PASS 20260826 -> 20260827  XCME  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260826 -> 20260827  XCME  chained from       carried from 20260826
+[v2] PASS 20260826 -> 20260827  XNAS  stable             13,175 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260826 -> 20260827  XNAS  no reuse           26 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260826 -> 20260827  XNAS  chained from       carried from 20260826
+[v3] PASS 20260826 -> 20260827  XCBO  v3 stable          1,996,937 script(s) on both days, 0 moved
+[v3] PASS 20260826 -> 20260827  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260826 -> 20260827  XCME  v3 stable          998,696 script(s) on both days, 0 moved
+[v3] PASS 20260826 -> 20260827  XCME  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260826 -> 20260827  XNAS  v3 stable          13,175 script(s) on both days, 0 moved
+[v3] PASS 20260826 -> 20260827  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v2] PASS 20260827 -> 20260828  XCBO  stable             2,036,952 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260827 -> 20260828  XCBO  no reuse           4,460 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260827 -> 20260828  XCBO  chained from       carried from 20260827
+[v2] PASS 20260827 -> 20260828  XCME  stable             1,048,598 script(s) on both days, 0 moved to a different token
+[v2] PASS 20260827 -> 20260828  XCME  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260827 -> 20260828  XCME  chained from       carried from 20260827
+[v2] PASS 20260827 -> 20260828  XNAS  stable             13,195 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260827 -> 20260828  XNAS  no reuse           9 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260827 -> 20260828  XNAS  chained from       carried from 20260827
+[v3] PASS 20260827 -> 20260828  XCBO  v3 stable          2,036,952 script(s) on both days, 0 moved
+[v3] PASS 20260827 -> 20260828  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260827 -> 20260828  XCME  v3 stable          1,048,598 script(s) on both days, 0 moved
+[v3] PASS 20260827 -> 20260828  XCME  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260827 -> 20260828  XNAS  v3 stable          13,195 script(s) on both days, 0 moved
+[v3] PASS 20260827 -> 20260828  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued

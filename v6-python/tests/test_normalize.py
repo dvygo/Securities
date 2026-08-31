@@ -11,7 +11,7 @@ import pytest
 from premarketv6 import cli, config, paths, runner
 from premarketv6.sources import databento_src
 from premarketv6.normalize import counter_token, token_registry
-from premarketv6.qa import lineage, tokens as counter_token_qa
+from premarketv6.qa import lineage, report as qa_report, tokens as counter_token_qa
 from premarketv6.normalize import broker_script, databento_norm, fields, price, session
 from premarketv6.plugin import build as plugin
 from premarketv6.plugin import postgres as plugin_pg
@@ -1191,6 +1191,11 @@ class TestCounterTokenV2Validator:
                 "counterToken": [counter_token.assign(prefix - 1, n)
                                  for n in range(1, len(rows) + 1)],
                 "counterTokenV2": [r[1] for r in rows],
+                # v3 is issued from a registry, so a synthetic day just needs
+                # distinct in-range values -- offset by prefix so two venues in
+                # one test do not collide.
+                "counterTokenV3": [str(token_registry.V3_BASE + prefix * 1000 + n)
+                                   for n in range(len(rows))],
             }),
             directory / f"{mic}-DATABENTO-normalized.parquet")
 
@@ -1530,6 +1535,168 @@ class TestLineage:
         assert self._named(
             lineage._check_plugin_key(self.DAY, paths.plugin_dir(self.DAY), set()),
             "pg key unique").ok
+
+
+
+class TestQatReports:
+    """Generated QAT reports (premarketv6/qa/report.py).
+
+    Every verdict is tagged with the token column it speaks for, and each tag
+    gets its own .txt under paths.qat_dir(). The point is quotable evidence: a
+    claim about counterTokenV2 can be cited from v2.txt without the reader
+    having to filter a combined log by eye.
+    """
+
+    @pytest.fixture
+    def out(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_QAT_DIR", str(tmp_path / "QAT_GENERATED"))
+        return tmp_path / "QAT_GENERATED"
+
+    @staticmethod
+    def _checks():
+        return [
+            qa_report.Check("20260824", "XCBO", "populated", True, "2,006,525 rows",
+                            tag=qa_report.V2),
+            qa_report.Check("20260824", "XCBO", "v3 one-to-one", True, "2,006,525 tokens",
+                            tag=qa_report.V3),
+            qa_report.Check("20260824", "XCBO", "row accounting", True, "reconciles"),
+        ]
+
+    def test_one_file_per_tag(self, out):
+        qa_report.write_reports(self._checks(), "check-tokens")
+        assert sorted(p.name for p in out.iterdir()) == [
+            "check-tokens.ALL.txt", "check-tokens.v2.txt", "check-tokens.v3.txt"]
+
+    def test_a_tag_file_holds_only_its_own_tag(self, out):
+        qa_report.write_reports(self._checks(), "check-tokens")
+        body = (out / "check-tokens.v2.txt").read_text()
+        assert "populated" in body
+        assert "v3 one-to-one" not in body and "row accounting" not in body
+
+    def test_all_holds_every_line_whatever_its_tag(self, out):
+        qa_report.write_reports(self._checks(), "check-tokens")
+        body = (out / "check-tokens.ALL.txt").read_text()
+        assert all(name in body for name in ("populated", "v3 one-to-one", "row accounting"))
+
+    def test_the_header_carries_the_suite_and_its_tally(self, out):
+        qa_report.write_reports(self._checks(), "check-tokens")
+        head = (out / "check-tokens.v2.txt").read_text().splitlines()[:2]
+        assert head[0].startswith("# check-tokens [v2]")
+        assert head[1] == "# 1 check(s): 1 pass, 0 fail, 0 warn"
+
+    def test_an_empty_tag_says_so_rather_than_writing_nothing(self, out):
+        """A missing file reads as "not run"; an empty one reads as "nothing found"."""
+        qa_report.write_reports(
+            [qa_report.Check("d", "XCBO", "x", True, "", tag=qa_report.V2)], "check-lineage")
+        assert "no checks carried this tag" in (out / "check-lineage.v3.txt").read_text()
+
+    def test_a_rerun_replaces_rather_than_appends(self, out):
+        """The file describes the last run, so a growing file is not evidence."""
+        qa_report.write_reports(self._checks(), "check-tokens")
+        qa_report.write_reports(self._checks()[:1], "check-tokens")
+        assert (out / "check-tokens.ALL.txt").read_text().count("XCBO") == 1
+
+    def test_the_two_suites_do_not_overwrite_each_other(self, out):
+        qa_report.write_reports(self._checks(), "check-tokens")
+        qa_report.write_reports(self._checks(), "check-lineage")
+        assert len(list(out.iterdir())) == 6
+
+    def test_a_line_names_tag_status_day_venue_and_check(self):
+        line = qa_report.Check("20260824", "XCBO", "populated", False, "9 blank").line()
+        assert line.startswith("[ALL] FAIL")
+        assert "20260824" in line and "XCBO" in line and "populated" in line and "9 blank" in line
+
+    def test_a_soft_failure_renders_as_warn(self):
+        assert qa_report.Check("d", "V", "n", False, "", hard=False).status == "WARN"
+
+    def test_report_writes_files_only_when_given_a_suite(self, out):
+        qa_report.report(self._checks())
+        assert not out.exists()
+        qa_report.report(self._checks(), suite="check-tokens")
+        assert out.exists()
+
+
+class TestTokenV3Checks:
+    """counterTokenV3's own checks, deliberately parallel to counterTokenV2's."""
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _day(day, pairs):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        directory = paths.normalized_dir(day)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "XCME-DATABENTO-normalized.parquet"
+        pq.write_table(pa.table({"script": [s for s, _ in pairs],
+                                 "counterTokenV3": [str(t) for _, t in pairs]}), path)
+        return [path]
+
+    B = token_registry.V3_BASE
+
+    def test_a_clean_day_passes(self, tree):
+        files = self._day("20260824", [("A", self.B), ("B", self.B + 1)])
+        assert [c.name for c in counter_token_qa.check_day_v3("20260824", "XCME", files)
+                if not c.ok] == []
+
+    def test_every_verdict_is_tagged_v3(self, tree):
+        files = self._day("20260824", [("A", self.B)])
+        assert {c.tag for c in counter_token_qa.check_day_v3("20260824", "XCME", files)} == {"v3"}
+
+    def test_a_token_below_the_base_fails(self, tree):
+        """Below V3_BASE is v1/v2 territory and would collide on (token, trade_date)."""
+        files = self._day("20260824", [("A", 110_891_439)])
+        assert not next(c for c in counter_token_qa.check_day_v3("20260824", "XCME", files)
+                        if c.name == "v3 int32").ok
+
+    def test_a_token_past_int32_fails(self, tree):
+        files = self._day("20260824", [("A", token_registry.INT32_MAX + 1)])
+        assert not next(c for c in counter_token_qa.check_day_v3("20260824", "XCME", files)
+                        if c.name == "v3 int32").ok
+
+    def test_two_scripts_sharing_a_v3_token_fails(self, tree):
+        files = self._day("20260824", [("A", self.B), ("B", self.B)])
+        assert not next(c for c in counter_token_qa.check_day_v3("20260824", "XCME", files)
+                        if c.name == "v3 one-to-one").ok
+
+    def test_a_file_without_the_column_warns(self, tree):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        directory = paths.normalized_dir("20260824")
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "XCME-DATABENTO-normalized.parquet"
+        pq.write_table(pa.table({"script": ["A"]}), path)
+        absent = counter_token_qa.check_day_v3("20260824", "XCME", [path])[0]
+        assert not absent.ok and not absent.hard
+
+    def test_a_stable_pair_passes(self, tree):
+        a = self._day("20260824", [("A", self.B), ("B", self.B + 1)])
+        b = self._day("20260825", [("A", self.B), ("C", self.B + 2)])
+        checks = counter_token_qa.check_pair_v3("20260824", "20260825", "XCME", a, b)
+        assert [c.name for c in checks if not c.ok] == []
+
+    def test_a_moved_v3_token_fails(self, tree):
+        a = self._day("20260824", [("A", self.B)])
+        b = self._day("20260825", [("A", self.B + 5)])
+        moved = next(c for c in counter_token_qa.check_pair_v3(
+            "20260824", "20260825", "XCME", a, b) if c.name == "v3 stable")
+        assert not moved.ok and moved.hard
+
+    def test_a_reissued_v3_token_fails_hard_where_v2_only_warns(self, tree):
+        """The asymmetry is the whole claim.
+
+        v2 recycles a departed script's offset by design, so a token naming two
+        scripts is Tuesday. v3 issues once and never reissues, so the same
+        observation is a bug.
+        """
+        a = self._day("20260824", [("A", self.B)])
+        b = self._day("20260825", [("Z", self.B)])          # A's token, now Z's
+        reuse = next(c for c in counter_token_qa.check_pair_v3(
+            "20260824", "20260825", "XCME", a, b) if c.name == "v3 no reuse")
+        assert not reuse.ok and reuse.hard
 
 
 if __name__ == "__main__":

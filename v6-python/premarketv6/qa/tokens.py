@@ -26,8 +26,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from .. import config, paths
-from ..normalize import counter_token
-from .report import Check, report
+from ..normalize import counter_token, token_registry
+from .report import ALL, V2, V3, Check, report
 
 
 def decode(prefix: int, token: str) -> Optional[int]:
@@ -65,6 +65,89 @@ def _column(table, name):
     return table.column(name) if name in table.schema.names else None
 
 
+def _v3_pairs(paths_):
+    """Distinct (script, counterTokenV3) for one venue-day, or None if absent."""
+    import pyarrow.parquet as pq
+
+    present = set(pq.ParquetFile(paths_[0]).schema_arrow.names)
+    if "counterTokenV3" not in present:
+        return None
+    table = pq.read_table(paths_, columns=["script", "counterTokenV3"])
+    return table.group_by(["script", "counterTokenV3"]).aggregate([])
+
+
+def check_day_v3(date_dir: str, mic: str, files) -> List[Check]:
+    """The same within-day questions asked of counterTokenV2, asked of v3.
+
+    Deliberately parallel: the point of running both is that the two columns
+    can be compared line for line in the same report, and a difference between
+    them is then a fact about the columns rather than about the checks.
+    """
+    import pyarrow.compute as pc
+
+    pairs = _v3_pairs(files)
+    if pairs is None:
+        return [Check(date_dir, mic, "v3 present", False,
+                      "file has no counterTokenV3 column -- written before it existed",
+                      hard=False, tag=V3)]
+
+    column = pairs.column("counterTokenV3")
+    blank = pc.sum(pc.or_(pc.is_null(column), pc.equal(column, ""))).as_py() or 0
+    numbers = [int(t) for t in column.to_pylist() if t]
+    checks = [Check(date_dir, mic, "v3 populated", blank == 0,
+                    f"{pairs.num_rows:,} distinct pair(s), {blank:,} blank", tag=V3)]
+
+    low, high = (min(numbers), max(numbers)) if numbers else (0, 0)
+    checks.append(Check(
+        date_dir, mic, "v3 int32",
+        bool(numbers) and low >= token_registry.V3_BASE and high <= token_registry.INT32_MAX,
+        f"{low:,}..{high:,} (base {token_registry.V3_BASE:,}, "
+        f"int32 {token_registry.INT32_MAX:,}), headroom "
+        f"{token_registry.INT32_MAX - high:,}", tag=V3))
+
+    scripts = pc.count_distinct(pairs.column("script")).as_py()
+    tokens = pc.count_distinct(column).as_py()
+    checks.append(Check(
+        date_dir, mic, "v3 one-to-one", pairs.num_rows == scripts == tokens,
+        f"{scripts:,} script(s), {tokens:,} token(s)", tag=V3))
+    return checks
+
+
+def check_pair_v3(previous: str, current: str, mic: str, before, after) -> List[Check]:
+    """The carry-forward questions, asked of v3.
+
+    "no reuse" is HARD here and soft for v2. That asymmetry is the whole claim:
+    v2 recycles a departed script's offset by design, v3 issues a token once and
+    never reissues it, so a v3 token naming two scripts is a bug and a v2 one is
+    Tuesday.
+    """
+    import pyarrow.compute as pc
+
+    old, new = _v3_pairs(before), _v3_pairs(after)
+    span = f"{previous} -> {current}"
+    if old is None or new is None:
+        return [Check(span, mic, "v3 present", False,
+                      "one of the two days has no counterTokenV3 column",
+                      hard=False, tag=V3)]
+
+    old = old.rename_columns(["script", "token_a"])
+    new = new.rename_columns(["script", "token_b"])
+    joined = old.join(new, keys="script", join_type="inner")
+    moved = pc.sum(pc.not_equal(joined.column("token_a"),
+                                joined.column("token_b"))).as_py() or 0
+    by_token = old.rename_columns(["script_a", "token"]).join(
+        new.rename_columns(["script_b", "token"]), keys="token", join_type="inner")
+    ambiguous = pc.sum(pc.not_equal(by_token.column("script_a"),
+                                    by_token.column("script_b"))).as_py() or 0
+    return [
+        Check(span, mic, "v3 stable", moved == 0,
+              f"{joined.num_rows:,} script(s) on both days, {moved:,} moved", tag=V3),
+        Check(span, mic, "v3 no reuse", ambiguous == 0,
+              f"{ambiguous:,} token(s) name a different script on the two days"
+              + ("" if ambiguous else " -- issued once, never reissued"), tag=V3),
+    ]
+
+
 def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
     """Every within-day invariant, for one date directory."""
     import pyarrow.compute as pc
@@ -77,6 +160,7 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
     entries = (manifest.get("venues") or {})
 
     checks: List[Check] = []
+    v3_checks: List[Check] = []
     seen_tokens: Dict[str, set] = {}
 
     # A manifest naming a venue with no parquet is the hazard that cost a day
@@ -164,6 +248,7 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
         ))
 
         checks.extend(_check_manifest(date_dir, mic, cfg, prefix, pairs, entries.get(mic)))
+        v3_checks.extend(check_day_v3(date_dir, mic, files[mic]))
 
     # Two venues sharing a token defeats the (token, trade_date) key just as
     # surely as a within-venue collision does.
@@ -175,7 +260,9 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
             f"{total - union:,} token(s) shared between venues "
             f"({', '.join(sorted(seen_tokens))})",
         ))
-    return checks
+    for check in checks:
+        check.tag = V2
+    return checks + v3_checks
 
 
 def _check_manifest(date_dir, mic, cfg, prefix, pairs, entry) -> List[Check]:
@@ -248,6 +335,7 @@ def check_pair(previous: str, current: str, venues: Sequence[str] = ()) -> List[
     wanted = {v.upper() for v in venues}
     before, after = _venue_files(previous), _venue_files(current)
     checks: List[Check] = []
+    v3_checks: List[Check] = []
 
     for mic in sorted(set(before) & set(after)):
         if wanted and mic not in wanted:
@@ -282,6 +370,7 @@ def check_pair(previous: str, current: str, venues: Sequence[str] = ()) -> List[
                if ambiguous else ""),
             hard=False,
         ))
+        v3_checks.extend(check_pair_v3(previous, current, mic, before[mic], after[mic]))
 
         # Which day v2 actually chained from. Across a gap it silently reaches
         # further back, and the allocation it inherits is older than the data.
@@ -295,7 +384,9 @@ def check_pair(previous: str, current: str, venues: Sequence[str] = ()) -> List[
                    f", not from {previous}; the days between were numbered "
                    "against an older allocation"),
             ))
-    return checks
+    for check in checks:
+        check.tag = V2
+    return checks + v3_checks
 
 
 def run(dates: Sequence[str], venues: Sequence[str] = ()) -> int:
@@ -306,4 +397,4 @@ def run(dates: Sequence[str], venues: Sequence[str] = ()) -> int:
         checks.extend(check_day(day, venues))
     for previous, current in zip(ordered, ordered[1:]):
         checks.extend(check_pair(previous, current, venues))
-    return report(checks)
+    return report(checks, suite="check-tokens")

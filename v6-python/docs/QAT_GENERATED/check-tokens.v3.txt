@@ -1,0 +1,71 @@
+# check-tokens [v3]  2026-08-31 04:35:04Z
+# 69 check(s): 69 pass, 0 fail, 0 warn
+[v3] PASS 20260824              XCBO  v3 populated       2,006,525 distinct pair(s), 0 blank
+[v3] PASS 20260824              XCBO  v3 int32           1,000,000,000..1,002,006,524 (base 1,000,000,000, int32 2,147,483,647), headroom 1,145,477,123
+[v3] PASS 20260824              XCBO  v3 one-to-one      2,006,525 script(s), 2,006,525 token(s)
+[v3] PASS 20260824              XCME  v3 populated       944,287 distinct pair(s), 0 blank
+[v3] PASS 20260824              XCME  v3 int32           1,002,066,770..1,003,011,056 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,472,591
+[v3] PASS 20260824              XCME  v3 one-to-one      944,287 script(s), 944,287 token(s)
+[v3] PASS 20260824              XNAS  v3 populated       13,196 distinct pair(s), 0 blank
+[v3] PASS 20260824              XNAS  v3 int32           1,003,011,057..1,003,024,252 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,459,395
+[v3] PASS 20260824              XNAS  v3 one-to-one      13,196 script(s), 13,196 token(s)
+[v3] PASS 20260825              XCBO  v3 populated       2,002,550 distinct pair(s), 0 blank
+[v3] PASS 20260825              XCBO  v3 int32           1,000,000,000..1,002,013,607 (base 1,000,000,000, int32 2,147,483,647), headroom 1,145,470,040
+[v3] PASS 20260825              XCBO  v3 one-to-one      2,002,550 script(s), 2,002,550 token(s)
+[v3] PASS 20260825              XCME  v3 populated       996,084 distinct pair(s), 0 blank
+[v3] PASS 20260825              XCME  v3 int32           1,002,066,770..1,003,076,049 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,407,598
+[v3] PASS 20260825              XCME  v3 one-to-one      996,084 script(s), 996,084 token(s)
+[v3] PASS 20260825              XNAS  v3 populated       13,201 distinct pair(s), 0 blank
+[v3] PASS 20260825              XNAS  v3 int32           1,003,011,057..1,003,076,057 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,407,590
+[v3] PASS 20260825              XNAS  v3 one-to-one      13,201 script(s), 13,201 token(s)
+[v3] PASS 20260826              XCBO  v3 populated       2,006,624 distinct pair(s), 0 blank
+[v3] PASS 20260826              XCBO  v3 int32           1,000,000,000..1,002,066,769 (base 1,000,000,000, int32 2,147,483,647), headroom 1,145,416,878
+[v3] PASS 20260826              XCBO  v3 one-to-one      2,006,624 script(s), 2,006,624 token(s)
+[v3] PASS 20260826              XCME  v3 populated       998,696 distinct pair(s), 0 blank
+[v3] PASS 20260826              XCME  v3 int32           1,002,066,770..1,003,078,669 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,404,978
+[v3] PASS 20260826              XCME  v3 one-to-one      998,696 script(s), 998,696 token(s)
+[v3] PASS 20260826              XNAS  v3 populated       13,201 distinct pair(s), 0 blank
+[v3] PASS 20260826              XNAS  v3 int32           1,003,011,057..1,003,076,057 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,407,590
+[v3] PASS 20260826              XNAS  v3 one-to-one      13,201 script(s), 13,201 token(s)
+[v3] PASS 20260827              XCBO  v3 populated       2,041,412 distinct pair(s), 0 blank
+[v3] PASS 20260827              XCBO  v3 int32           1,000,000,000..1,002,066,751 (base 1,000,000,000, int32 2,147,483,647), headroom 1,145,416,896
+[v3] PASS 20260827              XCBO  v3 one-to-one      2,041,412 script(s), 2,041,412 token(s)
+[v3] PASS 20260827              XCME  v3 populated       1,048,598 distinct pair(s), 0 blank
+[v3] PASS 20260827              XCME  v3 int32           1,002,066,770..1,003,128,571 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,355,076
+[v3] PASS 20260827              XCME  v3 one-to-one      1,048,598 script(s), 1,048,598 token(s)
+[v3] PASS 20260827              XNAS  v3 populated       13,213 distinct pair(s), 0 blank
+[v3] PASS 20260827              XNAS  v3 int32           1,003,011,057..1,003,128,609 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,355,038
+[v3] PASS 20260827              XNAS  v3 one-to-one      13,213 script(s), 13,213 token(s)
+[v3] PASS 20260828              XCBO  v3 populated       2,076,251 distinct pair(s), 0 blank
+[v3] PASS 20260828              XCBO  v3 int32           1,000,000,000..1,003,261,583 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,222,064
+[v3] PASS 20260828              XCBO  v3 one-to-one      2,076,251 script(s), 2,076,251 token(s)
+[v3] PASS 20260828              XCME  v3 populated       1,142,375 distinct pair(s), 0 blank
+[v3] PASS 20260828              XCME  v3 int32           1,002,066,770..1,003,222,386 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,261,261
+[v3] PASS 20260828              XCME  v3 one-to-one      1,142,375 script(s), 1,142,375 token(s)
+[v3] PASS 20260828              XNAS  v3 populated       13,204 distinct pair(s), 0 blank
+[v3] PASS 20260828              XNAS  v3 int32           1,003,011,057..1,003,261,592 (base 1,000,000,000, int32 2,147,483,647), headroom 1,144,222,055
+[v3] PASS 20260828              XNAS  v3 one-to-one      13,204 script(s), 13,204 token(s)
+[v3] PASS 20260824 -> 20260825  XCBO  v3 stable          1,995,467 script(s) on both days, 0 moved
+[v3] PASS 20260824 -> 20260825  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260824 -> 20260825  XCME  v3 stable          944,287 script(s) on both days, 0 moved
+[v3] PASS 20260824 -> 20260825  XCME  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260824 -> 20260825  XNAS  v3 stable          13,193 script(s) on both days, 0 moved
+[v3] PASS 20260824 -> 20260825  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260825 -> 20260826  XCBO  v3 stable          1,997,911 script(s) on both days, 0 moved
+[v3] PASS 20260825 -> 20260826  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260825 -> 20260826  XCME  v3 stable          996,084 script(s) on both days, 0 moved
+[v3] PASS 20260825 -> 20260826  XCME  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260825 -> 20260826  XNAS  v3 stable          13,201 script(s) on both days, 0 moved
+[v3] PASS 20260825 -> 20260826  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260826 -> 20260827  XCBO  v3 stable          1,996,937 script(s) on both days, 0 moved
+[v3] PASS 20260826 -> 20260827  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260826 -> 20260827  XCME  v3 stable          998,696 script(s) on both days, 0 moved
+[v3] PASS 20260826 -> 20260827  XCME  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260826 -> 20260827  XNAS  v3 stable          13,175 script(s) on both days, 0 moved
+[v3] PASS 20260826 -> 20260827  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260827 -> 20260828  XCBO  v3 stable          2,036,952 script(s) on both days, 0 moved
+[v3] PASS 20260827 -> 20260828  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260827 -> 20260828  XCME  v3 stable          1,048,598 script(s) on both days, 0 moved
+[v3] PASS 20260827 -> 20260828  XCME  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
+[v3] PASS 20260827 -> 20260828  XNAS  v3 stable          13,195 script(s) on both days, 0 moved
+[v3] PASS 20260827 -> 20260828  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued

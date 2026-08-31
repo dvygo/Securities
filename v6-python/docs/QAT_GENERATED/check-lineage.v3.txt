@@ -1,0 +1,32 @@
+# check-lineage [v3]  2026-08-31 04:36:12Z
+# 30 check(s): 30 pass, 0 fail, 0 warn
+[v3] PASS 20260824              XCBO  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260824              XCME  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260824              XNAS  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260824              XCBO  v3 matches registry 2,006,525 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260824              XCME  v3 matches registry 944,287 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260824              XNAS  v3 matches registry 13,196 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260825              XCBO  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260825              XCME  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260825              XNAS  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260825              XCBO  v3 matches registry 2,002,550 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260825              XCME  v3 matches registry 996,084 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260825              XNAS  v3 matches registry 13,201 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260826              XCBO  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260826              XCME  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260826              XNAS  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260826              XCBO  v3 matches registry 2,006,624 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260826              XCME  v3 matches registry 998,696 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260826              XNAS  v3 matches registry 13,201 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260827              XCBO  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260827              XCME  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260827              XNAS  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260827              XCBO  v3 matches registry 2,041,412 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260827              XCME  v3 matches registry 1,048,598 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260827              XNAS  v3 matches registry 13,213 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260828              XCBO  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260828              XCME  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260828              XNAS  v3 issued          0 row(s) with no counterTokenV3
+[v3] PASS 20260828              XCBO  v3 matches registry 2,076,251 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260828              XCME  v3 matches registry 1,142,375 script/token pair(s) in the file, 0 that the registry does not agree with
+[v3] PASS 20260828              XNAS  v3 matches registry 13,204 script/token pair(s) in the file, 0 that the registry does not agree with
