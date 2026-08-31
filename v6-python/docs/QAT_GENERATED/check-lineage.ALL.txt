@@ -1,4 +1,4 @@
-# check-lineage [ALL]  2026-08-31 06:34:23Z
+# check-lineage [ALL]  2026-08-31 10:28:38Z
 # 155 check(s): 149 pass, 2 fail, 4 warn
 [ALL] PASS 20260824              XCBO  raw is this day    1 file(s); every window starts inside the day
 [ALL] PASS 20260824              XCBO  raw is this venue  OPRA.PILLAR/definition
