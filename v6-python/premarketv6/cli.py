@@ -153,6 +153,27 @@ def create_parser() -> argparse.ArgumentParser:
         help="Export aggregated CSVs to directory",
     )
 
+    # check-tokens subcommand
+    check_parser = subparsers.add_parser(
+        "check-tokens",
+        help="Validate counterTokenV2 against the normalized parquet and manifests already written",
+    )
+    check_parser.add_argument(
+        "--dates",
+        default=datetime.now().strftime("%Y%m%d"),
+        help="Comma-separated YYYYMMDD to validate (default: today). Consecutive "
+             "pairs are also checked against each other, which is where the "
+             "carry-forward contract actually lives -- pass the whole week.",
+    )
+    check_parser.add_argument(
+        "--venue",
+        action="append",
+        default=[],
+        metavar="MIC",
+        help="Restrict to this MIC; repeatable. Every venue with a normalized "
+             "file is checked when omitted.",
+    )
+
     return parser
 
 
@@ -350,6 +371,9 @@ def main() -> int:
             return run_download(args.command, args)
         elif args.command == "normalize":
             return run_normalize(args)
+        elif args.command == "check-tokens":
+            from .normalize import counter_token_qa
+            return counter_token_qa.run(_date_list(args.dates), _venue_selection(args.venue))
         else:
             parser.print_help()
             return 1
