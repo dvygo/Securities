@@ -11,7 +11,7 @@ import pytest
 
 from premarketv6 import cli, config, paths, runner
 from premarketv6.sources import databento_src
-from premarketv6.normalize import counter_token, token_registry
+from premarketv6.normalize import counter_token
 from premarketv6.qa import lineage, report as qa_report, tokens as counter_token_qa
 from premarketv6.normalize import broker_script, databento_norm, fields, price, session
 from premarketv6.plugin import build as plugin
@@ -800,104 +800,6 @@ class TestBackfillDates:
         assert written == {}
 
 
-class TestTokenRegistryV3:
-    """counterTokenV3: issued once, never reissued, independent of run order."""
-
-    @staticmethod
-    def _reg(tmp_path, name="t.db"):
-        return token_registry.TokenRegistry(tmp_path / name)
-
-    def test_tokens_fit_in_int32(self, tmp_path):
-        """The downstream consumer holds int32; a wider token is unreadable there."""
-        r = self._reg(tmp_path)
-        issued = r.assign("XCME", ["A", "B"], "2026-08-24").values()
-        assert min(issued) == token_registry.V3_BASE
-        assert max(issued) <= token_registry.INT32_MAX
-
-    def test_base_sits_above_observed_v1_v2_tokens(self, tmp_path):
-        """So a plugin table migrated from v2 to v3 cannot collide on (token, trade_date).
-
-        The highest v2 token observed is 110,891,439 (XCBO).
-        """
-        assert token_registry.V3_BASE > 110_891_439
-
-    def test_it_refuses_to_wrap_past_int32(self, tmp_path):
-        """A wrapped token is a number already meaning another instrument."""
-        import sqlite3
-        r = self._reg(tmp_path)
-        r.assign("XCME", ["A"], "2026-08-24")
-        with sqlite3.connect(r.path) as c:
-            c.execute("UPDATE instrument SET token = ?", (token_registry.INT32_MAX,))
-        with pytest.raises(ValueError, match="exhausted"):
-            r.assign("XCME", ["B"], "2026-08-25")
-
-    def test_a_backfilled_day_agrees_with_the_day_after_it(self, tmp_path):
-        """The exact case counterTokenV2 cannot survive.
-
-        Day 3 runs while day 2 is missing; day 2 is backfilled afterwards. With
-        v2 this left scripts holding two different tokens on consecutive days,
-        and tokens naming two different scripts.
-        """
-        r = self._reg(tmp_path)
-        r.assign("XCME", ["A", "B", "C"], "2026-08-24")
-        d3 = r.assign("XCME", ["B", "C", "E"], "2026-08-26")
-        d2 = r.assign("XCME", ["B", "C", "D"], "2026-08-25")
-        assert [s for s in set(d2) & set(d3) if d2[s] != d3[s]] == []
-        inv2 = {v: k for k, v in d2.items()}
-        inv3 = {v: k for k, v in d3.items()}
-        assert [t for t in set(inv2) & set(inv3) if inv2[t] != inv3[t]] == []
-
-    def test_a_departed_script_keeps_its_token_forever(self, tmp_path):
-        """Reuse is what makes a token ambiguous across dates."""
-        r = self._reg(tmp_path)
-        gone = r.assign("XCME", ["A", "B"], "2026-08-24")["A"]
-        later = r.assign("XCME", ["B", "C", "D"], "2026-08-25")
-        assert gone not in later.values()
-
-    def test_rerunning_a_day_is_a_no_op(self, tmp_path):
-        r = self._reg(tmp_path)
-        first = r.assign("XCME", ["A", "B"], "2026-08-24")
-        before = r.stats()["total"]
-        assert r.assign("XCME", ["A", "B"], "2026-08-24") == first
-        assert r.stats()["total"] == before
-
-    def test_the_same_script_on_two_venues_gets_two_tokens(self, tmp_path):
-        """Uniqueness comes from the registry, not from a venue prefix."""
-        r = self._reg(tmp_path)
-        assert r.assign("XCME", ["A"], "2026-08-24")["A"] != r.assign("XCBO", ["A"], "2026-08-24")["A"]
-
-    def test_tokens_are_unique_across_every_venue(self, tmp_path):
-        r = self._reg(tmp_path)
-        issued = []
-        for venue in ("XCME", "XCBO", "XNSE"):
-            issued += list(r.assign(venue, ["A", "B", "C"], "2026-08-24").values())
-        assert len(issued) == len(set(issued))
-
-    def test_new_scripts_are_taken_in_sorted_order(self, tmp_path):
-        """A first run must not depend on the order rows arrived in."""
-        a = self._reg(tmp_path, "a.db").assign("XCME", ["C", "A", "B"], "2026-08-24")
-        b = self._reg(tmp_path, "b.db").assign("XCME", ["B", "C", "A"], "2026-08-24")
-        assert a == b
-
-    def test_blank_and_whitespace_scripts_are_not_issued_tokens(self, tmp_path):
-        r = self._reg(tmp_path)
-        assert set(r.assign("XCME", ["A", "", "  ", None], "2026-08-24")) == {"A"}
-
-    def test_first_seen_can_come_from_the_venue(self, tmp_path):
-        """def_activation is Databento's answer and does not move with our run date."""
-        r = self._reg(tmp_path)
-        r.assign("XCME", ["A"], "2026-08-24", first_seen={"A": "2026-03-20"})
-        import sqlite3
-        with sqlite3.connect(r.path) as c:
-            assert c.execute("SELECT first_seen FROM instrument").fetchone()[0] == "2026-03-20"
-
-    def test_v3_column_is_declared_last(self, tmp_path):
-        """Appended, so positional readers of the normalized schema keep working."""
-        assert paths.NORMALIZED_COLUMNS[-1] == "counterTokenV3" or \
-               "counterTokenV3" in paths.NORMALIZED_COLUMNS
-
-
-
 class TestCounterTokenV2Numbering:
     """assign(): the prefix-plus-widening-counter contract (normalize/counter_token.py)."""
 
@@ -1069,7 +971,7 @@ class TestCounterTokenV2CarryForward:
         Day 3 is normalized while day 2 is missing, then day 2 is backfilled. Day
         2 chains from day 1 and reuses B's offset for D; day 3 chained from day 1
         too and gave that offset to E. One number, two instruments, on consecutive
-        dates. counterTokenV3 exists because of this case.
+        dates. That is the case the registry-issued column was built for.
         """
         day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, 11)
         day3 = counter_token.carry_forward(day1, ["A", "C", "E"], 10, 11)
@@ -1196,11 +1098,6 @@ class TestCounterTokenV2Validator:
                 "counterToken": [counter_token.assign(prefix - 1, n)
                                  for n in range(1, len(rows) + 1)],
                 "counterTokenV2": [r[1] for r in rows],
-                # v3 is issued from a registry, so a synthetic day just needs
-                # distinct in-range values -- offset by prefix so two venues in
-                # one test do not collide.
-                "counterTokenV3": [str(token_registry.V3_BASE + prefix * 1000 + n)
-                                   for n in range(len(rows))],
             }),
             directory / f"{mic}-DATABENTO-normalized.parquet")
 
@@ -1421,16 +1318,15 @@ class TestLineage:
 
     # --- raw -> normalized -------------------------------------------------
 
-    def _normalized(self, tree, rows, v3=True):
+    def _normalized(self, tree, rows, v2=True):
         columns = {
             "script": [r[1] for r in rows],
             "scriptToken": [str(r[0]) for r in rows],
-            "counterTokenV2": [f"11{n}" for n in range(len(rows))],
             "def_expiration": [r[2] if len(r) > 2 else "0" for r in rows],
             "expiration": ["0"] * len(rows),
         }
-        if v3:
-            columns["counterTokenV3"] = [str(1_000_000_000 + n) for n in range(len(rows))]
+        if v2:
+            columns["counterTokenV2"] = [f"11{n}" for n in range(len(rows))]
         return self._parquet(
             paths.normalized_dir(self.DAY) / "XCME-DATABENTO-normalized.parquet", columns)
 
@@ -1472,12 +1368,17 @@ class TestLineage:
             lineage.check_normalized(self.DAY, "XCME", path, scan), "symbol carried").ok
 
     def test_a_file_missing_a_column_warns_instead_of_crashing(self, tree):
-        """20260826's real XCME output predates counterTokenV3."""
-        path = self._normalized(tree, [(1, "A")], v3=False)
+        """A file written before a column existed still has to be readable.
+
+        Real case: 20260826's XCME output predated a newer column, and the tool
+        died on it rather than reporting it. A positional reader of
+        NORMALIZED_COLUMNS would read such a file shifted by one.
+        """
+        path = self._normalized(tree, [(1, "A")], v2=False)
         scan = self._scan([self._file("a.dbn.zst", "20260826")], {1: "A"})
         drift = self._named(lineage.check_normalized(self.DAY, "XCME", path, scan),
                             "schema current")
-        assert not drift.ok and not drift.hard and "counterTokenV3" in drift.detail
+        assert not drift.ok and not drift.hard and "counterTokenV2" in drift.detail
 
     # --- normalized -> plugin ----------------------------------------------
 
@@ -1562,26 +1463,23 @@ class TestQatReports:
         return [
             qa_report.Check("20260824", "XCBO", "populated", True, "2,006,525 rows",
                             tag=qa_report.V2),
-            qa_report.Check("20260824", "XCBO", "v3 one-to-one", True, "2,006,525 tokens",
-                            tag=qa_report.V3),
             qa_report.Check("20260824", "XCBO", "row accounting", True, "reconciles"),
         ]
 
     def test_one_file_per_tag(self, out):
         qa_report.write_reports(self._checks(), "check-tokens")
         assert sorted(p.name for p in out.iterdir()) == [
-            "check-tokens.ALL.txt", "check-tokens.v2.txt", "check-tokens.v3.txt"]
+            "check-tokens.ALL.txt", "check-tokens.v2.txt"]
 
     def test_a_tag_file_holds_only_its_own_tag(self, out):
         qa_report.write_reports(self._checks(), "check-tokens")
         body = (out / "check-tokens.v2.txt").read_text()
-        assert "populated" in body
-        assert "v3 one-to-one" not in body and "row accounting" not in body
+        assert "populated" in body and "row accounting" not in body
 
     def test_all_holds_every_line_whatever_its_tag(self, out):
         qa_report.write_reports(self._checks(), "check-tokens")
         body = (out / "check-tokens.ALL.txt").read_text()
-        assert all(name in body for name in ("populated", "v3 one-to-one", "row accounting"))
+        assert all(name in body for name in ("populated", "row accounting"))
 
     def test_the_header_carries_the_suite_and_its_tally(self, out):
         qa_report.write_reports(self._checks(), "check-tokens")
@@ -1592,8 +1490,8 @@ class TestQatReports:
     def test_an_empty_tag_says_so_rather_than_writing_nothing(self, out):
         """A missing file reads as "not run"; an empty one reads as "nothing found"."""
         qa_report.write_reports(
-            [qa_report.Check("d", "XCBO", "x", True, "", tag=qa_report.V2)], "check-lineage")
-        assert "no checks carried this tag" in (out / "check-lineage.v3.txt").read_text()
+            [qa_report.Check("d", "XCBO", "x", True, "", tag=qa_report.ALL)], "check-lineage")
+        assert "no checks carried this tag" in (out / "check-lineage.v2.txt").read_text()
 
     def test_a_rerun_replaces_rather_than_appends(self, out):
         """The file describes the last run, so a growing file is not evidence."""
@@ -1604,7 +1502,7 @@ class TestQatReports:
     def test_the_two_suites_do_not_overwrite_each_other(self, out):
         qa_report.write_reports(self._checks(), "check-tokens")
         qa_report.write_reports(self._checks(), "check-lineage")
-        assert len(list(out.iterdir())) == 6
+        assert len(list(out.iterdir())) == 4
 
     def test_a_line_names_tag_status_day_venue_and_check(self):
         line = qa_report.Check("20260824", "XCBO", "populated", False, "9 blank").line()
@@ -1619,90 +1517,6 @@ class TestQatReports:
         assert not out.exists()
         qa_report.report(self._checks(), suite="check-tokens")
         assert out.exists()
-
-
-class TestTokenV3Checks:
-    """counterTokenV3's own checks, deliberately parallel to counterTokenV2's."""
-
-    @pytest.fixture
-    def tree(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
-        return tmp_path
-
-    @staticmethod
-    def _day(day, pairs):
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-        directory = paths.normalized_dir(day)
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / "XCME-DATABENTO-normalized.parquet"
-        pq.write_table(pa.table({"script": [s for s, _ in pairs],
-                                 "counterTokenV3": [str(t) for _, t in pairs]}), path)
-        return [path]
-
-    B = token_registry.V3_BASE
-
-    def test_a_clean_day_passes(self, tree):
-        files = self._day("20260824", [("A", self.B), ("B", self.B + 1)])
-        assert [c.name for c in counter_token_qa.check_day_v3("20260824", "XCME", files)
-                if not c.ok] == []
-
-    def test_every_verdict_is_tagged_v3(self, tree):
-        files = self._day("20260824", [("A", self.B)])
-        assert {c.tag for c in counter_token_qa.check_day_v3("20260824", "XCME", files)} == {"v3"}
-
-    def test_a_token_below_the_base_fails(self, tree):
-        """Below V3_BASE is v1/v2 territory and would collide on (token, trade_date)."""
-        files = self._day("20260824", [("A", 110_891_439)])
-        assert not next(c for c in counter_token_qa.check_day_v3("20260824", "XCME", files)
-                        if c.name == "v3 int32").ok
-
-    def test_a_token_past_int32_fails(self, tree):
-        files = self._day("20260824", [("A", token_registry.INT32_MAX + 1)])
-        assert not next(c for c in counter_token_qa.check_day_v3("20260824", "XCME", files)
-                        if c.name == "v3 int32").ok
-
-    def test_two_scripts_sharing_a_v3_token_fails(self, tree):
-        files = self._day("20260824", [("A", self.B), ("B", self.B)])
-        assert not next(c for c in counter_token_qa.check_day_v3("20260824", "XCME", files)
-                        if c.name == "v3 one-to-one").ok
-
-    def test_a_file_without_the_column_warns(self, tree):
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-        directory = paths.normalized_dir("20260824")
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / "XCME-DATABENTO-normalized.parquet"
-        pq.write_table(pa.table({"script": ["A"]}), path)
-        absent = counter_token_qa.check_day_v3("20260824", "XCME", [path])[0]
-        assert not absent.ok and not absent.hard
-
-    def test_a_stable_pair_passes(self, tree):
-        a = self._day("20260824", [("A", self.B), ("B", self.B + 1)])
-        b = self._day("20260825", [("A", self.B), ("C", self.B + 2)])
-        checks = counter_token_qa.check_pair_v3("20260824", "20260825", "XCME", a, b)
-        assert [c.name for c in checks if not c.ok] == []
-
-    def test_a_moved_v3_token_fails(self, tree):
-        a = self._day("20260824", [("A", self.B)])
-        b = self._day("20260825", [("A", self.B + 5)])
-        moved = next(c for c in counter_token_qa.check_pair_v3(
-            "20260824", "20260825", "XCME", a, b) if c.name == "v3 stable")
-        assert not moved.ok and moved.hard
-
-    def test_a_reissued_v3_token_fails_hard_where_v2_only_warns(self, tree):
-        """The asymmetry is the whole claim.
-
-        v2 recycles a departed script's offset by design, so a token naming two
-        scripts is Tuesday. v3 issues once and never reissues, so the same
-        observation is a bug.
-        """
-        a = self._day("20260824", [("A", self.B)])
-        b = self._day("20260825", [("Z", self.B)])          # A's token, now Z's
-        reuse = next(c for c in counter_token_qa.check_pair_v3(
-            "20260824", "20260825", "XCME", a, b) if c.name == "v3 no reuse")
-        assert not reuse.ok and reuse.hard
-
 
 
 class TestV2Recycling:

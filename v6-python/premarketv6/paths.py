@@ -108,19 +108,6 @@ def venue_dir(as_of: str, venue_name: str) -> Path:
     return data_root() / as_of / venue_name.upper()
 
 
-def token_registry_db() -> Path:
-    """counterTokenV3's registry: data/registry/tokens.db, honouring PREMARKET_TOKEN_DB.
-
-    Deliberately NOT under a date directory. v2's manifests are per-day because
-    each day derives from the one before; v3 has a single store that every day
-    reads and appends to, which is what makes a backfill an ordinary lookup
-    instead of a re-chaining exercise.
-    """
-    if env := os.getenv("PREMARKET_TOKEN_DB"):
-        return Path(env)
-    return data_root() / "registry" / "tokens.db"
-
-
 def manual_venue_dir(as_of: str, venue_name: str) -> Path:
     """
     A venue's Databento batch definition payload for one day:
@@ -339,13 +326,6 @@ NORMALIZED_COLUMNS = [
     # script stops appearing. Carried in manifest.json per day. This is the one
     # to join on across dates -- counterToken is positional and must not be.
     "counterTokenV2",
-    # Registry-issued and never reissued (normalize/token_registry.py). Unlike
-    # counterTokenV2 above it is not derived from the previous day, so a
-    # backfilled day gets the same tokens it would have got had it never been
-    # missed, and a token never comes to name a different instrument. Appended
-    # last, like the columns above it, so positional readers keep working; the
-    # plugin and Postgres paths still push counterTokenV2.
-    "counterTokenV3",
 ] + DEFINITION_PASSTHROUGH_COLUMNS
 
 # Contract columns = date + exchange + normalized columns

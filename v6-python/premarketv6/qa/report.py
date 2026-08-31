@@ -8,7 +8,6 @@ Every check carries a tag saying which token column it speaks for, because the
 two are not interchangeable and a report that blurs them is useless as evidence:
 
   v2   counterTokenV2 -- the column the plugin and the Postgres push carry
-  v3   counterTokenV3 -- the registry-issued column
   ALL  neither in particular: file placement, row counts, schema
 
 report() prints, and also writes one minimal .txt per tag under
@@ -21,8 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
-V2, V3, ALL = "v2", "v3", "ALL"
-TAGS = (V2, V3, ALL)
+V2, ALL = "v2", "ALL"
+TAGS = (V2, ALL)
 
 
 @dataclass

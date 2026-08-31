@@ -36,16 +36,16 @@ from pathlib import Path
 from typing import Dict, List, Sequence
 
 from .. import config, paths
-from ..normalize import counter_token, token_registry
+from ..normalize import counter_token
 from ..plugin import build as plugin_build
-from .report import ALL, V2, V3, Check, report
+from .report import ALL, V2, Check, report
 
 
 def _read(path: Path, columns: Sequence[str]):
     """Read only the columns a file actually has, and say which it lacks.
 
     A normalized file written before a column existed is a real thing to find --
-    20260826's XCME output predates counterTokenV3 -- but it is a finding to
+    20260826's XCME output predated a column later added -- but it is a finding to
     report, not a reason for the tool to die. Anything keyed positionally on
     paths.NORMALIZED_COLUMNS would read that file shifted by one.
     """
@@ -160,8 +160,7 @@ def check_normalized(date_dir: str, mic: str, path: Path, scan: dict) -> List[Ch
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
 
-    table, missing = _read(path, ["script", "scriptToken", "counterTokenV2",
-                                  "counterTokenV3"])
+    table, missing = _read(path, ["script", "scriptToken", "counterTokenV2"])
     rows = table.num_rows
     kept = len(scan["symbols"]) - scan["blank_symbol"]
     checks = [Check(
@@ -200,13 +199,6 @@ def check_normalized(date_dir: str, mic: str, path: Path, scan: dict) -> List[Ch
             f"written without {', '.join(missing)} -- a positional reader of "
             f"paths.NORMALIZED_COLUMNS would read this file shifted",
             hard=False))
-    else:
-        blank_v3 = pc.sum(pc.or_(pc.is_null(table.column("counterTokenV3")),
-                                 pc.equal(table.column("counterTokenV3"), ""))).as_py() or 0
-        checks.append(Check(
-            date_dir, mic, "v3 issued", blank_v3 == 0,
-            f"{blank_v3:,} row(s) with no counterTokenV3", tag=V3,
-        ))
     return checks
 
 
@@ -265,26 +257,6 @@ def check_plugin(date_dir: str, mic: str, normalized: Path, plugin: Path) -> Lis
     return checks
 
 
-def check_registry(date_dir: str, venues: Dict[str, Path]) -> List[Check]:
-    """The v3 registry is the one artefact shared by every day, so it is checked once."""
-    registry = token_registry.TokenRegistry(paths.token_registry_db())
-    checks = []
-    for mic, path in sorted(venues.items()):
-        table, missing = _read(path, ["script", "counterTokenV3"])
-        if missing:
-            continue                      # already reported as schema drift
-        issued = registry.tokens_for(mic)
-        pairs = set(zip(table.column("script").to_pylist(),
-                        table.column("counterTokenV3").to_pylist()))
-        wrong = [(s, t) for s, t in pairs if str(issued.get(s, "")) != t]
-        checks.append(Check(
-            date_dir, mic, "v3 matches registry", not wrong,
-            f"{len(pairs):,} script/token pair(s) in the file, {len(wrong):,} that "
-            f"the registry does not agree with", tag=V3,
-        ))
-    return checks
-
-
 def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
     """Every stage, for one date directory."""
     wanted = {v.upper() for v in venues}
@@ -319,9 +291,6 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
         built = plugin_dir / normalized.name
         if built.exists():
             checks.extend(check_plugin(date_dir, mic, normalized, built))
-
-    if normalized_seen:
-        checks.extend(check_registry(date_dir, normalized_seen))
 
     # The pg key is (token, trade_date) with no venue column, so uniqueness has
     # to hold across every venue pushed for the day, not within each file.
