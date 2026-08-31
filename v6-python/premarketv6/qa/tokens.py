@@ -22,27 +22,12 @@ Deliberately no new dependency: pyarrow is already how this pipeline reads and
 writes parquet, and the tool has to survive being frozen into the binary devops
 runs.
 """
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from .. import config, paths
-from . import counter_token
-
-
-@dataclass
-class Check:
-    """One verdict. `hard` is False for a property v2 never promised."""
-    day: str
-    venue: str
-    name: str
-    ok: bool
-    detail: str
-    hard: bool = True
-
-    @property
-    def status(self) -> str:
-        return "PASS" if self.ok else ("FAIL" if self.hard else "WARN")
+from ..normalize import counter_token
+from .report import Check, report
 
 
 def decode(prefix: int, token: str) -> Optional[int]:
@@ -311,24 +296,6 @@ def check_pair(previous: str, current: str, venues: Sequence[str] = ()) -> List[
                    "against an older allocation"),
             ))
     return checks
-
-
-def report(checks: Sequence[Check]) -> int:
-    """Print grouped by day and venue. Non-zero when a hard check failed."""
-    scope = None
-    for check in checks:
-        if (check.day, check.venue) != scope:
-            scope = (check.day, check.venue)
-            print(f"\n{check.day}  {check.venue}")
-        print(f"  [{check.status}] {check.name:<18} {check.detail}")
-
-    failed = [c for c in checks if not c.ok and c.hard]
-    warned = [c for c in checks if not c.ok and not c.hard]
-    print(f"\n{len(checks)} check(s): {len(checks) - len(failed) - len(warned)} pass, "
-          f"{len(failed)} fail, {len(warned)} warn")
-    for check in failed:
-        print(f"  FAIL {check.day} {check.venue} {check.name}: {check.detail}")
-    return 1 if failed else 0
 
 
 def run(dates: Sequence[str], venues: Sequence[str] = ()) -> int:

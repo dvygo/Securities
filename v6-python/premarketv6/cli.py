@@ -174,6 +174,26 @@ def create_parser() -> argparse.ArgumentParser:
              "file is checked when omitted.",
     )
 
+    # check-lineage subcommand
+    lineage_parser = subparsers.add_parser(
+        "check-lineage",
+        help="Trace each stage's output back to the stage before it: raw DBN -> "
+             "normalized -> plugin",
+    )
+    lineage_parser.add_argument(
+        "--dates",
+        default=datetime.now().strftime("%Y%m%d"),
+        help="Comma-separated YYYYMMDD to trace (default: today). Each day is "
+             "independent -- unlike check-tokens, nothing here spans two dates.",
+    )
+    lineage_parser.add_argument(
+        "--venue",
+        action="append",
+        default=[],
+        metavar="MIC",
+        help="Restrict to this MIC; repeatable.",
+    )
+
     return parser
 
 
@@ -372,8 +392,11 @@ def main() -> int:
         elif args.command == "normalize":
             return run_normalize(args)
         elif args.command == "check-tokens":
-            from .normalize import counter_token_qa
-            return counter_token_qa.run(_date_list(args.dates), _venue_selection(args.venue))
+            from .qa import tokens
+            return tokens.run(_date_list(args.dates), _venue_selection(args.venue))
+        elif args.command == "check-lineage":
+            from .qa import lineage
+            return lineage.run(_date_list(args.dates), _venue_selection(args.venue))
         else:
             parser.print_help()
             return 1

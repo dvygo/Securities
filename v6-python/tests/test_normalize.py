@@ -10,7 +10,8 @@ import pytest
 
 from premarketv6 import cli, config, paths, runner
 from premarketv6.sources import databento_src
-from premarketv6.normalize import counter_token, counter_token_qa, token_registry
+from premarketv6.normalize import counter_token, token_registry
+from premarketv6.qa import lineage, tokens as counter_token_qa
 from premarketv6.normalize import broker_script, databento_norm, fields, price, session
 from premarketv6.plugin import build as plugin
 from premarketv6.plugin import postgres as plugin_pg
@@ -1315,6 +1316,220 @@ class TestCounterTokenV2Validator:
         hard = counter_token_qa.Check("d", "XCBO", "stable", False, "")
         assert counter_token_qa.report([soft]) == 0
         assert counter_token_qa.report([soft, hard]) == 1
+
+
+
+class TestLineage:
+    """Data lineage (premarketv6/qa/lineage.py): each stage traced to the one before.
+
+    The raw scan needs a real DBN file, so the checks are driven with the scan
+    dict _scan_raw produces rather than with databento -- what is under test is
+    the reconciliation, not the reader.
+    """
+
+    DAY = "20260826"
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _ns(stamp):
+        return int(datetime.strptime(stamp, "%Y%m%d")
+                   .replace(tzinfo=timezone.utc).timestamp() * 1e9)
+
+    @classmethod
+    def _file(cls, name, start, end=None, dataset="GLBX.MDP3", schema="definition", records=3):
+        return {"name": name, "dataset": dataset, "schema": schema,
+                "start": cls._ns(start),
+                "end": cls._ns(end) if end else cls._ns(start) + 86_400_000_000_000,
+                "records": records}
+
+    @classmethod
+    def _scan(cls, files, symbols, duplicates=0, blank=0):
+        return {"files": files, "symbols": symbols, "duplicates": duplicates,
+                "blank_symbol": blank,
+                "records": len(symbols) + duplicates}
+
+    @staticmethod
+    def _named(checks, name):
+        return next(c for c in checks if c.name == name)
+
+    @staticmethod
+    def _parquet(path, columns):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table(columns), path)
+        return path
+
+    # --- the raw drop ------------------------------------------------------
+
+    def test_a_file_from_the_right_day_passes(self):
+        scan = self._scan([self._file("glbx-mdp3-20260826.dbn.zst", "20260826")], {1: "ESZ6"})
+        checks = lineage.check_raw(self.DAY, "XCME", [1], scan, "GLBX.MDP3")
+        assert [c.name for c in checks if not c.ok] == []
+
+    def test_a_file_from_another_day_fails(self):
+        """Found live: 20260826/XNAS held equs-mini-20260825.
+
+        The normalizer checks a file's dataset and schema but not its date, so
+        this normalizes cleanly and produces Wednesday output holding Tuesday's
+        instruments.
+        """
+        scan = self._scan([self._file("glbx-mdp3-20260825.dbn.zst", "20260825")], {1: "ESZ6"})
+        bad = self._named(lineage.check_raw(self.DAY, "XCME", [1], scan, "GLBX.MDP3"),
+                          "raw is this day")
+        assert not bad.ok and bad.hard and "2026-08-25" in bad.detail
+
+    def test_a_file_from_another_venue_fails(self):
+        """The reader skips it, so its rows are missing rather than wrong."""
+        scan = self._scan([self._file("opra.dbn.zst", "20260826", dataset="OPRA.PILLAR")], {})
+        assert not self._named(
+            lineage.check_raw(self.DAY, "XCME", [1], scan, "GLBX.MDP3"), "raw is this venue").ok
+
+    def test_a_non_definition_schema_fails(self):
+        scan = self._scan([self._file("t.dbn.zst", "20260826", schema="trades")], {})
+        assert not self._named(
+            lineage.check_raw(self.DAY, "XCME", [1], scan, "GLBX.MDP3"), "raw is this venue").ok
+
+    def test_two_files_for_one_day_warn(self):
+        """Legal -- the reader stacks them -- but the day is then a blend."""
+        scan = self._scan([self._file("a.dbn.zst", "20260826"),
+                           self._file("b.dbn.zst", "20260826")], {1: "A"})
+        merged = self._named(lineage.check_raw(self.DAY, "XCME", [1, 2], scan, "GLBX.MDP3"),
+                             "one session")
+        assert not merged.ok and not merged.hard
+
+    def test_a_clamped_window_warns(self):
+        """The download stopped at what had published; the file does not say so."""
+        scan = self._scan([self._file("a.dbn.zst", "20260826", end="20260826")], {1: "A"})
+        clamped = self._named(lineage.check_raw(self.DAY, "XCME", [1], scan, "GLBX.MDP3"),
+                              "full day")
+        assert not clamped.ok and not clamped.hard
+
+    # --- raw -> normalized -------------------------------------------------
+
+    def _normalized(self, tree, rows, v3=True):
+        columns = {
+            "script": [r[1] for r in rows],
+            "scriptToken": [str(r[0]) for r in rows],
+            "counterTokenV2": [f"11{n}" for n in range(len(rows))],
+            "def_expiration": [r[2] if len(r) > 2 else "0" for r in rows],
+            "expiration": ["0"] * len(rows),
+        }
+        if v3:
+            columns["counterTokenV3"] = [str(1_000_000_000 + n) for n in range(len(rows))]
+        return self._parquet(
+            paths.normalized_dir(self.DAY) / "XCME-DATABENTO-normalized.parquet", columns)
+
+    def test_the_counts_reconcile(self, tree):
+        rows = [(1, "A"), (2, "B")]
+        path = self._normalized(tree, rows)
+        scan = self._scan([self._file("a.dbn.zst", "20260826")], {1: "A", 2: "B"}, duplicates=5)
+        assert self._named(
+            lineage.check_normalized(self.DAY, "XCME", path, scan), "row accounting").ok
+
+    def test_a_row_count_that_does_not_reconcile_fails(self, tree):
+        path = self._normalized(tree, [(1, "A")])
+        scan = self._scan([self._file("a.dbn.zst", "20260826")], {1: "A", 2: "B"})
+        assert not self._named(
+            lineage.check_normalized(self.DAY, "XCME", path, scan), "row accounting").ok
+
+    def test_blank_symbols_are_counted_as_a_reason_not_a_gap(self, tree):
+        """The drop is deliberate, so it has to appear in the arithmetic."""
+        path = self._normalized(tree, [(1, "A")])
+        scan = self._scan([self._file("a.dbn.zst", "20260826")], {1: "A", 2: ""}, blank=1)
+        check = self._named(lineage.check_normalized(self.DAY, "XCME", path, scan),
+                            "row accounting")
+        assert check.ok and "1 with no symbol" in check.detail
+
+    def test_a_row_with_no_raw_ancestor_fails(self, tree):
+        """A normalized row this pipeline invented."""
+        path = self._normalized(tree, [(1, "A"), (999, "GHOST")])
+        scan = self._scan([self._file("a.dbn.zst", "20260826")], {1: "A", 999: "GHOST"})
+        scan["symbols"] = {1: "A"}
+        scan["records"] = 1
+        assert not self._named(
+            lineage.check_normalized(self.DAY, "XCME", path, scan), "no invented rows").ok
+
+    def test_a_symbol_the_mapper_changed_fails(self, tree):
+        """The token was allocated against the script; a renamed script moves it."""
+        path = self._normalized(tree, [(1, "RENAMED")])
+        scan = self._scan([self._file("a.dbn.zst", "20260826")], {1: "ORIGINAL"})
+        assert not self._named(
+            lineage.check_normalized(self.DAY, "XCME", path, scan), "symbol carried").ok
+
+    def test_a_file_missing_a_column_warns_instead_of_crashing(self, tree):
+        """20260826's real XCME output predates counterTokenV3."""
+        path = self._normalized(tree, [(1, "A")], v3=False)
+        scan = self._scan([self._file("a.dbn.zst", "20260826")], {1: "A"})
+        drift = self._named(lineage.check_normalized(self.DAY, "XCME", path, scan),
+                            "schema current")
+        assert not drift.ok and not drift.hard and "counterTokenV3" in drift.detail
+
+    # --- normalized -> plugin ----------------------------------------------
+
+    def _plugin(self, names, tokens, extra=None):
+        columns = {"token": tokens, "name": names, "trade_date": ["2026-08-26"] * len(names)}
+        columns.update(extra or {})
+        return self._parquet(
+            paths.plugin_dir(self.DAY) / "XCME-DATABENTO-normalized.parquet", columns)
+
+    def test_the_strip_accounts_for_the_difference(self, tree):
+        """Expiry is the only reason a normalized row may be absent downstream."""
+        expired = str(self._ns("20260101"))
+        src = self._normalized(tree, [(1, "A", "0"), (2, "B", expired)])
+        out = self._plugin(["A"], ["110"])
+        assert self._named(
+            lineage.check_plugin(self.DAY, "XCME", src, out), "strip accounting").ok
+
+    def test_a_row_lost_for_no_reason_fails(self, tree):
+        src = self._normalized(tree, [(1, "A", "0"), (2, "B", "0")])
+        out = self._plugin(["A"], ["110"])
+        assert not self._named(
+            lineage.check_plugin(self.DAY, "XCME", src, out), "strip accounting").ok
+
+    def test_a_contract_expiring_on_the_trade_date_is_kept(self, tree):
+        """0DTE options are live during the session the snapshot describes."""
+        src = self._normalized(tree, [(1, "A", str(self._ns("20260826")))])
+        out = self._plugin(["A"], ["110"])
+        assert self._named(
+            lineage.check_plugin(self.DAY, "XCME", src, out), "strip accounting").ok
+
+    def test_a_token_that_changed_between_stages_fails(self, tree):
+        """The plugin token must be the counterTokenV2 of the same script."""
+        src = self._normalized(tree, [(1, "A", "0")])
+        out = self._plugin(["A"], ["999"])
+        assert not self._named(
+            lineage.check_plugin(self.DAY, "XCME", src, out), "token carried").ok
+
+    def test_an_empty_plugin_value_fails(self, tree):
+        """Every plugin column is filled on purpose; an empty one lands as NULL."""
+        src = self._normalized(tree, [(1, "A", "0")])
+        out = self._plugin(["A"], ["110"], extra={"ticksize": [""]})
+        bad = self._named(lineage.check_plugin(self.DAY, "XCME", src, out), "no empty column")
+        assert not bad.ok and "ticksize" in bad.detail
+
+    # --- the pg key --------------------------------------------------------
+
+    def test_a_token_shared_by_two_venue_files_fails(self, tree):
+        """(token, trade_date) has no venue column to separate them."""
+        self._plugin(["A"], ["110"])
+        self._parquet(paths.plugin_dir(self.DAY) / "XNAS-DATABENTO-normalized.parquet",
+                      {"token": ["110"], "name": ["Z"], "trade_date": ["2026-08-26"]})
+        assert not self._named(
+            lineage._check_plugin_key(self.DAY, paths.plugin_dir(self.DAY), set()),
+            "pg key unique").ok
+
+    def test_distinct_tokens_across_venues_pass(self, tree):
+        self._plugin(["A"], ["110"])
+        self._parquet(paths.plugin_dir(self.DAY) / "XNAS-DATABENTO-normalized.parquet",
+                      {"token": ["150"], "name": ["Z"], "trade_date": ["2026-08-26"]})
+        assert self._named(
+            lineage._check_plugin_key(self.DAY, paths.plugin_dir(self.DAY), set()),
+            "pg key unique").ok
 
 
 if __name__ == "__main__":
