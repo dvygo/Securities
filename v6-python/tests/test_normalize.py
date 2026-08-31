@@ -8,10 +8,12 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from premarketv6 import cli, config, paths, postgres_export_plugin, runner
+from premarketv6 import cli, config, paths, runner
 from premarketv6.sources import databento_src
 from premarketv6.normalize import token_registry
-from premarketv6.normalize import broker_script, databento_norm, fields, plugin, price, session
+from premarketv6.normalize import broker_script, databento_norm, fields, price, session
+from premarketv6.plugin import build as plugin
+from premarketv6.plugin import postgres as plugin_pg
 from premarketv6.sources import fyers_src
 
 
@@ -165,7 +167,7 @@ class TestVenueTokenPrefix:
         Databento only guarantees instrument_id is unique within a dataset, so the
         same id on three venues now yields one token, not three. Anything keying on
         (token, trade_date) without an exchange column -- which is exactly the pg
-        symbol-master table postgres_export_plugin appends to -- can collide.
+        symbol-master table plugin/postgres.py appends to -- can collide.
         """
         ids = {databento_norm.prefixed_token(v, 12345) for v in ("XNAS", "XCBO", "XCME")}
         assert ids == {"12345"}
@@ -547,16 +549,16 @@ class TestPluginTableDDL:
     """The appender's CREATE TABLE, and the gate that keeps it off by default."""
 
     def test_ddl_covers_every_plugin_column_in_order(self):
-        sql = postgres_export_plugin._create_table_sql("public", "contracts")
+        sql = plugin_pg._create_table_sql("public", "contracts")
         positions = [sql.index(f'"{c}"') for c in plugin.PLUGIN_COLUMNS]
         assert positions == sorted(positions), "DDL column order must match PLUGIN_COLUMNS"
 
     def test_ddl_is_if_not_exists_so_it_never_alters_a_real_table(self):
-        sql = postgres_export_plugin._create_table_sql("public", "contracts")
+        sql = plugin_pg._create_table_sql("public", "contracts")
         assert "CREATE TABLE IF NOT EXISTS" in sql
 
     def test_ddl_carries_the_documented_primary_key(self):
-        sql = postgres_export_plugin._create_table_sql("public", "contracts")
+        sql = plugin_pg._create_table_sql("public", "contracts")
         assert 'PRIMARY KEY ("token", "trade_date")' in sql
 
     def test_a_plugin_column_with_no_type_raises(self):
@@ -565,7 +567,7 @@ class TestPluginTableDDL:
         try:
             plugin.PLUGIN_COLUMNS.append("brand_new_column")
             with pytest.raises(ValueError, match="brand_new_column"):
-                postgres_export_plugin._create_table_sql("public", "contracts")
+                plugin_pg._create_table_sql("public", "contracts")
         finally:
             plugin.PLUGIN_COLUMNS[:] = original
 
@@ -593,7 +595,7 @@ class TestPluginUpsertSQL:
     """The push overwrites on (token, trade_date) instead of appending."""
 
     def _sql(self):
-        return postgres_export_plugin._upsert_sql("public", "resultset", plugin.PLUGIN_COLUMNS)
+        return plugin_pg._upsert_sql("public", "resultset", plugin.PLUGIN_COLUMNS)
 
     def test_conflict_target_is_the_primary_key(self):
         assert 'ON CONFLICT ("token", "trade_date")' in self._sql()
@@ -607,14 +609,14 @@ class TestPluginUpsertSQL:
     def test_every_non_key_column_is_overwritten(self):
         sql = self._sql()
         for col in plugin.PLUGIN_COLUMNS:
-            if col in postgres_export_plugin.PLUGIN_PRIMARY_KEY:
+            if col in plugin_pg.PLUGIN_PRIMARY_KEY:
                 continue
             assert f'"{col}" = EXCLUDED."{col}"' in sql, col
 
     def test_key_columns_are_not_in_the_set_list(self):
         """Assigning the matched key is a no-op Postgres rejects."""
         set_clause = self._sql().split("DO UPDATE SET", 1)[1]
-        for col in postgres_export_plugin.PLUGIN_PRIMARY_KEY:
+        for col in plugin_pg.PLUGIN_PRIMARY_KEY:
             assert f'"{col}" = EXCLUDED' not in set_clause, col
 
     def test_distinct_on_guards_duplicates_within_one_push(self):
@@ -622,11 +624,11 @@ class TestPluginUpsertSQL:
         assert 'SELECT DISTINCT ON ("token", "trade_date")' in self._sql()
 
     def test_it_reads_from_the_staging_table(self):
-        assert postgres_export_plugin._TEMP_TABLE in self._sql()
+        assert plugin_pg._TEMP_TABLE in self._sql()
 
     def test_all_key_columns_would_raise(self):
         with pytest.raises(ValueError, match="nothing to update"):
-            postgres_export_plugin._upsert_sql("public", "t", list(postgres_export_plugin.PLUGIN_PRIMARY_KEY))
+            plugin_pg._upsert_sql("public", "t", list(plugin_pg.PLUGIN_PRIMARY_KEY))
 
 
 class TestPluginNullSafety:
@@ -827,7 +829,6 @@ class TestTokenRegistryV3:
         with pytest.raises(ValueError, match="exhausted"):
             r.assign("XCME", ["B"], "2026-08-25")
 
-
     def test_a_backfilled_day_agrees_with_the_day_after_it(self, tmp_path):
         """The exact case counterTokenV2 cannot survive.
 
@@ -892,6 +893,7 @@ class TestTokenRegistryV3:
         """Appended, so positional readers of the normalized schema keep working."""
         assert paths.NORMALIZED_COLUMNS[-1] == "counterTokenV3" or \
                "counterTokenV3" in paths.NORMALIZED_COLUMNS
+
 
 
 if __name__ == "__main__":

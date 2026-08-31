@@ -1,6 +1,6 @@
 """ClickHouse export: push normalized contracts and baskets, staged then swapped.
 
-Replaces the old Postgres contracts push. postgres_export_plugin.py is untouched
+Replaces the old Postgres contracts push. plugin/postgres.py is untouched
 and still writes to Postgres -- only this side moved.
 
 Layout, per push, inside the configured database:

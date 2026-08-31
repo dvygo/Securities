@@ -132,14 +132,15 @@ def build_normalizer_steps(
     beats naming a db step in --only, because the failure it prevents (an unwanted
     write to a live table) cannot be undone by re-running.
     """
-    from . import clickhouse_export, config, postgres_export_plugin, baskets, export
+    from . import clickhouse_export, config, baskets, export
 
     # [baskets].enabled, and only there -- there is no flag for it. Whether a
     # deployment builds baskets is a property of the deployment, not of whoever
     # is typing the command, so a scheduled run cannot change it by forgetting
     # to repeat an argument.
     baskets_enabled = config.load_baskets().enabled
-    from .normalize import fields, databento_norm, nse_norm, plugin as plugin_norm
+    from .normalize import fields, databento_norm, nse_norm
+    from .plugin import build as plugin_build, postgres as plugin_postgres
 
     all_steps = [
         Step("normalize-fyers", fields.run),
@@ -153,11 +154,11 @@ def build_normalizer_steps(
     all_steps.append(Step("csv-export", export.run))
 
     if plugin:
-        all_steps.append(Step("plugin", plugin_norm.run))
+        all_steps.append(Step("plugin", plugin_build.run))
         # Building plugin CSVs otherwise pushes them too -- --csv-only is the
         # opt-out.
         if not csv_only:
-            all_steps.append(Step("postgres-plugin", postgres_export_plugin.run))
+            all_steps.append(Step("postgres-plugin", plugin_postgres.run))
 
     # The contracts push is ClickHouse now (see clickhouse_export). postgres-plugin
     # above is unaffected and still writes to Postgres.

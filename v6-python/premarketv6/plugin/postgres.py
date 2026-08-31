@@ -27,11 +27,11 @@ from typing import List
 
 import psycopg
 
-from . import config, parquet_export, paths, runner
-from .normalize import plugin as plugin_norm
+from .. import config, parquet_export, paths, runner
+from . import build
 
 # Column types for the plugin table, from docs/plugin/pg_data_types.txt.
-# Keyed by column name and rendered in plugin_norm.PLUGIN_COLUMNS order, so a
+# Keyed by column name and rendered in build.PLUGIN_COLUMNS order, so a
 # column added there without a type here fails loudly at _create_table_sql
 # rather than producing a table quietly missing it.
 PLUGIN_COLUMN_TYPES = {
@@ -65,14 +65,14 @@ _TEMP_TABLE = "plugin_upsert_staging"
 
 def _create_table_sql(schema: str, table: str) -> str:
     """DDL for the plugin table, in PLUGIN_COLUMNS order."""
-    missing = [c for c in plugin_norm.PLUGIN_COLUMNS if c not in PLUGIN_COLUMN_TYPES]
+    missing = [c for c in build.PLUGIN_COLUMNS if c not in PLUGIN_COLUMN_TYPES]
     if missing:
         raise ValueError(
             f"No Postgres type for plugin column(s): {', '.join(missing)}. "
             f"Add them to PLUGIN_COLUMN_TYPES (see docs/plugin/pg_data_types.txt)."
         )
     cols = ",\n".join(
-        f'    "{c}" {PLUGIN_COLUMN_TYPES[c]}' for c in plugin_norm.PLUGIN_COLUMNS
+        f'    "{c}" {PLUGIN_COLUMN_TYPES[c]}' for c in build.PLUGIN_COLUMNS
     )
     pk = ", ".join(f'"{c}"' for c in PLUGIN_PRIMARY_KEY)
     return (
@@ -248,7 +248,7 @@ def run(opts: runner.Opts) -> None:
             _ensure_table(conn, cfg.schema, cfg.table, cfg.create_table)
             for path in plugin_files:
                 read, affected = _copy_upsert(
-                    conn, cfg.schema, cfg.table, plugin_norm.PLUGIN_COLUMNS,
+                    conn, cfg.schema, cfg.table, build.PLUGIN_COLUMNS,
                     parquet_export.iter_rows(path))
                 note = "" if read == affected else f" ({read - affected} duplicate key(s) collapsed)"
                 print(f"    Upserted {affected} rows from {path.name}{note}")

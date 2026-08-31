@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 
 from .. import config, export, parquet_export, paths, runner
-from . import session
+from ..normalize import session
 
 # Column order matches docs/plugin/pg_data_types.txt exactly.
 PLUGIN_COLUMNS = [
