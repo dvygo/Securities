@@ -65,6 +65,81 @@ def _column(table, name):
     return table.column(name) if name in table.schema.names else None
 
 
+def _allocation(date_dir: str, mic: str):
+    """One venue's allocation from a day's manifest, without holding the rest.
+
+    A day's manifest is ~85MB on an OPRA week and carries every venue. The pair
+    checks need two days in hand at once, so everything but the venue asked for
+    is dropped as soon as it is extracted.
+    """
+    entry = (counter_token.load_manifest(date_dir).get("venues") or {}).get(mic)
+    if entry is None:
+        return None
+    return {
+        "assigned": {str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
+        "free": sorted(int(x) for x in (entry.get("free") or [])),
+        "high_water": int(entry.get("high_water", 0)),
+    }
+
+
+def check_pair_recycling(previous: str, current: str, mic: str) -> List[Check]:
+    """Did carry_forward's three rules actually fire between these two days?
+
+    The other pair checks read the tokens in the files. These read the
+    ALLOCATION that produced them, which is where reuse either happens or
+    silently does not -- and no token-level check can tell the two apart. A
+    venue whose high_water grows by exactly its arrival count every day looks
+    identical to one that recycled nothing because it had nothing to recycle;
+    only the pool arithmetic distinguishes them.
+
+    Measured on the real week: XCBO 24->25 released 11,058 offsets and gave
+    7,083 of them to arrivals without high_water moving at all, while XCME had
+    zero departures all week and so never exercised the path.
+    """
+    before, after = _allocation(previous, mic), _allocation(current, mic)
+    span = f"{previous} -> {current}"
+    if before is None or after is None:
+        return [Check(span, mic, "recycling", False,
+                      "one of the two days has no manifest entry for this venue",
+                      hard=False, tag=V2)]
+
+    kept = set(before["assigned"]) & set(after["assigned"])
+    departed = set(before["assigned"]) - kept
+    arrived = set(after["assigned"]) - kept
+
+    released = sorted({before["assigned"][s] for s in departed})
+    available = sorted(set(before["free"]) | set(released))
+    taken = sorted(o for o in (after["assigned"][s] for s in arrived)
+                   if o <= before["high_water"])
+    growth = after["high_water"] - before["high_water"]
+    extended = [s for s in arrived if after["assigned"][s] > before["high_water"]]
+
+    return [
+        # Rule 2: a departed script's offset goes back in the pool.
+        Check(span, mic, "offsets released",
+              set(released).isdisjoint(after["assigned"].values()) or bool(taken),
+              f"{len(departed):,} script(s) departed, {len(released):,} offset(s) "
+              f"released; pool in {len(before['free']):,} -> {len(available):,} available",
+              tag=V2),
+        # Rule 3, and the one that actually matters: the pool is drained BEFORE
+        # high_water is allowed to grow. Growing early would leak numbers.
+        Check(span, mic, "pool drained first",
+              len(taken) == min(len(arrived), len(available))
+              and growth == len(extended)
+              and set(taken).issubset(available),
+              f"{len(arrived):,} arrival(s): {len(taken):,} took a released offset "
+              f"(available {len(available):,}), {len(extended):,} needed a new one, "
+              f"high_water +{growth:,}",
+              tag=V2),
+        # Leftovers have to survive the day or the numbers are lost for good.
+        Check(span, mic, "pool carried",
+              after["free"] == available[len(taken):],
+              f"{len(after['free']):,} offset(s) still free for tomorrow "
+              f"(expected {len(available) - len(taken):,})",
+              tag=V2),
+    ]
+
+
 def _v3_pairs(paths_):
     """Distinct (script, counterTokenV3) for one venue-day, or None if absent."""
     import pyarrow.parquet as pq
@@ -370,6 +445,7 @@ def check_pair(previous: str, current: str, venues: Sequence[str] = ()) -> List[
                if ambiguous else ""),
             hard=False,
         ))
+        checks.extend(check_pair_recycling(previous, current, mic))
         v3_checks.extend(check_pair_v3(previous, current, mic, before[mic], after[mic]))
 
         # Which day v2 actually chained from. Across a gap it silently reaches

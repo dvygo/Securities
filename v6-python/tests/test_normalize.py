@@ -1699,5 +1699,99 @@ class TestTokenV3Checks:
         assert not reuse.ok and reuse.hard
 
 
+
+class TestV2Recycling:
+    """counterTokenV2's offset recycling, read from the allocation not the tokens.
+
+    The token-level checks cannot see this. A venue whose high_water grows by
+    exactly its arrival count every day looks identical to one that recycled
+    nothing because it had nothing to recycle -- only the pool arithmetic tells
+    them apart, which is the whole reason these exist.
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _day(day, scripts, previous=None):
+        """Run the real carry_forward and write the manifest it produces."""
+        tokens = counter_token.carry_forward(previous, scripts, 10, 11)
+        counter_token.merge_into_manifest(day, "XCBO", tokens)
+        return tokens
+
+    @staticmethod
+    def _named(checks, name):
+        return next(c for c in checks if c.name == name)
+
+    def _checks(self):
+        return counter_token_qa.check_pair_recycling("20260824", "20260825", "XCBO")
+
+    def test_a_departed_offset_is_released_and_reused(self, tree):
+        """B leaves, D arrives and takes B's number without high_water moving."""
+        day1 = self._day("20260824", ["A", "B", "C"])
+        self._day("20260825", ["A", "C", "D"], day1)
+        checks = self._checks()
+        assert [c.name for c in checks if not c.ok] == []
+        drained = self._named(checks, "pool drained first")
+        assert "1 took a released offset" in drained.detail
+        assert "high_water +0" in drained.detail
+
+    def test_the_pool_is_drained_before_high_water_grows(self, tree):
+        """Two dead offsets, three arrivals: two recycled, one new. Never the reverse."""
+        day1 = self._day("20260824", ["A", "B", "C"])
+        self._day("20260825", ["A", "D", "E", "F"], day1)
+        drained = self._named(self._checks(), "pool drained first")
+        assert drained.ok
+        assert "2 took a released offset" in drained.detail and "high_water +1" in drained.detail
+
+    def test_leftover_offsets_survive_to_the_next_day(self, tree):
+        """Three depart, one arrives -- the other two numbers must not be lost."""
+        day1 = self._day("20260824", ["A", "B", "C", "D"])
+        self._day("20260825", ["A", "Z"], day1)
+        carried = self._named(self._checks(), "pool carried")
+        assert carried.ok and "2 offset(s) still free" in carried.detail
+
+    def test_a_venue_with_nothing_to_recycle_still_passes(self, tree):
+        """XCME's real case: zero departures all week, so the path never engages.
+
+        This must not read as a failure -- there was nothing to reuse.
+        """
+        day1 = self._day("20260824", ["A", "B"])
+        self._day("20260825", ["A", "B", "C"], day1)
+        checks = self._checks()
+        assert [c.name for c in checks if not c.ok] == []
+        assert "0 script(s) departed" in self._named(checks, "offsets released").detail
+        assert "high_water +1" in self._named(checks, "pool drained first").detail
+
+    def test_growing_high_water_while_the_pool_had_room_fails(self, tree):
+        """The failure these checks exist to catch: numbers leaked, not reused."""
+        day1 = self._day("20260824", ["A", "B", "C"])
+        counter_token.merge_into_manifest("20260825", "XCBO", counter_token.VenueTokens(
+            venue_id=10, prefix=11, high_water=4,
+            assigned={"A": 1, "C": 3, "D": 4},        # D took a NEW offset...
+            free=[2]))                                # ...while 2 sat free
+        assert not self._named(self._checks(), "pool drained first").ok
+
+    def test_a_lost_leftover_fails(self, tree):
+        """Dropping the free pool silently shrinks the venue's usable space."""
+        day1 = self._day("20260824", ["A", "B", "C", "D"])
+        counter_token.merge_into_manifest("20260825", "XCBO", counter_token.VenueTokens(
+            venue_id=10, prefix=11, high_water=4,
+            assigned={"A": 1}, free=[]))              # 2, 3, 4 released and lost
+        assert not self._named(self._checks(), "pool carried").ok
+
+    def test_a_missing_manifest_warns_rather_than_fails(self, tree):
+        self._day("20260824", ["A"])
+        absent = self._checks()[0]
+        assert not absent.ok and not absent.hard
+
+    def test_every_verdict_is_tagged_v2(self, tree):
+        day1 = self._day("20260824", ["A", "B"])
+        self._day("20260825", ["A", "C"], day1)
+        assert {c.tag for c in self._checks()} == {"v2"}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
