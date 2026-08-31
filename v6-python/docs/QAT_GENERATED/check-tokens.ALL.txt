@@ -1,5 +1,5 @@
-# check-tokens [ALL]  2026-08-31 04:35:04Z
-# 215 check(s): 208 pass, 0 fail, 7 warn
+# check-tokens [ALL]  2026-08-31 05:45:27Z
+# 251 check(s): 244 pass, 0 fail, 7 warn
 [v2] PASS 20260824              XCBO  populated          2,006,525 row(s), 0 blank
 [v2] PASS 20260824              XCBO  numeric int32      0 non-numeric, highest 110,895,414 (int32 2,147,483,647)
 [v2] PASS 20260824              XCBO  prefix             prefix 11 (venue_id 10 + 1), 0 off it
@@ -157,12 +157,21 @@
 [v3] PASS 20260828              XNAS  v3 one-to-one      13,204 script(s), 13,204 token(s)
 [v2] PASS 20260824 -> 20260825  XCBO  stable             1,995,467 script(s) on both days, 0 moved to a different token
 [v2] WARN 20260824 -> 20260825  XCBO  no reuse           7,083 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260824 -> 20260825  XCBO  offsets released   11,058 script(s) departed, 11,058 offset(s) released; pool in 0 -> 11,058 available
+[v2] PASS 20260824 -> 20260825  XCBO  pool drained first 7,083 arrival(s): 7,083 took a released offset (available 11,058), 0 needed a new one, high_water +0
+[v2] PASS 20260824 -> 20260825  XCBO  pool carried       3,975 offset(s) still free for tomorrow (expected 3,975)
 [v2] PASS 20260824 -> 20260825  XCBO  chained from       carried from 20260824
 [v2] PASS 20260824 -> 20260825  XCME  stable             944,287 script(s) on both days, 0 moved to a different token
 [v2] PASS 20260824 -> 20260825  XCME  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260824 -> 20260825  XCME  offsets released   0 script(s) departed, 0 offset(s) released; pool in 0 -> 0 available
+[v2] PASS 20260824 -> 20260825  XCME  pool drained first 51,797 arrival(s): 0 took a released offset (available 0), 51,797 needed a new one, high_water +51,797
+[v2] PASS 20260824 -> 20260825  XCME  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260824 -> 20260825  XCME  chained from       carried from 20260824
 [v2] PASS 20260824 -> 20260825  XNAS  stable             13,193 script(s) on both days, 0 moved to a different token
 [v2] WARN 20260824 -> 20260825  XNAS  no reuse           3 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260824 -> 20260825  XNAS  offsets released   3 script(s) departed, 3 offset(s) released; pool in 0 -> 3 available
+[v2] PASS 20260824 -> 20260825  XNAS  pool drained first 8 arrival(s): 3 took a released offset (available 3), 5 needed a new one, high_water +5
+[v2] PASS 20260824 -> 20260825  XNAS  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260824 -> 20260825  XNAS  chained from       carried from 20260824
 [v3] PASS 20260824 -> 20260825  XCBO  v3 stable          1,995,467 script(s) on both days, 0 moved
 [v3] PASS 20260824 -> 20260825  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
@@ -172,12 +181,21 @@
 [v3] PASS 20260824 -> 20260825  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
 [v2] PASS 20260825 -> 20260826  XCBO  stable             1,997,911 script(s) on both days, 0 moved to a different token
 [v2] WARN 20260825 -> 20260826  XCBO  no reuse           4,639 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260825 -> 20260826  XCBO  offsets released   4,639 script(s) departed, 4,639 offset(s) released; pool in 3,975 -> 8,614 available
+[v2] PASS 20260825 -> 20260826  XCBO  pool drained first 8,713 arrival(s): 8,614 took a released offset (available 8,614), 99 needed a new one, high_water +99
+[v2] PASS 20260825 -> 20260826  XCBO  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260825 -> 20260826  XCBO  chained from       carried from 20260825
 [v2] PASS 20260825 -> 20260826  XCME  stable             996,084 script(s) on both days, 0 moved to a different token
 [v2] PASS 20260825 -> 20260826  XCME  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260825 -> 20260826  XCME  offsets released   0 script(s) departed, 0 offset(s) released; pool in 0 -> 0 available
+[v2] PASS 20260825 -> 20260826  XCME  pool drained first 2,612 arrival(s): 0 took a released offset (available 0), 2,612 needed a new one, high_water +2,612
+[v2] PASS 20260825 -> 20260826  XCME  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260825 -> 20260826  XCME  chained from       carried from 20260825
 [v2] PASS 20260825 -> 20260826  XNAS  stable             13,201 script(s) on both days, 0 moved to a different token
 [v2] PASS 20260825 -> 20260826  XNAS  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260825 -> 20260826  XNAS  offsets released   0 script(s) departed, 0 offset(s) released; pool in 0 -> 0 available
+[v2] PASS 20260825 -> 20260826  XNAS  pool drained first 0 arrival(s): 0 took a released offset (available 0), 0 needed a new one, high_water +0
+[v2] PASS 20260825 -> 20260826  XNAS  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260825 -> 20260826  XNAS  chained from       carried from 20260825
 [v3] PASS 20260825 -> 20260826  XCBO  v3 stable          1,997,911 script(s) on both days, 0 moved
 [v3] PASS 20260825 -> 20260826  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
@@ -187,12 +205,21 @@
 [v3] PASS 20260825 -> 20260826  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
 [v2] PASS 20260826 -> 20260827  XCBO  stable             1,996,937 script(s) on both days, 0 moved to a different token
 [v2] WARN 20260826 -> 20260827  XCBO  no reuse           9,687 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260826 -> 20260827  XCBO  offsets released   9,687 script(s) departed, 9,687 offset(s) released; pool in 0 -> 9,687 available
+[v2] PASS 20260826 -> 20260827  XCBO  pool drained first 44,475 arrival(s): 9,687 took a released offset (available 9,687), 34,788 needed a new one, high_water +34,788
+[v2] PASS 20260826 -> 20260827  XCBO  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260826 -> 20260827  XCBO  chained from       carried from 20260826
 [v2] PASS 20260826 -> 20260827  XCME  stable             998,696 script(s) on both days, 0 moved to a different token
 [v2] PASS 20260826 -> 20260827  XCME  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260826 -> 20260827  XCME  offsets released   0 script(s) departed, 0 offset(s) released; pool in 0 -> 0 available
+[v2] PASS 20260826 -> 20260827  XCME  pool drained first 49,902 arrival(s): 0 took a released offset (available 0), 49,902 needed a new one, high_water +49,902
+[v2] PASS 20260826 -> 20260827  XCME  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260826 -> 20260827  XCME  chained from       carried from 20260826
 [v2] PASS 20260826 -> 20260827  XNAS  stable             13,175 script(s) on both days, 0 moved to a different token
 [v2] WARN 20260826 -> 20260827  XNAS  no reuse           26 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260826 -> 20260827  XNAS  offsets released   26 script(s) departed, 26 offset(s) released; pool in 0 -> 26 available
+[v2] PASS 20260826 -> 20260827  XNAS  pool drained first 38 arrival(s): 26 took a released offset (available 26), 12 needed a new one, high_water +12
+[v2] PASS 20260826 -> 20260827  XNAS  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260826 -> 20260827  XNAS  chained from       carried from 20260826
 [v3] PASS 20260826 -> 20260827  XCBO  v3 stable          1,996,937 script(s) on both days, 0 moved
 [v3] PASS 20260826 -> 20260827  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
@@ -202,12 +229,21 @@
 [v3] PASS 20260826 -> 20260827  XNAS  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
 [v2] PASS 20260827 -> 20260828  XCBO  stable             2,036,952 script(s) on both days, 0 moved to a different token
 [v2] WARN 20260827 -> 20260828  XCBO  no reuse           4,460 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260827 -> 20260828  XCBO  offsets released   4,460 script(s) departed, 4,460 offset(s) released; pool in 0 -> 4,460 available
+[v2] PASS 20260827 -> 20260828  XCBO  pool drained first 39,299 arrival(s): 4,460 took a released offset (available 4,460), 34,839 needed a new one, high_water +34,839
+[v2] PASS 20260827 -> 20260828  XCBO  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260827 -> 20260828  XCBO  chained from       carried from 20260827
 [v2] PASS 20260827 -> 20260828  XCME  stable             1,048,598 script(s) on both days, 0 moved to a different token
 [v2] PASS 20260827 -> 20260828  XCME  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260827 -> 20260828  XCME  offsets released   0 script(s) departed, 0 offset(s) released; pool in 0 -> 0 available
+[v2] PASS 20260827 -> 20260828  XCME  pool drained first 93,777 arrival(s): 0 took a released offset (available 0), 93,777 needed a new one, high_water +93,777
+[v2] PASS 20260827 -> 20260828  XCME  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260827 -> 20260828  XCME  chained from       carried from 20260827
 [v2] PASS 20260827 -> 20260828  XNAS  stable             13,195 script(s) on both days, 0 moved to a different token
 [v2] WARN 20260827 -> 20260828  XNAS  no reuse           9 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; counterTokenV3 is the column that cannot do it
+[v2] PASS 20260827 -> 20260828  XNAS  offsets released   18 script(s) departed, 18 offset(s) released; pool in 0 -> 18 available
+[v2] PASS 20260827 -> 20260828  XNAS  pool drained first 9 arrival(s): 9 took a released offset (available 18), 0 needed a new one, high_water +0
+[v2] PASS 20260827 -> 20260828  XNAS  pool carried       9 offset(s) still free for tomorrow (expected 9)
 [v2] PASS 20260827 -> 20260828  XNAS  chained from       carried from 20260827
 [v3] PASS 20260827 -> 20260828  XCBO  v3 stable          2,036,952 script(s) on both days, 0 moved
 [v3] PASS 20260827 -> 20260828  XCBO  v3 no reuse        0 token(s) name a different script on the two days -- issued once, never reissued
