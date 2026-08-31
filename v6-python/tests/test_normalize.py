@@ -803,11 +803,30 @@ class TestTokenRegistryV3:
     def _reg(tmp_path, name="t.db"):
         return token_registry.TokenRegistry(tmp_path / name)
 
-    def test_first_token_is_above_int32(self, tmp_path):
-        """So a v3 token can never be mistaken for a v1/v2 one."""
+    def test_tokens_fit_in_int32(self, tmp_path):
+        """The downstream consumer holds int32; a wider token is unreadable there."""
         r = self._reg(tmp_path)
-        assert min(r.assign("XCME", ["A"], "2026-08-24").values()) == token_registry.V3_BASE
-        assert token_registry.V3_BASE > 2_147_483_647
+        issued = r.assign("XCME", ["A", "B"], "2026-08-24").values()
+        assert min(issued) == token_registry.V3_BASE
+        assert max(issued) <= token_registry.INT32_MAX
+
+    def test_base_sits_above_observed_v1_v2_tokens(self, tmp_path):
+        """So a plugin table migrated from v2 to v3 cannot collide on (token, trade_date).
+
+        The highest v2 token observed is 110,891,439 (XCBO).
+        """
+        assert token_registry.V3_BASE > 110_891_439
+
+    def test_it_refuses_to_wrap_past_int32(self, tmp_path):
+        """A wrapped token is a number already meaning another instrument."""
+        import sqlite3
+        r = self._reg(tmp_path)
+        r.assign("XCME", ["A"], "2026-08-24")
+        with sqlite3.connect(r.path) as c:
+            c.execute("UPDATE instrument SET token = ?", (token_registry.INT32_MAX,))
+        with pytest.raises(ValueError, match="exhausted"):
+            r.assign("XCME", ["B"], "2026-08-25")
+
 
     def test_a_backfilled_day_agrees_with_the_day_after_it(self, tmp_path):
         """The exact case counterTokenV2 cannot survive.

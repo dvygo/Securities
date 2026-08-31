@@ -56,19 +56,40 @@ being a single sequence rather than from partitioned number space -- which is
 also why it has no per-venue capacity ceiling to exhaust, unlike v1/v2's
 11,111,110 rows per prefix inside int32.
 
-Tokens start at V3_BASE, far above anything int32 can hold, so a v3 token can
-never be mistaken for a v1 or v2 one by a reader that has both.
+INT32, NOT INT64
+
+Tokens are signed-32-bit, because that is what the downstream consumer holds --
+the same ceiling counter_token.INT32_MAX exists for. A wider token is not a
+free upgrade here: it is unreadable at the far end, so v3 lives inside int32
+like v1 and v2 do.
+
+That makes capacity finite and worth stating. Never reusing a number means the
+sequence only climbs, including over instruments that expired years ago.
+Measured on XCBO, the largest venue: 7,083 / 8,687 / 44,475 genuinely new
+instruments on the three days after a 2,006,525 seed. Against the ~1.1 billion
+tokens above V3_BASE that is on the order of decades, not years -- but it is
+not unlimited, and check_capacity refuses to cross the ceiling rather than
+wrapping into numbers that are already in use.
 """
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Dict, Iterable, Mapping, Optional
 
-# First token issued. Above int32's 2,147,483,647 by three orders of magnitude,
-# so v1/v2 and v3 tokens can never be confused for one another, and comfortably
-# inside int64 (9.2e18) -- at a million new instruments a day this base leaves
-# room for over 25 billion years.
-V3_BASE = 1_000_000_000_000
+# Widest signed 32-bit value the downstream consumer can hold, the same limit
+# counter_token works to. v3 tokens are int32 like v1 and v2.
+INT32_MAX = 2_147_483_647
+
+# First token issued. Chosen to sit above every v1/v2 token in practice -- the
+# highest observed is 110,891,439 (XCBO v2), roughly a tenth of this -- so that
+# a plugin table migrated from v2 to v3 cannot collide on (token, trade_date)
+# between rows written before and after the switch.
+#
+# "In practice" and not "provably": a two-digit prefix CAN exceed this if its
+# venue ever reaches ~100M live instruments in a day, since prefix 10 with an
+# 8-digit counter reaches 1,099,999,999. XCBO is at ~2M, so that is decades
+# away, but it is a bound worth knowing rather than an impossibility.
+V3_BASE = 1_000_000_000
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS instrument (
@@ -147,6 +168,19 @@ class TokenRegistry:
                 if fresh:
                     row = conn.execute("SELECT MAX(token) FROM instrument").fetchone()
                     next_token = (row[0] or V3_BASE - 1) + 1
+                    highest = next_token + len(fresh) - 1
+                    if highest > INT32_MAX:
+                        # Refuse rather than wrap, for the reason counter_token
+                        # refuses: a wrapped token is not merely wrong, it is a
+                        # number already meaning another instrument, and the
+                        # never-reused guarantee is the whole point of this table.
+                        raise ValueError(
+                            f"counterTokenV3 exhausted: {len(fresh):,} new {venue} "
+                            f"instrument(s) would reach {highest:,}, past int32 "
+                            f"({INT32_MAX:,}). {conn.execute('SELECT count(*) FROM instrument').fetchone()[0]:,} "
+                            f"tokens are already issued. Do not wrap -- widen the "
+                            f"column downstream and raise INT32_MAX together."
+                        )
                     conn.executemany(
                         "INSERT INTO instrument (venue, script, token, first_seen, created_at) "
                         "VALUES (?, ?, ?, ?, ?)",
