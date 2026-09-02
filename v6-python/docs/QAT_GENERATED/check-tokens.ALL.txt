@@ -1,5 +1,5 @@
-# check-tokens [ALL]  2026-09-02 05:41:50Z
-# 290 check(s): 275 pass, 0 fail, 15 warn
+# check-tokens [ALL]  2026-09-02 06:32:04Z
+# 290 check(s): 274 pass, 0 fail, 16 warn
 [v2] PASS 20260824              XCBO  populated          2,006,525 row(s), 0 blank
 [v2] PASS 20260824              XCBO  numeric int32      0 non-numeric, highest 2,950,812 (int32 2,147,483,647)
 [v2] PASS 20260824              XCBO  one-to-one         2,006,525 distinct pair(s), 2,006,525 script(s), 2,006,525 token(s)
@@ -40,24 +40,24 @@
 [v2] PASS 20260826              XBOM  manifest internal  highest 3,135,137, 20,277 assigned, 0 free
 [v2] PASS 20260826              XBOM  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260826              XCBO  populated          2,006,624 row(s), 0 blank
-[v2] PASS 20260826              XCBO  numeric int32      0 non-numeric, highest 3,153,814 (int32 2,147,483,647)
+[v2] PASS 20260826              XCBO  numeric int32      0 non-numeric, highest 3,201,958 (int32 2,147,483,647)
 [v2] PASS 20260826              XCBO  one-to-one         2,006,624 distinct pair(s), 2,006,624 script(s), 2,006,624 token(s)
-[v2] PASS 20260826              XCBO  manifest internal  highest 3,153,814, 2,006,624 assigned, 0 free
+[v2] PASS 20260826              XCBO  manifest internal  highest 3,201,958, 2,006,624 assigned, 0 free
 [v2] PASS 20260826              XCBO  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
-[v2] PASS 20260826              XCME  populated          998,696 row(s), 0 blank
-[v2] PASS 20260826              XCME  numeric int32      0 non-numeric, highest 3,153,715 (int32 2,147,483,647)
-[v2] PASS 20260826              XCME  one-to-one         998,696 distinct pair(s), 998,696 script(s), 998,696 token(s)
-[v2] PASS 20260826              XCME  manifest internal  highest 3,153,715, 998,696 assigned, 0 free
+[v2] PASS 20260826              XCME  populated          1,046,840 row(s), 0 blank
+[v2] PASS 20260826              XCME  numeric int32      0 non-numeric, highest 3,201,859 (int32 2,147,483,647)
+[v2] PASS 20260826              XCME  one-to-one         1,046,840 distinct pair(s), 1,046,840 script(s), 1,046,840 token(s)
+[v2] PASS 20260826              XCME  manifest internal  highest 3,201,859, 1,046,840 assigned, 0 free
 [v2] PASS 20260826              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260826              XIMC  populated          15,966 row(s), 0 blank
 [v2] PASS 20260826              XIMC  numeric int32      0 non-numeric, highest 3,151,103 (int32 2,147,483,647)
 [v2] PASS 20260826              XIMC  one-to-one         15,966 distinct pair(s), 15,966 script(s), 15,966 token(s)
 [v2] PASS 20260826              XIMC  manifest internal  highest 3,151,103, 15,966 assigned, 0 free
 [v2] PASS 20260826              XIMC  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
-[v2] PASS 20260826              XNAS  populated          13,201 row(s), 0 blank
-[v2] PASS 20260826              XNAS  numeric int32      0 non-numeric, highest 3,015,810 (int32 2,147,483,647)
-[v2] PASS 20260826              XNAS  one-to-one         13,201 distinct pair(s), 13,201 script(s), 13,201 token(s)
-[v2] PASS 20260826              XNAS  manifest internal  highest 3,015,810, 13,201 assigned, 0 free
+[v2] PASS 20260826              XNAS  populated          13,210 row(s), 0 blank
+[v2] PASS 20260826              XNAS  numeric int32      0 non-numeric, highest 3,201,967 (int32 2,147,483,647)
+[v2] PASS 20260826              XNAS  one-to-one         13,210 distinct pair(s), 13,210 script(s), 13,210 token(s)
+[v2] PASS 20260826              XNAS  manifest internal  highest 3,201,967, 13,210 assigned, 0 free
 [v2] PASS 20260826              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260826              XNSE  populated          99,050 row(s), 0 blank
 [v2] PASS 20260826              XNSE  numeric int32      0 non-numeric, highest 3,114,860 (int32 2,147,483,647)
@@ -65,31 +65,31 @@
 [v2] PASS 20260826              XNSE  manifest internal  highest 3,114,860, 99,050 assigned, 0 free
 [v2] PASS 20260826              XNSE  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260826              *     venues disjoint    0 token(s) shared between venues (XBOM, XCBO, XCME, XIMC, XNAS, XNSE)
-[v2] PASS 20260826              *     sequence covers    sequence issued up to 3,153,814; highest token in any file 3,153,814
+[v2] PASS 20260826              *     sequence covers    sequence issued up to 3,201,967; highest token in any file 3,201,967
 [v2] PASS 20260827              XBOM  populated          20,257 row(s), 0 blank
 [v2] PASS 20260827              XBOM  numeric int32      0 non-numeric, highest 3,135,137 (int32 2,147,483,647)
 [v2] PASS 20260827              XBOM  one-to-one         20,257 distinct pair(s), 20,257 script(s), 20,257 token(s)
 [v2] PASS 20260827              XBOM  manifest internal  highest 3,135,137, 20,257 assigned, 20 free
 [v2] PASS 20260827              XBOM  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260827              XCBO  populated          2,041,412 row(s), 0 blank
-[v2] PASS 20260827              XCBO  numeric int32      0 non-numeric, highest 3,238,832 (int32 2,147,483,647)
+[v2] PASS 20260827              XCBO  numeric int32      0 non-numeric, highest 3,288,923 (int32 2,147,483,647)
 [v2] PASS 20260827              XCBO  one-to-one         2,041,412 distinct pair(s), 2,041,412 script(s), 2,041,412 token(s)
-[v2] PASS 20260827              XCBO  manifest internal  highest 3,238,832, 2,041,412 assigned, 0 free
+[v2] PASS 20260827              XCBO  manifest internal  highest 3,288,923, 2,041,412 assigned, 0 free
 [v2] PASS 20260827              XCBO  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
-[v2] PASS 20260827              XCME  populated          1,048,598 row(s), 0 blank
-[v2] PASS 20260827              XCME  numeric int32      0 non-numeric, highest 3,204,044 (int32 2,147,483,647)
-[v2] PASS 20260827              XCME  one-to-one         1,048,598 distinct pair(s), 1,048,598 script(s), 1,048,598 token(s)
-[v2] PASS 20260827              XCME  manifest internal  highest 3,204,044, 1,048,598 assigned, 0 free
+[v2] PASS 20260827              XCME  populated          1,098,680 row(s), 0 blank
+[v2] PASS 20260827              XCME  numeric int32      0 non-numeric, highest 3,254,135 (int32 2,147,483,647)
+[v2] PASS 20260827              XCME  one-to-one         1,098,680 distinct pair(s), 1,098,680 script(s), 1,098,680 token(s)
+[v2] PASS 20260827              XCME  manifest internal  highest 3,254,135, 1,098,680 assigned, 0 free
 [v2] PASS 20260827              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260827              XIMC  populated          16,294 row(s), 0 blank
-[v2] PASS 20260827              XIMC  numeric int32      0 non-numeric, highest 3,154,142 (int32 2,147,483,647)
+[v2] PASS 20260827              XIMC  numeric int32      0 non-numeric, highest 3,202,295 (int32 2,147,483,647)
 [v2] PASS 20260827              XIMC  one-to-one         16,294 distinct pair(s), 16,294 script(s), 16,294 token(s)
-[v2] PASS 20260827              XIMC  manifest internal  highest 3,154,142, 16,294 assigned, 0 free
+[v2] PASS 20260827              XIMC  manifest internal  highest 3,202,295, 16,294 assigned, 0 free
 [v2] PASS 20260827              XIMC  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260827              XNAS  populated          13,213 row(s), 0 blank
-[v2] PASS 20260827              XNAS  numeric int32      0 non-numeric, highest 3,238,844 (int32 2,147,483,647)
+[v2] PASS 20260827              XNAS  numeric int32      0 non-numeric, highest 3,288,926 (int32 2,147,483,647)
 [v2] PASS 20260827              XNAS  one-to-one         13,213 distinct pair(s), 13,213 script(s), 13,213 token(s)
-[v2] PASS 20260827              XNAS  manifest internal  highest 3,238,844, 13,213 assigned, 0 free
+[v2] PASS 20260827              XNAS  manifest internal  highest 3,288,926, 13,213 assigned, 0 free
 [v2] PASS 20260827              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260827              XNSE  populated          95,436 row(s), 0 blank
 [v2] PASS 20260827              XNSE  numeric int32      0 non-numeric, highest 3,114,860 (int32 2,147,483,647)
@@ -97,7 +97,7 @@
 [v2] PASS 20260827              XNSE  manifest internal  highest 3,114,860, 95,436 assigned, 3,614 free
 [v2] PASS 20260827              XNSE  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260827              *     venues disjoint    0 token(s) shared between venues (XBOM, XCBO, XCME, XIMC, XNAS, XNSE)
-[v2] PASS 20260827              *     sequence covers    sequence issued up to 3,238,844; highest token in any file 3,238,844
+[v2] PASS 20260827              *     sequence covers    sequence issued up to 3,288,926; highest token in any file 3,288,926
 [v2] PASS 20260828              XCBO  populated          2,076,251 row(s), 0 blank
 [v2] PASS 20260828              XCBO  numeric int32      0 non-numeric, highest 3,367,460 (int32 2,147,483,647)
 [v2] PASS 20260828              XCBO  one-to-one         2,076,251 distinct pair(s), 2,076,251 script(s), 2,076,251 token(s)
@@ -109,9 +109,9 @@
 [v2] PASS 20260828              XCME  manifest internal  highest 3,332,621, 1,142,375 assigned, 0 free
 [v2] PASS 20260828              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260828              XNAS  populated          13,204 row(s), 0 blank
-[v2] PASS 20260828              XNAS  numeric int32      0 non-numeric, highest 3,238,844 (int32 2,147,483,647)
+[v2] PASS 20260828              XNAS  numeric int32      0 non-numeric, highest 3,288,926 (int32 2,147,483,647)
 [v2] PASS 20260828              XNAS  one-to-one         13,204 distinct pair(s), 13,204 script(s), 13,204 token(s)
-[v2] PASS 20260828              XNAS  manifest internal  highest 3,238,844, 13,204 assigned, 9 free
+[v2] PASS 20260828              XNAS  manifest internal  highest 3,288,926, 13,204 assigned, 9 free
 [v2] PASS 20260828              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260828              *     venues disjoint    0 token(s) shared between venues (XCBO, XCME, XNAS)
 [v2] PASS 20260828              *     sequence covers    sequence issued up to 3,367,460; highest token in any file 3,367,460
@@ -121,14 +121,14 @@
 [v2] PASS 20260831              XCBO  manifest internal  highest 3,367,460, 2,008,642 assigned, 67,609 free
 [v2] PASS 20260831              XCBO  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260831              XCME  populated          938,666 row(s), 0 blank
-[v2] PASS 20260831              XCME  numeric int32      0 non-numeric, highest 3,332,605 (int32 2,147,483,647)
+[v2] PASS 20260831              XCME  numeric int32      0 non-numeric, highest 3,332,621 (int32 2,147,483,647)
 [v2] PASS 20260831              XCME  one-to-one         938,666 distinct pair(s), 938,666 script(s), 938,666 token(s)
-[v2] PASS 20260831              XCME  manifest internal  highest 3,332,605, 938,666 assigned, 203,709 free
+[v2] PASS 20260831              XCME  manifest internal  highest 3,332,621, 938,666 assigned, 203,709 free
 [v2] PASS 20260831              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260831              XNAS  populated          13,207 row(s), 0 blank
-[v2] PASS 20260831              XNAS  numeric int32      0 non-numeric, highest 3,238,844 (int32 2,147,483,647)
+[v2] PASS 20260831              XNAS  numeric int32      0 non-numeric, highest 3,288,926 (int32 2,147,483,647)
 [v2] PASS 20260831              XNAS  one-to-one         13,207 distinct pair(s), 13,207 script(s), 13,207 token(s)
-[v2] PASS 20260831              XNAS  manifest internal  highest 3,238,844, 13,207 assigned, 6 free
+[v2] PASS 20260831              XNAS  manifest internal  highest 3,288,926, 13,207 assigned, 6 free
 [v2] PASS 20260831              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260831              *     venues disjoint    0 token(s) shared between venues (XCBO, XCME, XNAS)
 [v2] PASS 20260831              *     sequence covers    sequence issued up to 3,367,460; highest token in any file 3,367,460
@@ -142,20 +142,20 @@
 [v2] PASS 20260901              XCBO  one-to-one         2,007,183 distinct pair(s), 2,007,183 script(s), 2,007,183 token(s)
 [v2] PASS 20260901              XCBO  manifest internal  highest 3,367,460, 2,007,183 assigned, 69,068 free
 [v2] PASS 20260901              XCBO  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
-[v2] PASS 20260901              XCME  populated          948,402 row(s), 0 blank
-[v2] PASS 20260901              XCME  numeric int32      0 non-numeric, highest 3,332,605 (int32 2,147,483,647)
-[v2] PASS 20260901              XCME  one-to-one         948,402 distinct pair(s), 948,402 script(s), 948,402 token(s)
-[v2] PASS 20260901              XCME  manifest internal  highest 3,332,605, 948,402 assigned, 193,973 free
+[v2] PASS 20260901              XCME  populated          1,000,300 row(s), 0 blank
+[v2] PASS 20260901              XCME  numeric int32      0 non-numeric, highest 3,332,621 (int32 2,147,483,647)
+[v2] PASS 20260901              XCME  one-to-one         1,000,300 distinct pair(s), 1,000,300 script(s), 1,000,300 token(s)
+[v2] PASS 20260901              XCME  manifest internal  highest 3,332,621, 1,000,300 assigned, 142,075 free
 [v2] PASS 20260901              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260901              XIMC  populated          15,335 row(s), 0 blank
-[v2] PASS 20260901              XIMC  numeric int32      0 non-numeric, highest 3,154,142 (int32 2,147,483,647)
+[v2] PASS 20260901              XIMC  numeric int32      0 non-numeric, highest 3,202,295 (int32 2,147,483,647)
 [v2] PASS 20260901              XIMC  one-to-one         15,335 distinct pair(s), 15,335 script(s), 15,335 token(s)
-[v2] PASS 20260901              XIMC  manifest internal  highest 3,154,142, 15,335 assigned, 959 free
+[v2] PASS 20260901              XIMC  manifest internal  highest 3,202,295, 15,335 assigned, 959 free
 [v2] PASS 20260901              XIMC  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
-[v2] PASS 20260901              XNAS  populated          13,195 row(s), 0 blank
-[v2] PASS 20260901              XNAS  numeric int32      0 non-numeric, highest 3,238,840 (int32 2,147,483,647)
-[v2] PASS 20260901              XNAS  one-to-one         13,195 distinct pair(s), 13,195 script(s), 13,195 token(s)
-[v2] PASS 20260901              XNAS  manifest internal  highest 3,238,840, 13,195 assigned, 18 free
+[v2] PASS 20260901              XNAS  populated          13,207 row(s), 0 blank
+[v2] PASS 20260901              XNAS  numeric int32      0 non-numeric, highest 3,288,926 (int32 2,147,483,647)
+[v2] PASS 20260901              XNAS  one-to-one         13,207 distinct pair(s), 13,207 script(s), 13,207 token(s)
+[v2] PASS 20260901              XNAS  manifest internal  highest 3,288,926, 13,207 assigned, 6 free
 [v2] PASS 20260901              XNAS  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260901              XNSE  populated          96,997 row(s), 0 blank
 [v2] PASS 20260901              XNSE  numeric int32      0 non-numeric, highest 3,114,860 (int32 2,147,483,647)
@@ -191,13 +191,13 @@
 [v2] PASS 20260825 -> 20260826  XCME  stable             996,084 script(s) on both days, 0 moved to a different token
 [v2] PASS 20260825 -> 20260826  XCME  no reuse           0 token(s) name a different script on the two days
 [v2] PASS 20260825 -> 20260826  XCME  offsets released   0 script(s) departed, 0 offset(s) released; pool in 0 -> 0 available
-[v2] PASS 20260825 -> 20260826  XCME  pool drained first 2,612 arrival(s): 0 reused a released token (available 0), 2,612 drew a new one from the shared sequence
+[v2] PASS 20260825 -> 20260826  XCME  pool drained first 50,756 arrival(s): 0 reused a released token (available 0), 50,756 drew a new one from the shared sequence
 [v2] PASS 20260825 -> 20260826  XCME  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260825 -> 20260826  XCME  chained from       carried from 20260825
-[v2] PASS 20260825 -> 20260826  XNAS  stable             13,201 script(s) on both days, 0 moved to a different token
-[v2] PASS 20260825 -> 20260826  XNAS  no reuse           0 token(s) name a different script on the two days
-[v2] PASS 20260825 -> 20260826  XNAS  offsets released   0 script(s) departed, 0 offset(s) released; pool in 0 -> 0 available
-[v2] PASS 20260825 -> 20260826  XNAS  pool drained first 0 arrival(s): 0 reused a released token (available 0), 0 drew a new one from the shared sequence
+[v2] PASS 20260825 -> 20260826  XNAS  stable             13,193 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260825 -> 20260826  XNAS  no reuse           8 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; a cross-date join on the token must carry the date with it
+[v2] PASS 20260825 -> 20260826  XNAS  offsets released   8 script(s) departed, 8 offset(s) released; pool in 0 -> 8 available
+[v2] PASS 20260825 -> 20260826  XNAS  pool drained first 17 arrival(s): 8 reused a released token (available 8), 9 drew a new one from the shared sequence
 [v2] PASS 20260825 -> 20260826  XNAS  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260825 -> 20260826  XNAS  chained from       carried from 20260825
 [v2] PASS 20260826 -> 20260827  XBOM  stable             20,247 script(s) on both days, 0 moved to a different token
@@ -212,10 +212,10 @@
 [v2] PASS 20260826 -> 20260827  XCBO  pool drained first 44,475 arrival(s): 9,687 reused a released token (available 9,687), 34,788 drew a new one from the shared sequence
 [v2] PASS 20260826 -> 20260827  XCBO  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260826 -> 20260827  XCBO  chained from       carried from 20260826
-[v2] PASS 20260826 -> 20260827  XCME  stable             998,696 script(s) on both days, 0 moved to a different token
+[v2] PASS 20260826 -> 20260827  XCME  stable             1,046,840 script(s) on both days, 0 moved to a different token
 [v2] PASS 20260826 -> 20260827  XCME  no reuse           0 token(s) name a different script on the two days
 [v2] PASS 20260826 -> 20260827  XCME  offsets released   0 script(s) departed, 0 offset(s) released; pool in 0 -> 0 available
-[v2] PASS 20260826 -> 20260827  XCME  pool drained first 49,902 arrival(s): 0 reused a released token (available 0), 49,902 drew a new one from the shared sequence
+[v2] PASS 20260826 -> 20260827  XCME  pool drained first 51,840 arrival(s): 0 reused a released token (available 0), 51,840 drew a new one from the shared sequence
 [v2] PASS 20260826 -> 20260827  XCME  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260826 -> 20260827  XCME  chained from       carried from 20260826
 [v2] PASS 20260826 -> 20260827  XIMC  stable             15,964 script(s) on both days, 0 moved to a different token
@@ -224,10 +224,10 @@
 [v2] PASS 20260826 -> 20260827  XIMC  pool drained first 330 arrival(s): 2 reused a released token (available 2), 328 drew a new one from the shared sequence
 [v2] PASS 20260826 -> 20260827  XIMC  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260826 -> 20260827  XIMC  chained from       carried from 20260826
-[v2] PASS 20260826 -> 20260827  XNAS  stable             13,175 script(s) on both days, 0 moved to a different token
-[v2] WARN 20260826 -> 20260827  XNAS  no reuse           26 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; a cross-date join on the token must carry the date with it
-[v2] PASS 20260826 -> 20260827  XNAS  offsets released   26 script(s) departed, 26 offset(s) released; pool in 0 -> 26 available
-[v2] PASS 20260826 -> 20260827  XNAS  pool drained first 38 arrival(s): 26 reused a released token (available 26), 12 drew a new one from the shared sequence
+[v2] PASS 20260826 -> 20260827  XNAS  stable             13,192 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260826 -> 20260827  XNAS  no reuse           18 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; a cross-date join on the token must carry the date with it
+[v2] PASS 20260826 -> 20260827  XNAS  offsets released   18 script(s) departed, 18 offset(s) released; pool in 0 -> 18 available
+[v2] PASS 20260826 -> 20260827  XNAS  pool drained first 21 arrival(s): 18 reused a released token (available 18), 3 drew a new one from the shared sequence
 [v2] PASS 20260826 -> 20260827  XNAS  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260826 -> 20260827  XNAS  chained from       carried from 20260826
 [v2] PASS 20260826 -> 20260827  XNSE  stable             94,765 script(s) on both days, 0 moved to a different token
@@ -242,10 +242,10 @@
 [v2] PASS 20260827 -> 20260828  XCBO  pool drained first 39,299 arrival(s): 4,460 reused a released token (available 4,460), 34,839 drew a new one from the shared sequence
 [v2] PASS 20260827 -> 20260828  XCBO  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260827 -> 20260828  XCBO  chained from       carried from 20260827
-[v2] PASS 20260827 -> 20260828  XCME  stable             1,048,598 script(s) on both days, 0 moved to a different token
+[v2] PASS 20260827 -> 20260828  XCME  stable             1,098,680 script(s) on both days, 0 moved to a different token
 [v2] PASS 20260827 -> 20260828  XCME  no reuse           0 token(s) name a different script on the two days
 [v2] PASS 20260827 -> 20260828  XCME  offsets released   0 script(s) departed, 0 offset(s) released; pool in 0 -> 0 available
-[v2] PASS 20260827 -> 20260828  XCME  pool drained first 93,777 arrival(s): 0 reused a released token (available 0), 93,777 drew a new one from the shared sequence
+[v2] PASS 20260827 -> 20260828  XCME  pool drained first 43,695 arrival(s): 0 reused a released token (available 0), 43,695 drew a new one from the shared sequence
 [v2] PASS 20260827 -> 20260828  XCME  pool carried       0 offset(s) still free for tomorrow (expected 0)
 [v2] PASS 20260827 -> 20260828  XCME  chained from       carried from 20260827
 [v2] PASS 20260827 -> 20260828  XNAS  stable             13,195 script(s) on both days, 0 moved to a different token
@@ -281,12 +281,12 @@
 [v2] PASS 20260831 -> 20260901  XCME  stable             938,666 script(s) on both days, 0 moved to a different token
 [v2] PASS 20260831 -> 20260901  XCME  no reuse           0 token(s) name a different script on the two days
 [v2] PASS 20260831 -> 20260901  XCME  offsets released   0 script(s) departed, 0 offset(s) released; pool in 203,709 -> 203,709 available
-[v2] PASS 20260831 -> 20260901  XCME  pool drained first 9,736 arrival(s): 9,736 reused a released token (available 203,709), 0 drew a new one from the shared sequence
-[v2] PASS 20260831 -> 20260901  XCME  pool carried       193,973 offset(s) still free for tomorrow (expected 193,973)
+[v2] PASS 20260831 -> 20260901  XCME  pool drained first 61,634 arrival(s): 61,634 reused a released token (available 203,709), 0 drew a new one from the shared sequence
+[v2] PASS 20260831 -> 20260901  XCME  pool carried       142,075 offset(s) still free for tomorrow (expected 142,075)
 [v2] PASS 20260831 -> 20260901  XCME  chained from       carried from 20260831
-[v2] PASS 20260831 -> 20260901  XNAS  stable             13,190 script(s) on both days, 0 moved to a different token
-[v2] WARN 20260831 -> 20260901  XNAS  no reuse           4 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; a cross-date join on the token must carry the date with it
-[v2] PASS 20260831 -> 20260901  XNAS  offsets released   17 script(s) departed, 17 offset(s) released; pool in 6 -> 23 available
-[v2] PASS 20260831 -> 20260901  XNAS  pool drained first 5 arrival(s): 5 reused a released token (available 23), 0 drew a new one from the shared sequence
-[v2] PASS 20260831 -> 20260901  XNAS  pool carried       18 offset(s) still free for tomorrow (expected 18)
+[v2] PASS 20260831 -> 20260901  XNAS  stable             13,202 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260831 -> 20260901  XNAS  no reuse           1 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; a cross-date join on the token must carry the date with it
+[v2] PASS 20260831 -> 20260901  XNAS  offsets released   5 script(s) departed, 5 offset(s) released; pool in 6 -> 11 available
+[v2] PASS 20260831 -> 20260901  XNAS  pool drained first 5 arrival(s): 5 reused a released token (available 11), 0 drew a new one from the shared sequence
+[v2] PASS 20260831 -> 20260901  XNAS  pool carried       6 offset(s) still free for tomorrow (expected 6)
 [v2] PASS 20260831 -> 20260901  XNAS  chained from       carried from 20260831
