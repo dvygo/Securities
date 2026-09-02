@@ -114,7 +114,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--only",
         action="append",
         default=[],
-        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, baskets, csv-export, plugin, postgres-plugin, clickhouse)",
+        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, normalize-nse-contract, baskets, csv-export, plugin, postgres-plugin, clickhouse)",
     )
     normalize_parser.add_argument(
         "--clickhouse-push-only",

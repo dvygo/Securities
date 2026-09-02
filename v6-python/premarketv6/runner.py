@@ -74,6 +74,7 @@ def expand_only(only: List[str], all_steps: List[Step]) -> List[Step]:
         "normalize": [
             "normalize-fyers",
             "normalize-nse",
+            "normalize-nse-contract",
             "normalize-databento",
             "baskets",
         ],
@@ -139,12 +140,13 @@ def build_normalizer_steps(
     # is typing the command, so a scheduled run cannot change it by forgetting
     # to repeat an argument.
     baskets_enabled = config.load_baskets().enabled
-    from .normalize import fields, databento_norm, nse_norm
+    from .normalize import fields, databento_norm, nse_norm, nse_contract
     from .plugin import build as plugin_build, postgres as plugin_postgres
 
     all_steps = [
         Step("normalize-fyers", fields.run),
         Step("normalize-nse", nse_norm.run),
+        Step("normalize-nse-contract", nse_contract.run),
         Step("normalize-databento", databento_norm.run),
     ]
     # Dropped outright rather than left in to run and write nothing, so a run

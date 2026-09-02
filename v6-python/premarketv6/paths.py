@@ -345,7 +345,9 @@ FYERS_RAW_SEGMENTS = {
 FYERS_MIC_BUNDLES = {
     # First element is the NORMALIZED output (Parquet); the list is the RAW Fyers
     # CSVs it is built from, which stay CSV because that is what the vendor ships.
-    "XNSE": ("XNSE-FYERS.parquet", "xnse", ["XNSE-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv"]),
+    # XNSE is NOT here: it comes from the exchange's own contract masters now
+    # (normalize/nse_contract.py), not from Fyers. Leaving it would have both
+    # steps write the venue and the later one silently win.
     "XBOM": ("XBOM-FYERS.parquet", "xbom", ["XBSE-FYERS.csv", "XBFO-FYERS.csv"]),  # BSE -> XBOM MIC
     "XIMC": ("XIMC-FYERS.parquet", "ximc", ["XMCX-FYERS.csv"]),
 }

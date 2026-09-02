@@ -2453,5 +2453,176 @@ class TestRecordedArtifacts:
         assert self._named(lineage.check_recorded(day, mic), "recorded rows").ok
 
 
+class TestNseContract:
+    """The exchange's own contract masters, which replace Fyers for XNSE.
+
+    Three properties of this format cost real effort to establish and are the
+    ones a regression would silently break: the 1980 epoch, the per-segment
+    price scale, and the session-close expiry time.
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    # -- dates -----------------------------------------------------------
+
+    def test_the_epoch_is_1980_not_unix(self):
+        """XpryDt 1475159400 is BANKNIFTY's 2026-09-29 expiry. Read as Unix it
+        is 2016-09-29 -- a plausible-looking date exactly ten years wrong."""
+        from premarketv6.normalize import nse_contract as nc
+        from datetime import datetime, timezone
+
+        unix = nc.to_unix_seconds(1475159400)
+        assert datetime.fromtimestamp(unix, timezone.utc).date().isoformat() == "2026-09-29"
+        assert nc.NSE_EPOCH_OFFSET == 315_532_800
+
+    def test_an_absent_date_stays_zero(self):
+        from premarketv6.normalize import nse_contract as nc
+        assert nc.to_unix_seconds("") == 0
+        assert nc.to_unix_seconds("-1") == 0
+        assert nc.to_unix_seconds("0") == 0
+
+    def test_expiry_lands_on_the_segment_session_close(self):
+        """The file says 20:00 IST; the pipeline's convention is the session
+        close, which is what the feed this replaces carried."""
+        from premarketv6.normalize import nse_contract as nc
+
+        deriv = nc.expiration_ns(1475159400, nc.SEGMENTS[nc.DERIV]["close"])
+        assert deriv == 1790676600 * 1_000_000_000      # 2026-09-29 10:10Z
+        cur = nc.expiration_ns(1475159400, nc.SEGMENTS[nc.CURRENCY]["close"])
+        assert cur == 1790665200 * 1_000_000_000        # 2026-09-29 07:00Z
+
+    def test_cash_rows_carry_no_expiry(self):
+        from premarketv6.normalize import nse_contract as nc
+        assert nc.expiration_ns(1475159400, nc.SEGMENTS[nc.CASH]["close"]) == 0
+
+    # -- prices ----------------------------------------------------------
+
+    def test_the_price_scale_differs_by_segment(self):
+        """Cash and F&O arrive x100; currency arrives x10,000,000. DcmlstnPric
+        says 4 for currency and does NOT give the scale."""
+        from premarketv6.normalize import nse_contract as nc
+        assert nc.SEGMENTS[nc.CASH]["scale"] == 100
+        assert nc.SEGMENTS[nc.DERIV]["scale"] == 100
+        assert nc.SEGMENTS[nc.CURRENCY]["scale"] == 10_000_000
+
+    def test_a_currency_row_keeps_its_own_scale(self):
+        from premarketv6.normalize import nse_contract as nc
+        row = {"StockNm": "EURINR26O09116.25CE", "TckrSymb": "EURINR",
+               "FinInstrmNm": "OPTCUR", "OptnTp": "CE", "StrkPric": "1162500000",
+               "BidIntrvl": "25000", "XpryDt": "1475159400", "FinInstrmId": "9",
+               "NewBrdLotQty": "1", "ISIN": ""}
+        out = nc.map_derivative_row(row, nc.CURRENCY)
+        assert out["multiplier"] == 10_000_000
+        assert out["tickSize"] == 25000          # 0.0025 -- lost entirely at x100
+        assert out["strike"] == 1162500000
+
+    def test_the_strike_in_the_description_is_human(self):
+        from premarketv6.normalize import nse_contract as nc
+        assert nc._strike_text("7260000", 100) == "72600"
+        assert nc._strike_text("1162500000", 10_000_000) == "116.25"
+
+    # -- scripts ---------------------------------------------------------
+
+    def test_a_derivative_script_is_the_contract_name(self):
+        """StockNm IS the previous feed's script without its NSE: prefix, which
+        is what lets counterTokenV2 carry across the source switch."""
+        from premarketv6.normalize import nse_contract as nc
+        row = {"StockNm": "BANKNIFTY26SEP72600CE", "TckrSymb": "BANKNIFTY",
+               "FinInstrmNm": "OPTIDX", "OptnTp": "CE", "StrkPric": "7260000",
+               "BidIntrvl": "5", "XpryDt": "1475159400", "FinInstrmId": "35000",
+               "NewBrdLotQty": "30", "ISIN": ""}
+        out = nc.map_derivative_row(row, nc.DERIV)
+        assert out["script"] == "NSE:BANKNIFTY26SEP72600CE"
+        assert out["scriptToken"] == "35000"
+        assert out["optionType"] == "CALL"
+        assert out["scriptDetails"] == "BANKNIFTY 29 Sep 26 72600 CE"
+
+    def test_a_cash_script_is_ticker_and_series(self):
+        from premarketv6.normalize import nse_contract as nc
+        out = nc.map_cash_row({"TckrSymb": "20MICRONS", "SctySrs": "EQ",
+                               "FinInstrmNm": "20 MICRONS LTD", "ISIN": "INE144J01027",
+                               "NewBrdLotQty": "1", "BidIntrvl": "1",
+                               "FinInstrmId": "16921", "SctyTpFlg": "0"})
+        assert out["script"] == "NSE:20MICRONS-EQ"
+        assert out["ISIN"] == "INE144J01027"
+        assert out["expiration"] == 0
+
+    def test_a_row_with_no_ticker_is_skipped(self):
+        from premarketv6.normalize import nse_contract as nc
+        assert nc.map_cash_row({"TckrSymb": "", "SctySrs": "EQ"}) is None
+        assert nc.map_derivative_row({"StockNm": "", "TckrSymb": "X"}, nc.DERIV) is None
+
+    # -- classification --------------------------------------------------
+
+    def test_the_flag_is_read_per_series_not_globally(self):
+        """SctyTpFlg 4 is an ETF inside series EQ and an InvIT inside series IV.
+        Treating it as a global type code mislabels one or the other."""
+        from premarketv6.normalize import nse_contract as nc
+        eq = {"SctySrs": "EQ", "SctyTpFlg": "0"}
+        etf = {"SctySrs": "EQ", "SctyTpFlg": "4"}
+        iv0 = {"SctySrs": "IV", "SctyTpFlg": "0"}
+        iv4 = {"SctySrs": "IV", "SctyTpFlg": "4"}
+        assert nc.cash_instrument_type(eq) == "EQ"
+        assert nc.cash_instrument_type(etf) == "ETF"
+        assert nc.cash_instrument_type(iv0) == "EQ"
+        assert nc.cash_instrument_type(iv4) == "MISC"
+
+    def test_an_unnamed_series_follows_its_own_isin(self):
+        """BL, RL, IQ, SL, SQ and T0 are alternate trading windows on ordinary
+        equities and carry the equity's ISIN. Without this they default to
+        DEBENTURES, which mislabelled 13,462 rows."""
+        from premarketv6.normalize import nse_contract as nc
+        index = nc._types_by_isin([
+            {"SctySrs": "EQ", "SctyTpFlg": "0", "ISIN": "INE144J01027"}])
+        assert nc.cash_instrument_type(
+            {"SctySrs": "RL", "ISIN": "INE144J01027"}, index) == "EQ"
+
+    def test_a_genuinely_unknown_series_defaults_to_debentures(self):
+        from premarketv6.normalize import nse_contract as nc
+        assert nc.cash_instrument_type({"SctySrs": "N0", "ISIN": "INE674K07150"}, {}) \
+            == nc.SERIES_DEFAULT
+
+    def test_the_named_series_win_over_the_isin(self):
+        from premarketv6.normalize import nse_contract as nc
+        index = {"X": "EQ"}
+        assert nc.cash_instrument_type({"SctySrs": "GS", "ISIN": "X"}, index) == "G-SECS"
+
+    # -- the drop folder --------------------------------------------------
+
+    def test_present_needs_all_three_files(self, tree):
+        from premarketv6.normalize import nse_contract as nc
+        d = nc.drop_dir("20260902")
+        d.mkdir(parents=True)
+        assert not nc.present("20260902")
+        for name in (nc.CM_FILE, nc.FO_FILE):
+            (d / name).write_text("x")
+        assert not nc.present("20260902")
+        (d / nc.CD_FILE).write_text("x")
+        assert nc.present("20260902")
+
+    def test_the_other_files_in_the_folder_are_ignored(self, tree):
+        """contract.txt and security.txt are the legacy NEAT renderings of the
+        same records; fo_participant.txt is a broker registry."""
+        from premarketv6.normalize import nse_contract as nc
+        d = nc.drop_dir("20260902")
+        d.mkdir(parents=True)
+        for name in (nc.CM_FILE, nc.FO_FILE, nc.CD_FILE):
+            (d / name).write_text("x")
+        for noise in ("contract.txt", "security.txt", "fo_participant.txt",
+                      "NSE_FO_spdcontract.csv", "NSE_CD_spdcontract.csv"):
+            (d / noise).write_text("ignored")
+        assert nc.present("20260902")
+        assert {nc.CM_FILE, nc.FO_FILE, nc.CD_FILE} == {
+            nc.CM_FILE, nc.FO_FILE, nc.CD_FILE}
+
+    def test_xnse_no_longer_comes_from_fyers(self):
+        """Both steps writing the venue would let the later one silently win."""
+        assert "XNSE" not in paths.FYERS_MIC_BUNDLES
+        assert set(paths.FYERS_MIC_BUNDLES) == {"XBOM", "XIMC"}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
