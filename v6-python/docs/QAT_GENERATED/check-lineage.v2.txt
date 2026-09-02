@@ -1,5 +1,5 @@
-# check-lineage [v2]  2026-09-02 09:35:01Z
-# 37 check(s): 37 pass, 0 fail, 0 warn
+# check-lineage [v2]  2026-09-02 10:26:40Z
+# 40 check(s): 40 pass, 0 fail, 0 warn
 [v2] PASS 20260824              XCBO  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
 [v2] PASS 20260824              XCME  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
 [v2] PASS 20260824              XNAS  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
@@ -37,3 +37,6 @@
 [v2] PASS 20260901              XNAS  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
 [v2] PASS 20260901              XNSE  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
 [v2] PASS 20260901              *     pg key unique      3,057,161 row(s) across 6 venue file(s), 3,057,161 distinct token(s) -- (token, trade_date) is the primary key the push upserts on
+[v2] PASS 20260902              XCME  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
+[v2] PASS 20260902              XNSE  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
+[v2] PASS 20260902              *     pg key unique      990,961 row(s) across 2 venue file(s), 990,961 distinct token(s) -- (token, trade_date) is the primary key the push upserts on

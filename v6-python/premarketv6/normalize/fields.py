@@ -245,7 +245,8 @@ def run(opts: runner.Opts) -> None:
                 counter_token.write_venue_manifest(
                     opts.date_dir, mic, tokens, started_at=started_at,
                     run=counter_token.run_stats(
-                        previous, tokens, sequence, prev_day, seq_from),
+                        opts.date_dir, mic, exchange_cfg.venue_id, tokens,
+                        sequence, prev_day, seq_from),
                     inputs=[counter_token.artifact(src, opts.date_dir)
                             for src in used_sources],
                     outputs=[counter_token.artifact(

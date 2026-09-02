@@ -2015,39 +2015,65 @@ class TestManifestHeaderAndAllocation:
         finally:
             counter_token.build_sha.cache_clear()
 
-    def test_the_run_record_carries_what_the_numbering_did(self, tree):
-        seq = counter_token.Sequence()
-        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, seq)
+    @staticmethod
+    def _numbered(day, scripts, venue_id=10, mic="XCBO"):
+        """One pass, written the way the normalizers write it."""
+        previous, came_from = counter_token.opening_tokens(day, mic, venue_id)
+        sequence, seq_from = counter_token.open_sequence(day)
+        tokens = counter_token.carry_forward(previous, scripts, venue_id, sequence)
+        counter_token.write_sequence(day, sequence)
         counter_token.write_venue_manifest(
-            "20260824", "XCBO", day1,
-            run=counter_token.run_stats(None, day1, seq, "", ""))
-        assert self._header()["tokens"]["drawn"] == 3
-        assert self._header()["tokens"]["arrived"] == 3
+            day, mic, tokens,
+            run=counter_token.run_stats(day, mic, venue_id, tokens, sequence,
+                                        came_from, seq_from))
+        return tokens
+
+    def test_the_run_record_carries_what_the_numbering_did(self, tree):
+        self._numbered("20260824", ["A", "B", "C"])
+        day = self._header()["tokens"]["day"]
+        assert day["drawn"] == 3 and day["arrived"] == 3
 
     def test_the_run_record_shows_recycling_rather_than_drawing(self, tree):
         """'0 drawn from the shared sequence' is the whole claim of the design.
         Until now it existed only in a line of stdout."""
-        first = counter_token.Sequence()
-        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, first)
-        second = counter_token.Sequence(first.issued)
-        day2 = counter_token.carry_forward(day1, ["A", "D"], 10, second)
-        counter_token.write_venue_manifest(
-            "20260825", "XCBO", day2,
-            run=counter_token.run_stats(day1, day2, second, "20260824", "20260824"))
+        self._numbered("20260824", ["A", "B", "C"])
+        self._numbered("20260825", ["A", "D"])
         record = self._header("20260825")["tokens"]
-        assert record["departed"] == 2 and record["released"] == 2
-        assert record["arrived"] == 1 and record["reused"] == 1
-        assert record["drawn"] == 0
-        assert record["sequence_before"] == record["sequence_after"] == 3
+        assert record["day"]["departed"] == 2 and record["day"]["released"] == 2
+        assert record["day"]["arrived"] == 1 and record["day"]["reused"] == 1
+        assert record["day"]["drawn"] == 0
+        assert record["run"]["sequence_before"] == record["run"]["sequence_after"] == 3
         assert record["carried_from"] == "20260824"
 
     def test_run_stats_counts_a_draw_the_pool_could_not_cover(self, tree):
-        first = counter_token.Sequence()
-        day1 = counter_token.carry_forward(None, ["A"], 10, first)
-        second = counter_token.Sequence(first.issued)
-        day2 = counter_token.carry_forward(day1, ["A", "B", "C"], 10, second)
-        stats = counter_token.run_stats(day1, day2, second)
-        assert stats.arrived == 2 and stats.reused == 0 and stats.drawn == 2
+        self._numbered("20260824", ["A"])
+        self._numbered("20260825", ["A", "B", "C"])
+        day = self._header("20260825")["tokens"]["day"]
+        assert day["arrived"] == 2 and day["reused"] == 0 and day["drawn"] == 2
+
+    def test_the_day_block_survives_a_rerun(self, tree):
+        """The regression this split exists for. Measured against the anchor,
+        a second pass rewrote the day with zeroes -- 20260831 XCME ended up
+        claiming "departed 0" while holding 203,709 free tokens."""
+        self._numbered("20260824", ["A", "B", "C"])
+        self._numbered("20260825", ["A", "D"])
+        first = self._header("20260825")["tokens"]
+
+        self._numbered("20260825", ["A", "D"])          # same day, second pass
+        again = self._header("20260825")["tokens"]
+
+        assert again["day"] == first["day"]
+        assert again["day"]["departed"] == 2 and again["day"]["reused"] == 1
+        # ... while the run block correctly reports this pass did nothing.
+        assert again["run"]["drawn"] == 0
+        assert again["run"]["anchored_on"] == "20260825"
+
+    def test_a_continuation_run_is_visible_as_one(self, tree):
+        self._numbered("20260824", ["A"])
+        self._numbered("20260825", ["A", "B"])
+        assert self._header("20260825")["tokens"]["run"]["anchored_on"] == "20260824"
+        self._numbered("20260825", ["A", "B"])
+        assert self._header("20260825")["tokens"]["run"]["anchored_on"] == "20260825"
 
     def test_venue_run_surfaces_the_record(self, tree):
         self._write(started_at="2026-08-24T01:02:03Z")
@@ -2147,6 +2173,45 @@ class TestManifestMigration:
         wrong = counter_token.VenueTokens(venue_id=10, assigned={"A": 1, "B": 99})
         assert migrate_manifest.verify(header, wrong)
 
+    def test_a_flat_tokens_block_is_rebuilt_in_place(self, tree):
+        """A manifest whose venue no longer has a source -- XNSE's historical
+        days came from Fyers, which no longer serves it -- still gets the day
+        block, because the day half is derived from the allocations rather than
+        from anything a run held."""
+        from premarketv6.normalize import migrate_manifest as mm
+
+        seq = counter_token.Sequence()
+        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 16, seq)
+        counter_token.write_sequence("20260824", seq)
+        counter_token.write_venue_manifest("20260824", "XNSE", day1)
+        second = counter_token.Sequence(seq.issued)
+        day2 = counter_token.carry_forward(day1, ["A", "D"], 16, second)
+        counter_token.write_sequence("20260825", second)
+        counter_token.write_venue_manifest("20260825", "XNSE", day2)
+
+        header = counter_token.manifests_dir("20260825") / "XNSE.json"
+        doc = json.loads(header.read_text())
+        doc["tokens"] = {"arrived": 0, "departed": 0, "drawn": 0}   # the old shape
+        header.write_text(json.dumps(doc))
+        assert mm.needs_day_block(header)
+
+        mm.rebuild_day_block(header)
+        day = json.loads(header.read_text())["tokens"]["day"]
+        assert day["arrived"] == 1 and day["departed"] == 2
+        assert day["reused"] == 1 and day["drawn"] == 0
+        assert not mm.needs_day_block(header)
+
+    def test_a_current_tokens_block_is_left_alone(self, tree):
+        from premarketv6.normalize import migrate_manifest as mm
+
+        seq = counter_token.Sequence()
+        tokens = counter_token.carry_forward(None, ["A"], 16, seq)
+        counter_token.write_venue_manifest(
+            "20260824", "XNSE", tokens,
+            run=counter_token.run_stats("20260824", "XNSE", 16, tokens, seq))
+        header = counter_token.manifests_dir("20260824") / "XNSE.json"
+        assert not mm.needs_day_block(header)
+
     def test_a_v4_manifest_is_not_reconverted(self, tree):
         counter_token.write_venue_manifest(
             "20260824", "XCBO",
@@ -2192,7 +2257,8 @@ class TestSameDayRerun:
         counter_token.write_sequence(day, sequence)
         counter_token.write_venue_manifest(
             day, mic, tokens,
-            run=counter_token.run_stats(previous, tokens, sequence, came_from))
+            run=counter_token.run_stats(day, mic, venue_id, tokens, sequence,
+                                        came_from))
         return tokens, came_from
 
     # -- idempotence -----------------------------------------------------

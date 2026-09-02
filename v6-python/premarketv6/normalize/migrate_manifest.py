@@ -14,6 +14,7 @@ is what verify() checks before anything is replaced. It does NOT re-run the
 numbering, so no token can move.
 """
 import json
+import os
 from pathlib import Path
 from typing import List, Tuple
 
@@ -152,14 +153,19 @@ def verify(header: Path, expected: counter_token.VenueTokens) -> List[str]:
 
 
 def run(dry_run: bool = False) -> int:
-    """Convert every v3 manifest under the data root. Returns an exit code."""
+    """Bring every manifest under the data root up to the current shape.
+
+    Two upgrades, both idempotent: v3 headers whose allocation is still inline
+    become v4 pairs, and v4 headers whose tokens block predates the day/run
+    split get that block rebuilt.
+    """
     from .. import paths
 
     root = paths.data_root()
     days = v3_days(root)
     if not days:
-        print("No v3 manifests found -- nothing to migrate.")
-        return 0
+        print("No v3 manifests found -- nothing to convert.")
+        return rebuild_day_blocks(dry_run=dry_run)
 
     failures = 0
     total_saved = 0
@@ -187,4 +193,86 @@ def run(dry_run: bool = False) -> int:
                   f"{saved / 1e6:>7.1f} MB saved -- {status}")
     if not dry_run:
         print(f"\n{total_saved / 1e6:,.1f} MB saved, {failures} failure(s)")
+    return (1 if failures else 0) or rebuild_day_blocks(dry_run=dry_run)
+
+
+def needs_day_block(header: Path) -> bool:
+    """True for a v4 header whose tokens block predates the day/run split."""
+    try:
+        doc = json.loads(header.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    tokens = doc.get("tokens") or {}
+    return bool(tokens) and "day" not in tokens
+
+
+def rebuild_day_block(header: Path) -> Tuple[str, dict]:
+    """Recompute a header's tokens block in the day/run shape.
+
+    Possible without re-normalizing because the day half is derived from durable
+    data -- this venue's allocation, the previous day's, and the previous day's
+    sequence high-water -- rather than from anything a run held in memory. That
+    is the same property that makes the block survive a re-run.
+
+    The run half cannot be recovered: nothing on disk records what a particular
+    execution drew. It is written with the day's own figures for `drawn` and the
+    sequence left where the day ended, and `anchored_on` empty to say so.
+    """
+    doc = json.loads(header.read_text())
+    as_of = str(doc.get("date") or "")
+    mic = str(doc.get("venue") or header.stem).upper()
+    entry = counter_token.venue_entry(as_of, mic)
+    tokens = counter_token.VenueTokens(
+        venue_id=int(entry.get("venue_id", 0)),
+        assigned={str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
+        free=[int(x) for x in (entry.get("free") or [])])
+
+    previous, carried = counter_token.previous_tokens(as_of, mic, tokens.venue_id)
+    issued, _ = counter_token.previous_sequence(as_of)
+    day = counter_token.day_stats(previous, tokens, issued or 0)
+
+    doc["tokens"] = {
+        "day": day,
+        "carried_from": carried,
+        "run": {"drawn": day["drawn"],
+                "sequence_before": (issued or 0),
+                "sequence_after": (issued or 0) + day["drawn"],
+                "anchored_on": "",
+                "sequence_from": ""},
+    }
+    staging = header.with_name(f"{header.name}.tmp.{os.getpid()}")
+    staging.write_text(json.dumps(doc, indent=1, sort_keys=True))
+    staging.replace(header)
+    return mic, day
+
+
+def rebuild_day_blocks(dry_run: bool = False) -> int:
+    """Bring every flat tokens block up to the day/run shape."""
+    from .. import paths
+
+    found = [p for p in sorted(paths.data_root().glob("*/v6/manifests/*.json"))
+             if not p.name.startswith("_") and needs_day_block(p)]
+    if not found:
+        print("Every tokens block already carries the day/run split.")
+        return 0
+
+    failures = 0
+    for header in found:
+        day_dir = header.parent.parent.parent.name
+        if dry_run:
+            print(f"  {day_dir} {header.stem}: would rebuild")
+            continue
+        try:
+            mic, day = rebuild_day_block(header)
+        except Exception as exc:                          # noqa: BLE001
+            print(f"  {day_dir} {header.stem}: FAILED -- {exc}")
+            failures += 1
+            continue
+        print(f"  {day_dir} {mic:6} arrived {day['arrived']:>7,}  "
+              f"departed {day['departed']:>7,}  reused {day['reused']:>7,}  "
+              f"drawn {day['drawn']:>7,}")
+    if dry_run:
+        print(f"\n{len(found)} would be rebuilt")
+        return 0
+    print(f"\n{len(found) - failures} rebuilt, {failures} failure(s)")
     return 1 if failures else 0

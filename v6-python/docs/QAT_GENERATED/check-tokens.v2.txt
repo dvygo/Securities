@@ -1,5 +1,5 @@
-# check-tokens [v2]  2026-09-02 09:33:01Z
-# 290 check(s): 274 pass, 0 fail, 16 warn
+# check-tokens [v2]  2026-09-02 10:25:27Z
+# 314 check(s): 297 pass, 0 fail, 17 warn
 [v2] PASS 20260824              XCBO  populated          2,006,525 row(s), 0 blank
 [v2] PASS 20260824              XCBO  numeric int32      0 non-numeric, highest 2,950,812 (int32 2,147,483,647)
 [v2] PASS 20260824              XCBO  one-to-one         2,006,525 distinct pair(s), 2,006,525 script(s), 2,006,525 token(s)
@@ -164,6 +164,18 @@
 [v2] PASS 20260901              XNSE  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
 [v2] PASS 20260901              *     venues disjoint    0 token(s) shared between venues (XBOM, XCBO, XCME, XIMC, XNAS, XNSE)
 [v2] PASS 20260901              *     sequence covers    sequence issued up to 3,367,460; highest token in any file 3,367,460
+[v2] PASS 20260902              XCME  populated          1,005,802 row(s), 0 blank
+[v2] PASS 20260902              XCME  numeric int32      0 non-numeric, highest 3,332,621 (int32 2,147,483,647)
+[v2] PASS 20260902              XCME  one-to-one         1,005,802 distinct pair(s), 1,005,802 script(s), 1,005,802 token(s)
+[v2] PASS 20260902              XCME  manifest internal  highest 3,332,621, 1,005,802 assigned, 136,573 free
+[v2] PASS 20260902              XCME  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260902              XNSE  populated          127,779 row(s), 0 blank
+[v2] PASS 20260902              XNSE  numeric int32      0 non-numeric, highest 3,396,189 (int32 2,147,483,647)
+[v2] PASS 20260902              XNSE  one-to-one         127,779 distinct pair(s), 127,779 script(s), 127,779 token(s)
+[v2] PASS 20260902              XNSE  manifest internal  highest 3,396,189, 127,779 assigned, 0 free
+[v2] PASS 20260902              XNSE  manifest agrees    0 script(s) in the file but not the manifest, 0 token(s) that do not re-derive, 0 allocated to script(s) the file does not carry
+[v2] PASS 20260902              *     venues disjoint    0 token(s) shared between venues (XCME, XNSE)
+[v2] PASS 20260902              *     sequence covers    sequence issued up to 3,396,189; highest token in any file 3,396,189
 [v2] PASS 20260824 -> 20260825  XCBO  stable             1,995,467 script(s) on both days, 0 moved to a different token
 [v2] WARN 20260824 -> 20260825  XCBO  no reuse           7,083 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; a cross-date join on the token must carry the date with it
 [v2] PASS 20260824 -> 20260825  XCBO  offsets released   11,058 script(s) departed, 11,058 offset(s) released; pool in 0 -> 11,058 available
@@ -290,3 +302,15 @@
 [v2] PASS 20260831 -> 20260901  XNAS  pool drained first 5 arrival(s): 5 reused a released token (available 11), 0 drew a new one from the shared sequence
 [v2] PASS 20260831 -> 20260901  XNAS  pool carried       6 offset(s) still free for tomorrow (expected 6)
 [v2] PASS 20260831 -> 20260901  XNAS  chained from       carried from 20260831
+[v2] PASS 20260901 -> 20260902  XCME  stable             1,000,300 script(s) on both days, 0 moved to a different token
+[v2] PASS 20260901 -> 20260902  XCME  no reuse           0 token(s) name a different script on the two days
+[v2] PASS 20260901 -> 20260902  XCME  offsets released   0 script(s) departed, 0 offset(s) released; pool in 142,075 -> 142,075 available
+[v2] PASS 20260901 -> 20260902  XCME  pool drained first 5,502 arrival(s): 5,502 reused a released token (available 142,075), 0 drew a new one from the shared sequence
+[v2] PASS 20260901 -> 20260902  XCME  pool carried       136,573 offset(s) still free for tomorrow (expected 136,573)
+[v2] PASS 20260901 -> 20260902  XCME  chained from       carried from 20260901
+[v2] PASS 20260901 -> 20260902  XNSE  stable             96,411 script(s) on both days, 0 moved to a different token
+[v2] WARN 20260901 -> 20260902  XNSE  no reuse           586 token(s) name a different script on the two days -- v2 recycles a departed script's offset, so this is expected, not a regression; a cross-date join on the token must carry the date with it
+[v2] PASS 20260901 -> 20260902  XNSE  offsets released   586 script(s) departed, 586 offset(s) released; pool in 2,053 -> 2,639 available
+[v2] PASS 20260901 -> 20260902  XNSE  pool drained first 31,368 arrival(s): 2,639 reused a released token (available 2,639), 28,729 drew a new one from the shared sequence
+[v2] PASS 20260901 -> 20260902  XNSE  pool carried       0 offset(s) still free for tomorrow (expected 0)
+[v2] PASS 20260901 -> 20260902  XNSE  chained from       carried from 20260901

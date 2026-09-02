@@ -824,7 +824,8 @@ def run(opts: runner.Opts) -> None:
                 counter_token.write_venue_manifest(
                     opts.date_dir, mic, tokens, started_at=started_at,
                     run=counter_token.run_stats(
-                        previous, tokens, sequence, prev_day, seq_from),
+                        opts.date_dir, mic, exchange_cfg.venue_id, tokens,
+                        sequence, prev_day, seq_from),
                     # The vendor file this read and the parquet it just
                     # promoted. Hashed here rather than at download, because the
                     # question the manifest answers is "did THIS output come

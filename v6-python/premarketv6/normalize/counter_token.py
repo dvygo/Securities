@@ -533,66 +533,102 @@ def artifact(path, as_of: str, rows: int = 0) -> Artifact:
 
 @dataclass
 class RunStats:
-    """What one venue-day's numbering actually did.
+    """What a venue-day's numbering did, in two parts that answer two questions.
 
-    Recorded in the header because it is the recycling audit trail, and until
-    now it existed only in a line of stdout. "0 drawn from the shared sequence"
-    is the entire claim of the design -- that arrivals are served from the
-    venue's own pool before the counter moves -- and a handover needs that in
-    the artefact, not in a log someone has to still have.
+    `day` describes THE DAY against the day before it. Every field is recomputed
+    from the two allocation tables and the previous day's sequence high-water, so
+    normalizing the same day again reproduces it exactly instead of overwriting
+    it.
 
-    Derivable by diffing two days' tables, but only if both days survive. This
-    makes a single header self-describing.
+    That reproducibility is the whole point. An earlier version of this recorded
+    what the EXECUTION did, measured against whatever carry_forward was anchored
+    on. Once re-runs began anchoring on the day's own manifest, a second pass
+    rewrote the block with zeroes: 20260831 XCME ended up claiming "departed 0,
+    released 0" while its own allocation held 203,709 free tokens -- a
+    self-contradiction inside a single file, and the erasure of the largest
+    expiry event in the week.
+
+    `run` describes THIS execution: what it took from the shared sequence, and
+    which day's allocation it anchored on. A run whose `anchored_on` equals its
+    own date is a continuation, and its `drawn` being 0 is the correct and
+    expected reading.
     """
-    arrived: int = 0
-    departed: int = 0
-    kept: int = 0
-    reused: int = 0
-    released: int = 0
+    day: Dict[str, int] = field(default_factory=dict)
+    carried_from: str = ""
     drawn: int = 0
     sequence_before: int = 0
     sequence_after: int = 0
-    carried_from: str = ""
+    anchored_on: str = ""
     sequence_from: str = ""
 
     def as_dict(self) -> dict:
         return {
-            "arrived": self.arrived, "departed": self.departed,
-            "kept": self.kept, "reused": self.reused,
-            "released": self.released, "drawn": self.drawn,
-            "sequence_before": self.sequence_before,
-            "sequence_after": self.sequence_after,
+            "day": dict(self.day),
             "carried_from": self.carried_from,
-            "sequence_from": self.sequence_from,
+            "run": {
+                "drawn": self.drawn,
+                "sequence_before": self.sequence_before,
+                "sequence_after": self.sequence_after,
+                "anchored_on": self.anchored_on,
+                "sequence_from": self.sequence_from,
+            },
         }
 
 
-def run_stats(previous, tokens: VenueTokens, sequence,
-              carried_from: str = "", sequence_from: str = "") -> RunStats:
-    """Read off what carry_forward just did, from its own inputs and output.
+def day_stats(previous_day: Optional[VenueTokens], tokens: VenueTokens,
+              previous_issued: int) -> Dict[str, int]:
+    """The day held against the day before it, from durable data only.
 
-    Computed here rather than in each normalizer so the Databento and Fyers
-    paths cannot drift on what "reused" means.
+    `drawn` is derived rather than taken from the sequence object, which is what
+    makes this stable across re-runs: an arrival holding a token at or below the
+    previous day's high-water can only have come out of this venue's own pool,
+    and one above it was issued today. That holds however many passes the day
+    took, because it reads the finished allocation rather than any one run.
+    """
+    assigned = tokens.assigned
+    if previous_day is None:
+        return {"kept": 0, "arrived": len(assigned), "departed": 0,
+                "released": 0, "reused": 0, "drawn": len(assigned)}
+    kept = set(assigned) & set(previous_day.assigned)
+    departed = len(previous_day.assigned) - len(kept)
+    arrivals = [token for script, token in assigned.items() if script not in kept]
+    drawn = sum(1 for token in arrivals if token > previous_issued)
+    return {"kept": len(kept), "arrived": len(arrivals), "departed": departed,
+            # A departure always releases; the pool is where it lands.
+            "released": departed,
+            "reused": len(arrivals) - drawn, "drawn": drawn}
+
+
+def run_stats(as_of: str, mic: str, venue_id: int, tokens: VenueTokens, sequence,
+              anchored_on: str = "", sequence_from: str = "") -> RunStats:
+    """Both halves of the record for one venue-day.
+
+    Reads the previous day itself rather than taking the caller's anchor, which
+    on a re-run is today. Deliberately cannot raise: it is called after the
+    normalized parquet has been promoted, so an exception here would leave a
+    venue with valid output and no manifest -- which every reader would take to
+    mean the venue never finished.
     """
     before = sequence.start if sequence is not None else 0
     after = sequence.issued if sequence is not None else 0
-    drawn = after - before
-    if previous is None:
-        return RunStats(arrived=len(tokens.assigned), kept=0, reused=0,
-                        drawn=drawn, sequence_before=before, sequence_after=after,
-                        carried_from=carried_from, sequence_from=sequence_from)
-    kept = set(tokens.assigned) & set(previous.assigned)
-    arrived = len(tokens.assigned) - len(kept)
+
+    previous_day = None
+    carried_from = ""
+    previous_issued = 0
+    try:
+        previous_day, carried_from = previous_tokens(as_of, mic, venue_id)
+        issued, _ = previous_sequence(as_of)
+        previous_issued = issued or 0
+    except Exception as exc:                      # noqa: BLE001 - see docstring
+        print(f"      run record: could not read {mic}'s previous day ({exc}); "
+              f"the day block will describe a first day")
+
     return RunStats(
-        arrived=arrived,
-        departed=len(set(previous.assigned) - kept),
-        kept=len(kept),
-        # Every arrival the sequence did not have to number came out of the pool.
-        reused=arrived - drawn,
-        released=len(set(previous.assigned) - kept),
-        drawn=drawn,
+        day=day_stats(previous_day, tokens, previous_issued),
+        carried_from=carried_from,
+        drawn=after - before,
         sequence_before=before, sequence_after=after,
-        carried_from=carried_from, sequence_from=sequence_from,
+        anchored_on=anchored_on, sequence_from=sequence_from,
     )
 
 

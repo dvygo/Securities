@@ -430,7 +430,9 @@ def run(opts: runner.Opts) -> None:
     directory = drop_dir(opts.date_dir)
     counter_token.write_venue_manifest(
         opts.date_dir, "XNSE", tokens, started_at=started_at,
-        run=counter_token.run_stats(previous, tokens, sequence, prev_day, seq_from),
+        run=counter_token.run_stats(
+            opts.date_dir, "XNSE", exchange_cfg.venue_id, tokens, sequence,
+            prev_day, seq_from),
         inputs=[counter_token.artifact(directory / name, opts.date_dir)
                 for name in (CM_FILE, FO_FILE, CD_FILE)],
         outputs=[counter_token.artifact(output_path, opts.date_dir, len(rows))])
