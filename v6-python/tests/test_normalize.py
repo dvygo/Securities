@@ -2166,5 +2166,141 @@ class TestManifestMigration:
         assert counter_token.load_sequence("20260824") == 5
 
 
+class TestSameDayRerun:
+    """A day is normalized more than once, because the venues do not arrive
+    together: GLBX lands around 00:00-01:00Z and OPRA around 10:00-11:00Z. The
+    second pass must continue the first, not re-derive the day from yesterday.
+
+    Anchoring on yesterday is subtly wrong rather than obviously wrong: every
+    script yesterday held keeps its token either way, so the day looks stable.
+    What moves is the arrivals -- an instrument that had to draw a fresh number
+    draws a different one on every pass, and the sequence leaks that many
+    numbers each time.
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _normalize(day, mic, scripts, venue_id=10):
+        """One pass of one venue, the way the normalizers do it."""
+        previous, came_from = counter_token.opening_tokens(day, mic, venue_id)
+        sequence, _ = counter_token.open_sequence(day)
+        tokens = counter_token.carry_forward(previous, scripts, venue_id, sequence)
+        counter_token.write_sequence(day, sequence)
+        counter_token.write_venue_manifest(
+            day, mic, tokens,
+            run=counter_token.run_stats(previous, tokens, sequence, came_from))
+        return tokens, came_from
+
+    # -- idempotence -----------------------------------------------------
+
+    def test_a_second_pass_moves_no_token(self, tree):
+        self._normalize("20260824", "XCME", ["A", "B", "C"])
+        first, _ = self._normalize("20260825", "XCME", ["A", "B", "C", "D"])
+        second, _ = self._normalize("20260825", "XCME", ["A", "B", "C", "D"])
+        assert second.assigned == first.assigned
+
+    def test_a_second_pass_draws_nothing(self, tree):
+        self._normalize("20260824", "XCME", ["A", "B", "C"])
+        self._normalize("20260825", "XCME", ["A", "B", "C", "D"])
+        before = counter_token.load_sequence("20260825")
+        self._normalize("20260825", "XCME", ["A", "B", "C", "D"])
+        assert counter_token.load_sequence("20260825") == before
+
+    def test_the_second_pass_says_it_continued_today(self, tree):
+        self._normalize("20260824", "XCME", ["A"])
+        _, first = self._normalize("20260825", "XCME", ["A", "B"])
+        _, again = self._normalize("20260825", "XCME", ["A", "B"])
+        assert first == "20260824" and again == "20260825"
+
+    # -- the edge case this exists for -----------------------------------
+
+    def test_a_rerun_does_not_disturb_a_venue_numbered_after_it(self, tree):
+        """XCME at 06:00, XCBO at 17:00 taking numbers after it, then XCME
+        re-run to fix a bad download. XCBO must not move."""
+        xcme_1, _ = self._normalize("20260824", "XCME", ["M1", "M2"], venue_id=12)
+        xcbo_1, _ = self._normalize("20260824", "XCBO", ["B1", "B2"], venue_id=10)
+        xcme_2, _ = self._normalize("20260824", "XCME", ["M1", "M2"], venue_id=12)
+
+        assert xcme_2.assigned == xcme_1.assigned
+        assert counter_token.venue_entry("20260824", "XCBO")["assigned"] == xcbo_1.assigned
+
+    def test_a_rerun_needing_more_numbers_lands_after_the_other_venue(self, tree):
+        """The truncation case: the first download held less than the day did.
+        The extra instruments must number after XCBO, never into its range."""
+        self._normalize("20260824", "XCME", ["M1", "M2"], venue_id=12)
+        xcbo, _ = self._normalize("20260824", "XCBO", ["B1", "B2"], venue_id=10)
+        xcme_2, _ = self._normalize(
+            "20260824", "XCME", ["M1", "M2", "M3", "M4"], venue_id=12)
+
+        assert xcme_2.assigned["M1"] == 1 and xcme_2.assigned["M2"] == 2
+        assert min(xcme_2.assigned[s] for s in ("M3", "M4")) > max(xcbo.assigned.values())
+        assert not (set(xcme_2.assigned.values()) & set(xcbo.assigned.values()))
+
+    def test_a_rerun_holding_fewer_symbols_recycles_into_its_own_pool(self, tree):
+        first, _ = self._normalize("20260824", "XCME", ["M1", "M2", "M3"], venue_id=12)
+        self._normalize("20260824", "XCBO", ["B1"], venue_id=10)
+        second, _ = self._normalize("20260824", "XCME", ["M1", "M2"], venue_id=12)
+
+        assert second.assigned == {"M1": first.assigned["M1"], "M2": first.assigned["M2"]}
+        assert second.free == [first.assigned["M3"]]
+
+    def test_a_dropped_symbol_returning_takes_its_own_number_back(self, tree):
+        first, _ = self._normalize("20260824", "XCME", ["M1", "M2", "M3"], venue_id=12)
+        self._normalize("20260824", "XCME", ["M1", "M2"], venue_id=12)
+        third, _ = self._normalize("20260824", "XCME", ["M1", "M2", "M3"], venue_id=12)
+        assert third.assigned == first.assigned
+
+    def test_three_passes_leak_nothing(self, tree):
+        self._normalize("20260824", "XCME", ["A", "B"])
+        self._normalize("20260825", "XCME", ["A", "B", "C"])
+        settled = counter_token.load_sequence("20260825")
+        for _ in range(3):
+            self._normalize("20260825", "XCME", ["A", "B", "C"])
+        assert counter_token.load_sequence("20260825") == settled
+
+    # -- the anchor ------------------------------------------------------
+
+    def test_the_anchor_is_yesterday_when_today_has_none(self, tree):
+        self._normalize("20260824", "XCME", ["A"])
+        previous, came_from = counter_token.opening_tokens("20260825", "XCME", 10)
+        assert came_from == "20260824" and previous.assigned == {"A": 1}
+
+    def test_the_anchor_is_today_once_today_exists(self, tree):
+        self._normalize("20260824", "XCME", ["A"])
+        self._normalize("20260825", "XCME", ["A", "B"])
+        previous, came_from = counter_token.opening_tokens("20260825", "XCME", 10)
+        assert came_from == "20260825" and set(previous.assigned) == {"A", "B"}
+
+    def test_nothing_at_all_still_numbers_from_scratch(self, tree):
+        previous, came_from = counter_token.opening_tokens("20260824", "XCME", 10)
+        assert previous is None and came_from == ""
+
+    def test_a_venue_id_changed_midday_is_refused(self, tree):
+        """The normalizers catch ValueError and skip the venue. Continuing would
+        renumber a venue halfway through its own day."""
+        self._normalize("20260824", "XCME", ["A"], venue_id=12)
+        with pytest.raises(ValueError, match="written earlier today"):
+            counter_token.opening_tokens("20260824", "XCME", 99)
+
+    # -- mutation: prove the checks above are not vacuous -----------------
+
+    def test_anchoring_on_yesterday_is_what_moves_the_token(self, tree):
+        """The bug this replaced, reproduced through previous_tokens directly.
+        If this ever stops moving D, the tests above have stopped proving
+        anything."""
+        self._normalize("20260824", "XCME", ["A", "B", "C"])
+        self._normalize("20260825", "XCME", ["A", "B", "C", "D"])
+        first = counter_token.venue_entry("20260825", "XCME")["assigned"]["D"]
+
+        stale, _ = counter_token.previous_tokens("20260825", "XCME", 10)
+        sequence, _ = counter_token.open_sequence("20260825")
+        redone = counter_token.carry_forward(stale, ["A", "B", "C", "D"], 10, sequence)
+        assert redone.assigned["D"] != first
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

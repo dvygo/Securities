@@ -11,9 +11,12 @@ The previous answer was a two-digit venue prefix in the token's leading digits.
 This one is simpler: a single counter that every venue draws from, so no two
 venues can ever be handed the same number and the token is a plain integer.
 
-    XCBO  1 .. 2,006,525
-    XCME  2,006,526 .. 2,950,812
+    XCME          1 ..   944,287
+    XCBO    944,288 .. 2,950,812
     XNAS  2,950,813 .. 2,964,008
+
+(20260824, the week's first day. The order is VENUE_MAPPERS' -- a dict literal,
+so it is the same on every run, which is what makes a re-numbering reproducible.)
 
 The counter is the ONLY thing that is global. Recycling stays per venue: a
 script that departs releases its number back into its own venue's pool, and that
@@ -650,6 +653,46 @@ def write_sequence(as_of: str, sequence: "Sequence") -> Path:
                   separators=(",", ":"), sort_keys=True)
     os.replace(staging, path)
     return path
+
+
+def opening_tokens(as_of: str, mic: str, venue_id: int) -> tuple[Optional[VenueTokens], str]:
+    """The allocation today's numbering starts from, and the day it came from.
+
+    Today's own manifest first, then the most recent day before it. This mirrors
+    open_sequence, and for exactly the same reason: the venues do not arrive
+    together, so a day is normalized more than once, and a later pass has to
+    continue what the earlier one did rather than re-derive it from yesterday.
+
+    Re-deriving looks harmless, because every script yesterday held keeps its
+    token either way. It is not. An arrival that had to draw a fresh number
+    draws a DIFFERENT one on each pass, and the sequence leaks that many numbers
+    every time. Concretely: XCME numbered at 06:00, XCBO at 17:00 taking numbers
+    after it, then XCME re-run to fix a bad download -- anchored on yesterday,
+    every instrument XCME gained that morning is renumbered, while XCBO's stay
+    put, and the two venues now disagree about which run they belong to.
+
+    Anchored on today, a re-run does what the venue actually needs:
+
+      - a script that already has a token keeps it,
+      - a script that has gone releases its token into THIS venue's pool,
+      - a genuinely new script drains that pool first and only then draws from
+        the shared sequence -- which by now is past whatever the other venues
+        took, so the new numbers land after their ranges and cannot collide.
+
+    So a re-run is idempotent when the symbol set is unchanged, and additive
+    when the re-download turned out to hold more than the first one did.
+    """
+    entry = venue_entry(as_of, mic)
+    if entry:
+        stored = int(entry.get("venue_id", 0))
+        if stored != venue_id:
+            raise ValueError(
+                f"{mic}: venue_id is {venue_id} in config.ini but {stored} in "
+                f"{as_of}'s own manifest, written earlier today. Refusing to "
+                f"continue a run that would renumber the venue mid-day."
+            )
+        return _tokens_from(entry), as_of
+    return previous_tokens(as_of, mic, venue_id)
 
 
 def previous_tokens(as_of: str, mic: str, venue_id: int) -> tuple[Optional[VenueTokens], str]:

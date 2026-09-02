@@ -202,7 +202,7 @@ def run(opts: runner.Opts) -> None:
             # memory here, so the whole symbol set is known and the carry-
             # forward needs no extra pass.
             try:
-                previous, prev_day = counter_token.previous_tokens(
+                previous, prev_day = counter_token.opening_tokens(
                     opts.date_dir, mic, exchange_cfg.venue_id)
             except ValueError as exc:
                 print(f"  CRITICAL: skipping Fyers {mic} -- {exc}")
@@ -221,7 +221,8 @@ def run(opts: runner.Opts) -> None:
             print(f"    {mic} counterTokenV2: {len(tokens.assigned):,} symbol(s), "
                   f"{reused:,} new, {sequence.drawn:,} drawn from the shared "
                   f"sequence (now {sequence.issued:,})"
-                  + (f", carried from {prev_day}" if previous else ", first day")
+                  + (", continuing today's earlier run" if prev_day == opts.date_dir
+                  else f", carried from {prev_day}" if previous else ", first day")
                   + (f", sequence from {seq_from}" if seq_from else ", sequence from 1"))
 
         # Write normalized Parquet
