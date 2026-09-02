@@ -115,6 +115,51 @@ class TestDatabentoParsing:
         result = databento_norm.parse_occ_symbol("SPX240119P00500000")
         assert result.get("option_type") == "PUT"
 
+    def test_a_leap_past_the_old_pivot_is_this_century(self):
+        """SPX 311219C03200000 expires 2031-12-19. A pivot at 30 sent it to
+        1931, which is a NEGATIVE epoch, and the plugin's expired filter then
+        dropped all 70 such rows every day -- a whole expiry tenor missing from
+        the symbol master with nothing in the output to say so."""
+        result = databento_norm.parse_occ_symbol("SPX   311219C03200000")
+        assert result["expiration"] == "20311219"
+        assert result["underlying"] == "SPX"
+
+    def test_the_two_digit_year_never_lands_before_2000(self):
+        """OSI symbology began in 2010, so a 19xx expiry cannot occur. Checked
+        across the whole range rather than at the old boundary alone."""
+        for yy in range(100):
+            got = databento_norm.parse_occ_symbol(f"SPX   {yy:02d}1219C03200000")
+            assert got["expiration"] == f"{2000 + yy:04d}1219", yy
+
+    def test_the_old_pivot_boundary_no_longer_splits(self):
+        """30 and 31 differed by a century before; they now differ by a year."""
+        a = databento_norm.parse_occ_symbol("SPX   301219C03200000")["expiration"]
+        b = databento_norm.parse_occ_symbol("SPX   311219C03200000")["expiration"]
+        assert (a, b) == ("20301219", "20311219")
+
+    def test_a_leap_expiration_ns_is_not_negative(self):
+        """The symptom that made this visible in the data. Driven through the
+        conversion the mapper actually uses -- as_ns on a YYYYMMDD string just
+        returns the integer, so asserting on that would prove nothing."""
+        from datetime import datetime, timezone
+
+        parsed = databento_norm.parse_occ_symbol("SPX   311219C03200000")
+        expiry = datetime.strptime(parsed["expiration"], "%Y%m%d").date()
+        ns = databento_norm._session_close_ns(expiry, is_index=True)
+        assert ns > 0
+        assert datetime.fromtimestamp(ns / 1e9, timezone.utc).year == 2031
+
+    def test_the_old_pivot_produced_a_negative_epoch(self):
+        """Mutation guard: reproduce the old windowing and show it really did
+        put the contract before 1970, which is what let the plugin's expired
+        filter drop it."""
+        from datetime import datetime
+
+        year = int("31")
+        old_full_year = 2000 + year if year <= 30 else 1900 + year   # the old rule
+        expiry = datetime.strptime(f"{old_full_year:04d}1219", "%Y%m%d").date()
+        assert databento_norm._session_close_ns(expiry, is_index=True) < 0
+
     def test_parse_occ_symbol_invalid(self):
         """Test parsing invalid OCC symbol."""
         result = databento_norm.parse_occ_symbol("INVALID")

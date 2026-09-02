@@ -185,8 +185,18 @@ def parse_occ_symbol(symbol: str) -> Dict[str, Any]:
         month = int(expiry_str[2:4])
         day = int(expiry_str[4:6])
 
-        # Two-digit year: 00-99, assume 00-30 = 2000-2030, 31-99 = 1931-1999
-        full_year = 2000 + year if year <= 30 else 1900 + year
+        # Two-digit year. OCC's OSI symbology began in 2010, so a contract
+        # master cannot carry a 19xx expiry: 2000 + year is right for every
+        # symbol this will ever see, and stays right through 2099.
+        #
+        # This replaces a pivot that sent anything above 30 into the 1900s.
+        # That was harmless when written and silently wrong by 2026: SPX LEAPS
+        # reaching 2031-12-19 were stored as 1931-12-19, a NEGATIVE epoch, and
+        # the plugin's expired-contract filter then dropped all 70 of them
+        # every day -- an entire expiry tenor missing from the symbol master
+        # with nothing in the output to say so. One more tenor would have
+        # crossed the pivot every year.
+        full_year = 2000 + year
 
         strike = int(strike_str) / 1000.0  # Strike is encoded as integer (divide by 1000)
 
