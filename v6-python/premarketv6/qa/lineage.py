@@ -257,6 +257,70 @@ def check_plugin(date_dir: str, mic: str, normalized: Path, plugin: Path) -> Lis
     return checks
 
 
+def check_recorded(date_dir: str, mic: str) -> List[Check]:
+    """Hold the manifest's own record of what it read and wrote against disk.
+
+    The other checks here re-derive lineage by inspecting files. This one checks
+    the CLAIM: v4 headers name their inputs and outputs with a sha256, and a
+    recorded digest that no longer matches means the file changed after the
+    manifest was written. That is the difference between "these files look
+    consistent today" and "these are the files this venue-day actually produced",
+    which is the question that matters once the artefacts leave this machine.
+
+    Silent when a header records nothing -- manifests migrated from v3 have no
+    inputs or outputs, and reporting a missing key as a failure would drown the
+    real ones.
+    """
+    import pyarrow.parquet as pq
+
+    run = counter_token.venue_run(date_dir, mic)
+    recorded = (run.get("inputs") or []) + (run.get("outputs") or [])
+    if not recorded:
+        return []
+
+    base = paths.data_root() / date_dir
+    missing, changed = [], []
+    for item in recorded:
+        path = base / str(item.get("path", ""))
+        if not path.exists():
+            missing.append(item.get("path", "?"))
+            continue
+        if counter_token.sha256_of(path) != item.get("sha256"):
+            changed.append(item.get("path", "?"))
+
+    checks = [Check(
+        date_dir, mic, "recorded on disk", not missing,
+        "; ".join(f"{name} is named by the manifest but absent" for name in missing)
+        or f"{len(recorded)} file(s) named by the manifest are present",
+    ), Check(
+        date_dir, mic, "recorded unchanged", not changed,
+        "; ".join(f"{name} no longer matches its recorded sha256" for name in changed)
+        or f"{len(recorded) - len(missing)} file(s) still hash to what was recorded",
+    )]
+
+    rows = {str(o.get("path")): o.get("rows") for o in (run.get("outputs") or [])
+            if o.get("rows")}
+    if rows:
+        wrong = []
+        for name, claimed in rows.items():
+            path = base / name
+            if not path.exists():
+                continue
+            try:
+                actual = pq.ParquetFile(path).metadata.num_rows
+            except Exception as exc:
+                wrong.append(f"{name} unreadable ({exc})")
+                continue
+            if actual != claimed:
+                wrong.append(f"{name} holds {actual:,}, manifest says {claimed:,}")
+        checks.append(Check(
+            date_dir, mic, "recorded rows", not wrong,
+            "; ".join(wrong) or
+            f"{sum(rows.values()):,} row(s) recorded and counted",
+        ))
+    return checks
+
+
 def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
     """Every stage, for one date directory."""
     wanted = {v.upper() for v in venues}
@@ -291,6 +355,8 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
         built = plugin_dir / normalized.name
         if built.exists():
             checks.extend(check_plugin(date_dir, mic, normalized, built))
+
+        checks.extend(check_recorded(date_dir, mic))
 
     # The pg key is (token, trade_date) with no venue column, so uniqueness has
     # to hold across every venue pushed for the day, not within each file.

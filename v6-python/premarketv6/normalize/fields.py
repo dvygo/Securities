@@ -175,10 +175,14 @@ def run(opts: runner.Opts) -> None:
         print(f"  Normalizing Fyers {mic}...")
 
         all_rows = []
+        # The feeds that actually existed today, not the ones the bundle lists.
+        # XNSE and XBOM each merge several, and a missing one is normal.
+        used_sources = []
         for source_file in source_files:
             source_path = bundle_dir / source_file
             if not source_path.exists():
                 continue
+            used_sources.append(source_path)
 
             raw_rows = fyers_src.parse_fyers_csv(source_path)
             for raw_row in raw_rows:
@@ -241,7 +245,11 @@ def run(opts: runner.Opts) -> None:
                 counter_token.write_venue_manifest(
                     opts.date_dir, mic, tokens, started_at=started_at,
                     run=counter_token.run_stats(
-                        previous, tokens, sequence, prev_day, seq_from))
+                        previous, tokens, sequence, prev_day, seq_from),
+                    inputs=[counter_token.artifact(src, opts.date_dir)
+                            for src in used_sources],
+                    outputs=[counter_token.artifact(
+                        output_path, opts.date_dir, len(all_rows))])
             print(f"    Wrote {len(all_rows)} rows to {output_path}")
         else:
             # Nothing is written for an empty MIC. A schema-only file would look

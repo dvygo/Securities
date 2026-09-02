@@ -447,8 +447,9 @@ def venues_with_manifest(as_of: str) -> set:
 def venue_run(as_of: str, mic: str) -> dict:
     """The run record for a venue-day, or {}.
 
-    started_at/completed_at are UTC ISO8601. build_sha names the code, and the
-    tokens block is what the numbering did -- see RunStats.
+    started_at/completed_at are UTC ISO8601. build_sha names the code, the
+    tokens block is what the numbering did (see RunStats), and inputs/outputs
+    name the files it read and wrote (see Artifact).
     """
     doc = _read_json(_venue_manifest_path(as_of, mic.upper()))
     if not doc:
@@ -459,6 +460,12 @@ def venue_run(as_of: str, mic: str) -> dict:
         run["build_sha"] = code.get("build_sha", "")
     if doc.get("tokens"):
         run["tokens"] = doc["tokens"]
+    # What the venue-day read and wrote. Absent on manifests migrated from v3,
+    # which recorded neither -- callers distinguish "recorded nothing" from
+    # "recorded an empty list".
+    for key in ("inputs", "outputs"):
+        if doc.get(key):
+            run[key] = doc[key]
     return run
 
 
@@ -474,6 +481,54 @@ def _tokens_from(entry: dict) -> VenueTokens:
         assigned={str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
         free=[int(x) for x in (entry.get("free") or [])],
     )
+
+
+@dataclass
+class Artifact:
+    """One file a venue-day consumed or produced, and enough to prove it is that
+    file: size, digest, and for row-oriented output the row count.
+
+    The header already proves its own allocation table. This proves the two
+    things either side of it -- the vendor file the numbering read, and the
+    normalized file it wrote. Without them a completion record says a venue
+    finished but not what it finished ON, and anyone taking delivery has no way
+    to tell whether the parquet in their hands is the one this manifest
+    describes, or a later re-run's.
+    """
+    path: str
+    bytes: int
+    sha256: str
+    rows: int = 0
+
+    def as_dict(self) -> dict:
+        out = {"path": self.path, "bytes": self.bytes, "sha256": self.sha256}
+        if self.rows:
+            out["rows"] = self.rows
+        return out
+
+
+def artifact(path, as_of: str, rows: int = 0) -> Artifact:
+    """Describe a finished file, relative to the day directory it belongs to.
+
+    Relative because an absolute path is not portable and leaks this host's
+    layout into a record meant to outlive it: data/20260901/XCBO/... names the
+    same file whether it sits on this disk or in an object store. A file outside
+    the day tree falls back to its bare name rather than recording someone's
+    home directory.
+
+    Hashing is done inline rather than cached or deferred to download time,
+    because it costs nothing worth engineering around: sha256 runs at ~1.6 GB/s
+    here, so the 82 MB OPRA definition file takes 0.05s against a 400s batch
+    download.
+    """
+    path = Path(path)
+    base = paths.data_root() / as_of
+    try:
+        name = str(path.relative_to(base))
+    except ValueError:
+        name = path.name
+    return Artifact(path=name, bytes=path.stat().st_size,
+                    sha256=sha256_of(path), rows=int(rows))
 
 
 @dataclass
@@ -543,7 +598,8 @@ def run_stats(previous, tokens: VenueTokens, sequence,
 
 def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
                          started_at: str = "",
-                         run: Optional[RunStats] = None) -> Path:
+                         run: Optional[RunStats] = None,
+                         inputs=(), outputs=()) -> Path:
     """Write one venue's header, and the allocation table it points at.
 
     The table goes first and the header last, so the header's presence keeps
@@ -585,6 +641,11 @@ def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
             "sha256": sha256_of(alloc),
         },
         "tokens": (run or RunStats()).as_dict(),
+        # What this venue-day read, and what it wrote. Always present, even when
+        # empty, so a consumer can tell "nothing recorded" from "key absent
+        # because an older build wrote this".
+        "inputs": [a.as_dict() for a in inputs],
+        "outputs": [a.as_dict() for a in outputs],
     }
     staging = path.with_name(f"{path.name}.tmp.{os.getpid()}")
     with open(staging, "w", encoding="utf-8") as handle:

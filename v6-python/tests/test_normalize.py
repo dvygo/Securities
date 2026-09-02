@@ -2302,5 +2302,156 @@ class TestSameDayRerun:
         assert redone.assigned["D"] != first
 
 
+class TestRecordedArtifacts:
+    """A header names the file it read and the file it wrote, with digests.
+
+    The header already proved its own allocation table. Without these it still
+    said a venue finished but not what it finished ON -- so anyone taking
+    delivery had no way to tell whether the parquet in their hands was the one
+    the manifest describes or a later re-run's.
+
+    Hashed inline rather than cached or deferred to download time: sha256 runs
+    at ~1.6 GB/s here, so the 82MB OPRA definition costs 0.05s against a 400s
+    batch download. Not worth engineering around.
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _file(path, body=b"payload"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        return path
+
+    def _written(self, tree, day="20260824", mic="XCBO", rows=1234):
+        """A real Parquet output, not a stub: the row check reads its footer,
+        and a stub would fail for a reason that has nothing to do with lineage."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        raw = self._file(tree / day / mic / "opra-pillar.definition.dbn.zst", b"raw" * 400)
+        out = tree / day / "v6" / "normalized" / f"{mic}-X.parquet"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table({"script": pa.array([f"S{n}" for n in range(rows)])}), out)
+        counter_token.write_venue_manifest(
+            day, mic,
+            counter_token.VenueTokens(venue_id=10, assigned={"A": 1}),
+            inputs=[counter_token.artifact(raw, day)],
+            outputs=[counter_token.artifact(out, day, rows=rows)])
+        return raw, out
+
+    def test_the_input_is_named_with_its_digest(self, tree):
+        raw, _ = self._written(tree)
+        run = counter_token.venue_run("20260824", "XCBO")
+        assert run["inputs"][0]["sha256"] == counter_token.sha256_of(raw)
+        assert run["inputs"][0]["bytes"] == raw.stat().st_size
+
+    def test_the_output_is_named_with_its_row_count(self, tree):
+        _, out = self._written(tree)
+        recorded = counter_token.venue_run("20260824", "XCBO")["outputs"][0]
+        assert recorded["rows"] == 1234
+        assert recorded["sha256"] == counter_token.sha256_of(out)
+
+    def test_paths_are_relative_to_the_day_not_the_host(self, tree):
+        """An absolute path leaks this machine's layout into a record meant to
+        outlive it, and stops meaning anything in an object store."""
+        self._written(tree)
+        run = counter_token.venue_run("20260824", "XCBO")
+        for item in run["inputs"] + run["outputs"]:
+            assert not item["path"].startswith("/")
+            assert str(tree) not in item["path"]
+        assert run["inputs"][0]["path"] == "XCBO/opra-pillar.definition.dbn.zst"
+        assert run["outputs"][0]["path"] == "v6/normalized/XCBO-X.parquet"
+
+    def test_a_file_outside_the_day_keeps_only_its_name(self, tree):
+        stray = self._file(tree / "elsewhere.csv")
+        art = counter_token.artifact(stray, "20260824")
+        assert art.path == "elsewhere.csv"
+
+    def test_rows_are_omitted_when_there_are_none(self, tree):
+        """A raw vendor blob has no row count; recording 0 would assert one."""
+        raw = self._file(tree / "20260824" / "XCBO" / "r.dbn.zst")
+        assert "rows" not in counter_token.artifact(raw, "20260824").as_dict()
+
+    def test_both_keys_are_always_present(self, tree):
+        """Stable schema: a consumer must be able to tell 'recorded nothing'
+        from 'key absent because an older build wrote this'."""
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO",
+            counter_token.VenueTokens(venue_id=10, assigned={"A": 1}))
+        doc = json.loads(
+            (counter_token.manifests_dir("20260824") / "XCBO.json").read_text())
+        assert doc["inputs"] == [] and doc["outputs"] == []
+
+    # -- the QA check that gives the record teeth ------------------------
+
+    @staticmethod
+    def _named(checks, name):
+        return next(c for c in checks if c.name == name)
+
+    def test_an_untouched_day_passes(self, tree):
+        self._written(tree)
+        checks = lineage.check_recorded("20260824", "XCBO")
+        assert all(c.ok for c in checks), [c.detail for c in checks if not c.ok]
+
+    def test_a_changed_input_is_caught(self, tree):
+        raw, _ = self._written(tree)
+        raw.write_bytes(b"tampered")
+        assert not self._named(
+            lineage.check_recorded("20260824", "XCBO"), "recorded unchanged").ok
+
+    def test_a_changed_output_is_caught(self, tree):
+        _, out = self._written(tree)
+        out.write_bytes(b"rebuilt by something else")
+        assert not self._named(
+            lineage.check_recorded("20260824", "XCBO"), "recorded unchanged").ok
+
+    def test_a_deleted_output_is_caught(self, tree):
+        _, out = self._written(tree)
+        out.unlink()
+        assert not self._named(
+            lineage.check_recorded("20260824", "XCBO"), "recorded on disk").ok
+
+    def test_a_v3_style_header_recording_nothing_is_silent(self, tree):
+        """Migrated manifests recorded neither. Reporting the missing key as a
+        failure would drown the real ones."""
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO",
+            counter_token.VenueTokens(venue_id=10, assigned={"A": 1}))
+        assert lineage.check_recorded("20260824", "XCBO") == []
+
+    def test_a_row_count_that_lies_is_caught(self, tree):
+        """Mutation: the digest checks would pass a parquet whose recorded row
+        count was simply wrong, so the count is checked against the file."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        day, mic = "20260824", "XCBO"
+        out = tree / day / "v6" / "normalized" / f"{mic}-X.parquet"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table({"a": pa.array([1, 2, 3])}), out)
+        counter_token.write_venue_manifest(
+            day, mic, counter_token.VenueTokens(venue_id=10, assigned={"A": 1}),
+            outputs=[counter_token.artifact(out, day, rows=999)])
+        assert not self._named(
+            lineage.check_recorded(day, mic), "recorded rows").ok
+
+    def test_an_honest_row_count_passes(self, tree):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        day, mic = "20260824", "XCBO"
+        out = tree / day / "v6" / "normalized" / f"{mic}-X.parquet"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table({"a": pa.array([1, 2, 3])}), out)
+        counter_token.write_venue_manifest(
+            day, mic, counter_token.VenueTokens(venue_id=10, assigned={"A": 1}),
+            outputs=[counter_token.artifact(out, day, rows=3)])
+        assert self._named(lineage.check_recorded(day, mic), "recorded rows").ok
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
