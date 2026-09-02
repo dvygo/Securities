@@ -821,7 +821,9 @@ def run(opts: runner.Opts) -> None:
                 # re-run hand a live number to a different instrument.
                 counter_token.write_sequence(opts.date_dir, sequence)
                 counter_token.write_venue_manifest(
-                    opts.date_dir, mic, tokens, started_at=started_at)
+                    opts.date_dir, mic, tokens, started_at=started_at,
+                    run=counter_token.run_stats(
+                        previous, tokens, sequence, prev_day, seq_from))
             print(f"      Wrote {total} rows to {output_path.name}")
         else:
             print(f"      No rows for {venue}")

@@ -52,14 +52,28 @@ def _column(table, name):
     return table.column(name) if name in table.schema.names else None
 
 
-def _allocation(date_dir: str, mic: str):
-    """One venue's allocation from a day's manifest, without holding the rest.
+def _entry(date_dir: str, mic: str):
+    """A venue's allocation, and the corruption message if it could not be read.
 
-    A day's manifest is ~85MB on an OPRA week and carries every venue. The pair
-    checks need two days in hand at once, so everything but the venue asked for
-    is dropped as soon as it is extracted.
+    counter_token raises on a header whose allocation table is missing or does
+    not hash, because for the normalizer the only safe response is to skip the
+    venue rather than renumber it. For a QA run the right response is the
+    opposite: report it as a failed check and keep going, so one bad venue does
+    not hide the state of the other five.
     """
-    entry = counter_token.venue_entry(date_dir, mic)
+    try:
+        return counter_token.venue_entry(date_dir, mic), ""
+    except counter_token.ManifestCorrupt as exc:
+        return {}, str(exc)
+
+
+def _allocation(date_dir: str, mic: str):
+    """One venue's allocation for a day, without holding the rest.
+
+    The pair checks need two days in hand at once, so everything but the venue
+    asked for is dropped as soon as it is extracted.
+    """
+    entry, _ = _entry(date_dir, mic)
     if not entry:
         return None
     return {
@@ -133,11 +147,21 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
     wanted = {v.upper() for v in venues}
     files = _venue_files(date_dir)
     exchanges = _configured()
-    entries = {mic: counter_token.venue_entry(date_dir, mic)
-               for mic in counter_token.venues_with_manifest(date_dir)}
-    entries = {mic: entry for mic, entry in entries.items() if entry}
+    entries: Dict[str, dict] = {}
+    unreadable: Dict[str, str] = {}
+    for mic in counter_token.venues_with_manifest(date_dir):
+        entry, why = _entry(date_dir, mic)
+        if why:
+            unreadable[mic] = why
+        elif entry:
+            entries[mic] = entry
 
     checks: List[Check] = []
+    # A header whose table will not load is worse than a missing venue: the
+    # header still says the venue completed, so anything counting manifests
+    # believes the day is done.
+    for mic, why in sorted(unreadable.items()):
+        checks.append(Check(date_dir, mic, "manifest readable", False, why))
     seen_tokens: Dict[str, set] = {}
 
     # A manifest naming a venue with no parquet is the hazard that cost a day
@@ -357,7 +381,12 @@ def check_pair(previous: str, current: str, venues: Sequence[str] = ()) -> List[
         # further back, and the allocation it inherits is older than the data.
         cfg = _configured().get(mic)
         if cfg is not None and cfg.venue_id:
-            source, stamp = counter_token.previous_tokens(current, mic, cfg.venue_id)
+            try:
+                source, stamp = counter_token.previous_tokens(
+                    current, mic, cfg.venue_id)
+            except ValueError as exc:
+                checks.append(Check(span, mic, "chained from", False, str(exc)))
+                continue
             checks.append(Check(
                 span, mic, "chained from", source is not None and stamp == previous,
                 f"carried from {stamp or 'nothing -- renumbered from scratch'}"

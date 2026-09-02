@@ -33,12 +33,16 @@ owning a slice of it. The week's five days across six venues issued 3.0M
 numbers. check_capacity() refuses a day that would cross int32 rather than
 wrapping, since a wrapped counter would collide with a live token.
 """
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from .. import config, paths
 
@@ -110,7 +114,13 @@ def validate(exchanges) -> dict:
 
 MANIFEST_LOOKBACK_DAYS = 30
 
-MANIFEST_VERSION = 3
+# 4 moved the allocation out of the header and into a Parquet table beside
+# it. There is no reader for 3 -- see venue_entry on why no fallback.
+MANIFEST_VERSION = 4
+
+# Matches the rest of the pipeline's Parquet. The table is mostly a sorted
+# string column and a near-dense integer one, which zstd takes to very little.
+_ALLOC_COMPRESSION = "zstd"
 
 
 @dataclass
@@ -204,13 +214,39 @@ def carry_forward(
     return VenueTokens(venue_id, assigned, pool[taken:])
 
 
+# The allocation table's filename, beside the header that describes it.
+ALLOC_SUFFIX = ".alloc.parquet"
+
+# The two states a token in the table can be in. Every token a venue owns is in
+# exactly one of them.
+ALLOC_ASSIGNED = "assigned"
+ALLOC_FREE = "free"
+
+
+class ManifestCorrupt(ValueError):
+    """A header exists but its allocation table is missing or does not hash.
+
+    Deliberately a ValueError, so the `except ValueError` the normalizers
+    already wrap previous_tokens in catches it and skips the venue. Skipping is
+    the only safe response. The alternative -- treating a corrupt manifest as
+    absent, which is what an unreadable file used to do -- would renumber a live
+    venue from scratch and hand its tokens to different instruments.
+    """
+
+
 def manifests_dir(as_of: str) -> Path:
-    """data/YYYYMMDD/v6/manifests/ -- one file per venue."""
+    """data/YYYYMMDD/v6/manifests/ -- a header and a table per venue."""
     return paths.day_dir(as_of) / "manifests"
 
 
 def _venue_manifest_path(as_of: str, mic: str) -> Path:
+    """The venue's header: small, JSON, and the completion record for the day."""
     return manifests_dir(as_of) / f"{mic.upper()}.json"
+
+
+def _alloc_path(as_of: str, mic: str) -> Path:
+    """The venue's allocation table: every token it holds, assigned or free."""
+    return manifests_dir(as_of) / f"{mic.upper()}{ALLOC_SUFFIX}"
 
 
 def _read_json(path: Path) -> dict:
@@ -224,33 +260,179 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def venue_entry(as_of: str, mic: str) -> dict:
-    """One venue's allocation for a day: {venue_id, prefix, high_water, count,
-    free, assigned}, or {} when the day has none.
+def sha256_of(path: Path) -> str:
+    """Digest of a finished file, streamed so a large one costs no memory."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
-    Per-venue file and nothing else. There is deliberately NO fallback to the
-    combined manifest.json this replaced: a silent fallback makes a day whose
-    write failed indistinguishable from a day that legitimately had no
-    allocation, and those two want opposite responses. A day in the old layout
-    now numbers from scratch, visibly in the log, rather than half-chaining to
-    a layout nothing maintains.
+
+@lru_cache(maxsize=1)
+def build_sha() -> str:
+    """Which build produced a manifest.
+
+    Stamped into every header because the numbering is only reproducible against
+    the code that wrote it, and nothing in the output distinguishes two builds:
+    counterTokenV3 was removed and the whole week re-normalized on 2026-09-01,
+    and the files from before and after are indistinguishable without this.
+
+    PREMARKET_BUILD_SHA wins, so a frozen binary can carry its own stamp with no
+    git present. Otherwise the working tree's HEAD. Otherwise "unknown", which
+    is recorded as such rather than omitted -- a missing key reads as an older
+    manifest, an explicit "unknown" reads as what it is.
     """
-    doc = _read_json(_venue_manifest_path(as_of, mic.upper()))
-    return doc.get("allocation") or {}
+    stamped = os.environ.get("PREMARKET_BUILD_SHA", "").strip()
+    if stamped:
+        return stamped
+    import subprocess
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return done.stdout.strip() if done.returncode == 0 else "unknown"
+
+
+def _alloc_schema():
+    """script is null exactly when the token is free; state says which."""
+    return pa.schema([
+        ("script", pa.string()),
+        ("token", pa.int32()),
+        ("state", pa.string()),
+    ])
+
+
+def write_alloc(path: Path, tokens: VenueTokens) -> Path:
+    """The venue's whole token holding, as one Parquet table.
+
+    Replaces the {script: token} map that used to sit inside the header. On an
+    OPRA day that map was 64 MB of JSON and 97% of the file, and every re-run of
+    a day rewrote all of it -- under the object versioning that WORM storage
+    forces on, that is another undeleteable 64 MB copy per run, and this day is
+    normalized at least twice because GLBX lands at 01:00Z and OPRA at 10:30Z.
+    Dictionary-encoded columns take the same content to a fraction of it, and a
+    downstream consumer can query the table directly instead of parsing our JSON.
+
+    Assigned and free live in ONE file on purpose. They are two halves of a
+    single invariant -- every token this venue owns is in exactly one of them --
+    and splitting them would let a crash land between the two writes, leaving an
+    allocation with an empty pool. Tomorrow's carry_forward reads that as
+    "nothing to recycle" and draws fresh numbers for arrivals that had perfectly
+    good ones waiting. One file cannot tear that way.
+
+    Row order is canonical (assigned by script, then free ascending) so that
+    re-running a day is byte-identical. That is what makes the header's sha256
+    worth recording: a digest over a nondeterministic file proves nothing.
+    """
+    scripts = sorted(tokens.assigned)
+    free = sorted(set(tokens.free))
+    table = pa.Table.from_arrays(
+        [
+            pa.array(scripts + [None] * len(free), pa.string()),
+            pa.array([tokens.assigned[s] for s in scripts] + free, pa.int32()),
+            pa.array([ALLOC_ASSIGNED] * len(scripts) + [ALLOC_FREE] * len(free),
+                     pa.string()),
+        ],
+        schema=_alloc_schema(),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    pq.write_table(table, staging, compression=_ALLOC_COMPRESSION)
+    os.replace(staging, path)
+    return path
+
+
+def read_alloc(path: Path) -> tuple:
+    """(assigned, free) from an allocation table.
+
+    `state` is redundant with "script is null" on purpose, and this is where the
+    redundancy pays: the two are checked against each other, so a table that was
+    rewritten by something that did not understand the convention is caught here
+    rather than silently losing a venue's free pool.
+    """
+    table = pq.read_table(path, columns=["script", "token", "state"])
+    assigned = {}
+    free = []
+    for script, token, state in zip(table.column("script").to_pylist(),
+                                    table.column("token").to_pylist(),
+                                    table.column("state").to_pylist()):
+        if state == ALLOC_FREE:
+            if script:
+                raise ManifestCorrupt(
+                    f"{path.name}: token {token} is free but names script {script!r}")
+            free.append(int(token))
+        elif state == ALLOC_ASSIGNED:
+            if not script:
+                raise ManifestCorrupt(
+                    f"{path.name}: token {token} is assigned but names no script")
+            assigned[str(script)] = int(token)
+        else:
+            raise ManifestCorrupt(
+                f"{path.name}: token {token} has unknown state {state!r}")
+    return assigned, free
+
+
+def venue_entry(as_of: str, mic: str) -> dict:
+    """One venue's allocation for a day: {venue_id, highest, count, free,
+    assigned}, or {} when the day has none.
+
+    The header answers "is this venue done"; the table beside it carries the
+    tokens. They are read as a pair deliberately -- the header records the
+    table's sha256, so a torn, truncated or edited table is caught here instead
+    of propagating into tomorrow's numbering.
+
+    Per-venue files and nothing else. There is deliberately NO fallback: not to
+    the combined manifest.json this replaced, and not to the v3 header that
+    carried its allocation inline. A silent fallback makes a day whose write
+    failed indistinguishable from a day that legitimately had no allocation, and
+    those two want opposite responses. A day in an older layout numbers from
+    scratch, visibly in the log, rather than half-chaining to a layout nothing
+    maintains.
+    """
+    mic = mic.upper()
+    doc = _read_json(_venue_manifest_path(as_of, mic))
+    if not doc:
+        return {}
+    block = doc.get("allocation") or {}
+    path = _alloc_path(as_of, mic)
+    if not path.exists():
+        raise ManifestCorrupt(
+            f"{mic}: {as_of} has a header but no allocation table ({path.name}). "
+            f"Refusing to read this as an unnumbered venue -- that would renumber "
+            f"it from scratch and hand its live tokens to other instruments.")
+    recorded = str(block.get("sha256", ""))
+    actual = sha256_of(path)
+    if recorded and recorded != actual:
+        raise ManifestCorrupt(
+            f"{mic}: {as_of}'s allocation table does not match its header -- "
+            f"sha256 is {actual} on disk but the header records {recorded}. The "
+            f"table changed after the manifest was written.")
+    assigned, free = read_alloc(path)
+    return {
+        "venue_id": int(block.get("venue_id", 0)),
+        "highest": int(block.get("highest", 0)),
+        "count": int(block.get("count", len(assigned))),
+        "assigned": assigned,
+        "free": free,
+    }
 
 
 def venues_with_manifest(as_of: str) -> set:
     """Every venue COMPLETED for a day.
 
-    A venue's manifest is written only after its normalized file is promoted,
-    so its presence is the hard answer to "is this venue done for this date".
-    That matters because the venues do not arrive together -- GLBX publishes
-    definitions around 00:00-01:00Z and OPRA around 10:00-11:00Z, so a day is
-    normalized more than once and the early runs legitimately have venues
-    missing. Absent means not done yet, never means empty.
+    A venue's header is written only after its normalized file is promoted and
+    its allocation table is on disk, so its presence is the hard answer to "is
+    this venue done for this date". That matters because the venues do not
+    arrive together -- GLBX publishes definitions around 00:00-01:00Z and OPRA
+    around 10:00-11:00Z, so a day is normalized more than once and the early
+    runs legitimately have venues missing. Absent means not done yet, never
+    means empty.
 
-    Files beginning with "_" are the day's own bookkeeping (_sequence.json),
-    not venues.
+    Files beginning with "_" are the day's own bookkeeping (_sequence.json), not
+    venues. Allocation tables are not .json and so cannot be mistaken for one.
     """
     directory = manifests_dir(as_of)
     if not directory.is_dir():
@@ -260,12 +442,21 @@ def venues_with_manifest(as_of: str) -> set:
 
 
 def venue_run(as_of: str, mic: str) -> dict:
-    """When a venue's run for a day started and finished, or {}.
+    """The run record for a venue-day, or {}.
 
-    {"started_at": "...Z", "completed_at": "...Z"} -- both UTC ISO8601.
+    started_at/completed_at are UTC ISO8601. build_sha names the code, and the
+    tokens block is what the numbering did -- see RunStats.
     """
     doc = _read_json(_venue_manifest_path(as_of, mic.upper()))
-    return {k: doc[k] for k in ("started_at", "completed_at") if k in doc}
+    if not doc:
+        return {}
+    run = {k: doc[k] for k in ("started_at", "completed_at") if k in doc}
+    code = doc.get("code") or {}
+    if code:
+        run["build_sha"] = code.get("build_sha", "")
+    if doc.get("tokens"):
+        run["tokens"] = doc["tokens"]
+    return run
 
 
 def utc_now() -> str:
@@ -282,24 +473,92 @@ def _tokens_from(entry: dict) -> VenueTokens:
     )
 
 
+@dataclass
+class RunStats:
+    """What one venue-day's numbering actually did.
+
+    Recorded in the header because it is the recycling audit trail, and until
+    now it existed only in a line of stdout. "0 drawn from the shared sequence"
+    is the entire claim of the design -- that arrivals are served from the
+    venue's own pool before the counter moves -- and a handover needs that in
+    the artefact, not in a log someone has to still have.
+
+    Derivable by diffing two days' tables, but only if both days survive. This
+    makes a single header self-describing.
+    """
+    arrived: int = 0
+    departed: int = 0
+    kept: int = 0
+    reused: int = 0
+    released: int = 0
+    drawn: int = 0
+    sequence_before: int = 0
+    sequence_after: int = 0
+    carried_from: str = ""
+    sequence_from: str = ""
+
+    def as_dict(self) -> dict:
+        return {
+            "arrived": self.arrived, "departed": self.departed,
+            "kept": self.kept, "reused": self.reused,
+            "released": self.released, "drawn": self.drawn,
+            "sequence_before": self.sequence_before,
+            "sequence_after": self.sequence_after,
+            "carried_from": self.carried_from,
+            "sequence_from": self.sequence_from,
+        }
+
+
+def run_stats(previous, tokens: VenueTokens, sequence,
+              carried_from: str = "", sequence_from: str = "") -> RunStats:
+    """Read off what carry_forward just did, from its own inputs and output.
+
+    Computed here rather than in each normalizer so the Databento and Fyers
+    paths cannot drift on what "reused" means.
+    """
+    before = sequence.start if sequence is not None else 0
+    after = sequence.issued if sequence is not None else 0
+    drawn = after - before
+    if previous is None:
+        return RunStats(arrived=len(tokens.assigned), kept=0, reused=0,
+                        drawn=drawn, sequence_before=before, sequence_after=after,
+                        carried_from=carried_from, sequence_from=sequence_from)
+    kept = set(tokens.assigned) & set(previous.assigned)
+    arrived = len(tokens.assigned) - len(kept)
+    return RunStats(
+        arrived=arrived,
+        departed=len(set(previous.assigned) - kept),
+        kept=len(kept),
+        # Every arrival the sequence did not have to number came out of the pool.
+        reused=arrived - drawn,
+        released=len(set(previous.assigned) - kept),
+        drawn=drawn,
+        sequence_before=before, sequence_after=after,
+        carried_from=carried_from, sequence_from=sequence_from,
+    )
+
+
 def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
-                         started_at: str = "") -> Path:
-    """Write one venue's allocation, atomically, to its own file.
+                         started_at: str = "",
+                         run: Optional[RunStats] = None) -> Path:
+    """Write one venue's header, and the allocation table it points at.
 
-    Replaces merge_into_manifest's read-modify-write of a file holding every
-    venue. That pattern had two costs beyond the obvious one: the Databento and
-    Fyers steps normalize the same day and each rewrote the whole file, so the
-    later one could clobber the earlier if they ever overlapped; and reading one
-    venue meant parsing all of them, which on an OPRA week is 85MB to answer a
-    question about a venue with 20,000 scripts.
+    The table goes first and the header last, so the header's presence keeps
+    meaning exactly what venues_with_manifest treats it as: this venue is done.
+    A crash between the two leaves a table nothing references, which the next
+    run overwrites. The other order would advertise a completed venue whose
+    tokens were not on disk.
 
-    Staged under a PID-scoped name and replaced on success, as before: a
+    Both are staged under a PID-scoped name and replaced on success, for the
+    reason every writer here does it: two runs must not share a temp path, and a
     half-written manifest read as tomorrow's carry-forward would silently
     re-issue live tokens.
     """
     mic = mic.upper()
     path = _venue_manifest_path(as_of, mic)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    alloc = write_alloc(_alloc_path(as_of, mic), tokens)
     completed_at = utc_now()
     payload = {
         "version": MANIFEST_VERSION,
@@ -310,17 +569,23 @@ def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
         # GLBX landed at 01:00Z and OPRA at 10:30Z.
         "started_at": started_at or completed_at,
         "completed_at": completed_at,
+        "code": {"build_sha": build_sha(), "manifest_version": MANIFEST_VERSION},
         "allocation": {
             "venue_id": tokens.venue_id,
             "highest": tokens.highest,
             "count": len(tokens.assigned),
-            "free": tokens.free,
-            "assigned": tokens.assigned,
+            "free_count": len(set(tokens.free)),
+            # The table, and enough to prove it is the one this header describes.
+            "path": alloc.name,
+            "rows": len(tokens.assigned) + len(set(tokens.free)),
+            "bytes": alloc.stat().st_size,
+            "sha256": sha256_of(alloc),
         },
+        "tokens": (run or RunStats()).as_dict(),
     }
     staging = path.with_name(f"{path.name}.tmp.{os.getpid()}")
     with open(staging, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+        json.dump(payload, handle, indent=1, sort_keys=True)
     os.replace(staging, path)
     return path
 

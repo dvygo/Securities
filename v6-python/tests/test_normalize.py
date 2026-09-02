@@ -1165,9 +1165,29 @@ class TestCounterTokenV2Validator:
             counter_token_qa.check_day("20260824", ["XCBO"]), "manifest internal").ok
 
     def test_a_token_past_int32_in_the_manifest_fails(self, tree):
+        """The int32 column makes our own writer unable to emit one of these,
+        so the only way in is a table written by something else -- which is
+        exactly the case worth checking once the tables are handed over. Built
+        by hand with an int64 column, and the header re-hashed to match, so the
+        integrity check does not fire first and mask the one under test."""
+        import json
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
         self._good_day()
-        self._manifest("20260824", "XCBO",
-                       {"A": 1, "B": 2, "C": counter_token.INT32_MAX + 1}, 10)
+        alloc = counter_token.manifests_dir("20260824") / "XCBO.alloc.parquet"
+        pq.write_table(
+            pa.table({
+                "script": pa.array(["A", "B", "C"], pa.string()),
+                "token": pa.array([1, 2, counter_token.INT32_MAX + 1], pa.int64()),
+                "state": pa.array(["assigned"] * 3, pa.string()),
+            }),
+            alloc)
+        header = counter_token.manifests_dir("20260824") / "XCBO.json"
+        doc = json.loads(header.read_text())
+        doc["allocation"]["sha256"] = counter_token.sha256_of(alloc)
+        header.write_text(json.dumps(doc))
+
         assert not self._named(
             counter_token_qa.check_day("20260824", ["XCBO"]), "manifest internal").ok
 
@@ -1694,7 +1714,7 @@ class TestPerVenueManifest:
         counter_token.write_venue_manifest(
             "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
         doc = json.loads((counter_token.manifests_dir("20260824") / "XCBO.json").read_text())
-        assert doc["version"] == counter_token.MANIFEST_VERSION == 3
+        assert doc["version"] == counter_token.MANIFEST_VERSION == 4
         assert doc["venue"] == "XCBO" and doc["date"] == "20260824"
 
 
@@ -1821,6 +1841,329 @@ class TestVenueCompletionRecord:
     def test_the_timestamps_are_utc_to_the_second(self, tree):
         stamp = counter_token.utc_now()
         datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+
+
+class TestManifestHeaderAndAllocation:
+    """v4: a small JSON header, and the allocation as a Parquet table beside it.
+
+    v3 carried the whole {script: token} map inline, which on an OPRA day was
+    64MB of JSON in an 87MB directory. The map is the part that scales with the
+    estate; the header is the part a human or a control group actually reads.
+    Splitting them is what makes the header readable and what stops every re-run
+    of a day from rewriting 64MB -- which matters most under the object
+    versioning WORM storage forces on, where each rewrite is another copy that
+    cannot be deleted.
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _tokens(assigned, free=(), venue_id=10):
+        return counter_token.VenueTokens(
+            venue_id=venue_id, assigned=dict(assigned), free=list(free))
+
+    @classmethod
+    def _write(cls, day="20260824", mic="XCBO", assigned=None, free=(), **kw):
+        return counter_token.write_venue_manifest(
+            day, mic, cls._tokens(assigned or {"A": 1, "B": 2}, free), **kw)
+
+    @staticmethod
+    def _header(day="20260824", mic="XCBO"):
+        return json.loads(
+            (counter_token.manifests_dir(day) / f"{mic}.json").read_text())
+
+    @staticmethod
+    def _alloc(day="20260824", mic="XCBO"):
+        return counter_token.manifests_dir(day) / f"{mic}.alloc.parquet"
+
+    # -- the split itself ------------------------------------------------
+
+    def test_the_allocation_is_not_in_the_header(self, tree):
+        self._write()
+        assert "assigned" not in self._header()["allocation"]
+        assert "free" not in self._header()["allocation"]
+        assert self._alloc().exists()
+
+    def test_the_header_stays_small_however_large_the_estate(self, tree):
+        """The point of the split. 50,000 scripts inline was ~1.6MB of JSON."""
+        self._write(assigned={f"OPRA:SYM{n:06d}": n for n in range(1, 50_001)})
+        header = counter_token.manifests_dir("20260824") / "XCBO.json"
+        assert header.stat().st_size < 2_000
+        assert self._header()["allocation"]["count"] == 50_000
+
+    def test_the_table_round_trips_assigned_and_free(self, tree):
+        self._write(assigned={"A": 1, "C": 3}, free=[7, 5])
+        entry = counter_token.venue_entry("20260824", "XCBO")
+        assert entry["assigned"] == {"A": 1, "C": 3}
+        assert sorted(entry["free"]) == [5, 7]
+        assert entry["venue_id"] == 10
+
+    def test_venue_entry_keeps_the_shape_its_callers_expect(self, tree):
+        """qa/tokens.py and _tokens_from read these five keys and nothing else."""
+        self._write(assigned={"A": 1}, free=[9])
+        entry = counter_token.venue_entry("20260824", "XCBO")
+        assert set(entry) == {"venue_id", "highest", "count", "assigned", "free"}
+
+    def test_a_rerun_of_the_same_day_is_byte_identical(self, tree):
+        """A digest over a nondeterministic file would prove nothing."""
+        self._write(assigned={"B": 2, "A": 1}, free=[9, 4])
+        first = self._alloc().read_bytes()
+        self._write(assigned={"A": 1, "B": 2}, free=[4, 9])
+        assert self._alloc().read_bytes() == first
+
+    def test_the_table_is_smaller_than_the_json_it_replaces(self, tree):
+        assigned = {f"OPRA:SYM{n:06d}": n for n in range(1, 50_001)}
+        self._write(assigned=assigned)
+        inline = len(json.dumps({"assigned": assigned}))
+        assert self._alloc().stat().st_size < inline / 3
+
+    # -- integrity ------------------------------------------------------
+
+    def test_the_header_records_the_tables_digest(self, tree):
+        self._write()
+        assert (self._header()["allocation"]["sha256"]
+                == counter_token.sha256_of(self._alloc()))
+
+    def test_a_table_changed_after_the_fact_is_caught(self, tree):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self._write(assigned={"A": 1, "B": 2})
+        pq.write_table(
+            pa.table({"script": pa.array(["A", "B"], pa.string()),
+                      "token": pa.array([1, 999], pa.int32()),
+                      "state": pa.array(["assigned"] * 2, pa.string())}),
+            self._alloc())
+        with pytest.raises(counter_token.ManifestCorrupt, match="does not match"):
+            counter_token.venue_entry("20260824", "XCBO")
+
+    def test_a_header_with_no_table_is_caught(self, tree):
+        self._write()
+        self._alloc().unlink()
+        with pytest.raises(counter_token.ManifestCorrupt, match="no allocation table"):
+            counter_token.venue_entry("20260824", "XCBO")
+
+    def test_corruption_is_a_valueerror_so_the_normalizer_skips_the_venue(self, tree):
+        """Both normalizers already wrap previous_tokens in `except ValueError`
+        and skip. Skipping is the only safe response -- treating a corrupt
+        manifest as absent renumbers a live venue from scratch."""
+        assert issubclass(counter_token.ManifestCorrupt, ValueError)
+        self._write(day="20260824")
+        self._alloc("20260824").unlink()
+        with pytest.raises(ValueError):
+            counter_token.previous_tokens("20260825", "XCBO", 10)
+
+    def test_a_free_token_naming_a_script_is_caught(self, tree):
+        self._corrupt_state(tree, ["A"], [1], ["free"], "is free but names script")
+
+    def test_an_assigned_token_naming_no_script_is_caught(self, tree):
+        self._corrupt_state(tree, [None], [1], ["assigned"], "names no script")
+
+    def test_an_unknown_state_is_caught(self, tree):
+        self._corrupt_state(tree, ["A"], [1], ["retired"], "unknown state")
+
+    def _corrupt_state(self, tree, scripts, tokens, states, match):
+        """state is redundant with `script is null` on purpose; this is where
+        the redundancy pays, so a table rewritten by something that did not
+        understand the convention is caught rather than silently losing a pool."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self._write()
+        pq.write_table(
+            pa.table({"script": pa.array(scripts, pa.string()),
+                      "token": pa.array(tokens, pa.int32()),
+                      "state": pa.array(states, pa.string())}),
+            self._alloc())
+        header = counter_token.manifests_dir("20260824") / "XCBO.json"
+        doc = json.loads(header.read_text())
+        doc["allocation"]["sha256"] = counter_token.sha256_of(self._alloc())
+        header.write_text(json.dumps(doc))
+        with pytest.raises(counter_token.ManifestCorrupt, match=match):
+            counter_token.venue_entry("20260824", "XCBO")
+
+    # -- write order and discovery ---------------------------------------
+
+    def test_the_table_is_not_mistaken_for_a_venue(self, tree):
+        self._write(mic="XCBO")
+        self._write(mic="XCME", assigned={"Z": 9})
+        assert counter_token.venues_with_manifest("20260824") == {"XCBO", "XCME"}
+
+    def test_no_staging_file_survives_a_write(self, tree):
+        self._write()
+        assert list(counter_token.manifests_dir("20260824").glob("*.tmp*")) == []
+
+    def test_a_table_with_no_header_is_not_a_completed_venue(self, tree):
+        """The table is written first, so a crash between the two leaves this.
+        It must read as not-done, which is what the next run overwrites."""
+        self._write()
+        (counter_token.manifests_dir("20260824") / "XCBO.json").unlink()
+        assert counter_token.venues_with_manifest("20260824") == set()
+        assert counter_token.venue_entry("20260824", "XCBO") == {}
+
+    # -- the run record --------------------------------------------------
+
+    def test_the_build_that_wrote_it_is_stamped(self, tree, monkeypatch):
+        counter_token.build_sha.cache_clear()
+        monkeypatch.setenv("PREMARKET_BUILD_SHA", "deadbeef")
+        try:
+            self._write()
+            assert self._header()["code"]["build_sha"] == "deadbeef"
+        finally:
+            counter_token.build_sha.cache_clear()
+
+    def test_the_run_record_carries_what_the_numbering_did(self, tree):
+        seq = counter_token.Sequence()
+        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, seq)
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO", day1,
+            run=counter_token.run_stats(None, day1, seq, "", ""))
+        assert self._header()["tokens"]["drawn"] == 3
+        assert self._header()["tokens"]["arrived"] == 3
+
+    def test_the_run_record_shows_recycling_rather_than_drawing(self, tree):
+        """'0 drawn from the shared sequence' is the whole claim of the design.
+        Until now it existed only in a line of stdout."""
+        first = counter_token.Sequence()
+        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, first)
+        second = counter_token.Sequence(first.issued)
+        day2 = counter_token.carry_forward(day1, ["A", "D"], 10, second)
+        counter_token.write_venue_manifest(
+            "20260825", "XCBO", day2,
+            run=counter_token.run_stats(day1, day2, second, "20260824", "20260824"))
+        record = self._header("20260825")["tokens"]
+        assert record["departed"] == 2 and record["released"] == 2
+        assert record["arrived"] == 1 and record["reused"] == 1
+        assert record["drawn"] == 0
+        assert record["sequence_before"] == record["sequence_after"] == 3
+        assert record["carried_from"] == "20260824"
+
+    def test_run_stats_counts_a_draw_the_pool_could_not_cover(self, tree):
+        first = counter_token.Sequence()
+        day1 = counter_token.carry_forward(None, ["A"], 10, first)
+        second = counter_token.Sequence(first.issued)
+        day2 = counter_token.carry_forward(day1, ["A", "B", "C"], 10, second)
+        stats = counter_token.run_stats(day1, day2, second)
+        assert stats.arrived == 2 and stats.reused == 0 and stats.drawn == 2
+
+    def test_venue_run_surfaces_the_record(self, tree):
+        self._write(started_at="2026-08-24T01:02:03Z")
+        run = counter_token.venue_run("20260824", "XCBO")
+        assert run["started_at"] == "2026-08-24T01:02:03Z"
+        assert "build_sha" in run and "tokens" in run
+
+    # -- the contract the whole thing exists to keep ----------------------
+
+    def test_tokens_still_carry_forward_through_the_new_format(self, tree):
+        seq = counter_token.Sequence()
+        day1 = counter_token.carry_forward(None, ["A", "B", "C"], 10, seq)
+        counter_token.write_venue_manifest("20260824", "XCBO", day1)
+        previous, stamp = counter_token.previous_tokens("20260825", "XCBO", 10)
+        assert stamp == "20260824"
+        assert previous.assigned == day1.assigned
+        day2 = counter_token.carry_forward(previous, ["A", "C", "D"], 10, seq)
+        assert day2.assigned["A"] == day1.assigned["A"]
+        assert day2.assigned["C"] == day1.assigned["C"]
+        assert day2.assigned["D"] == day1.assigned["B"]   # recycled
+
+
+class TestManifestMigration:
+    """v3 -> v4 conversion. A format change that must move no token."""
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _v3(day, mic, assigned, free=(), venue_id=10, **extra):
+        directory = counter_token.manifests_dir(day)
+        directory.mkdir(parents=True, exist_ok=True)
+        doc = {"version": 3, "date": day, "venue": mic,
+               "started_at": "2026-08-24T01:02:03Z",
+               "completed_at": "2026-08-24T01:05:06Z",
+               "allocation": {"venue_id": venue_id, "highest": max(assigned.values()),
+                              "count": len(assigned), "free": list(free),
+                              "assigned": dict(assigned)}}
+        doc.update(extra)
+        path = directory / f"{mic}.json"
+        path.write_text(json.dumps(doc))
+        return path
+
+    def test_a_v3_manifest_converts_losslessly(self, tree):
+        assigned = {f"S{n}": n for n in range(1, 501)}
+        header = self._v3("20260824", "XCBO", assigned, free=[900, 901])
+        from premarketv6.normalize import migrate_manifest
+
+        expected = migrate_manifest._v3_tokens(header)
+        migrate_manifest.convert(header)
+        assert migrate_manifest.verify(header, expected) == []
+        entry = counter_token.venue_entry("20260824", "XCBO")
+        assert entry["assigned"] == assigned
+        assert sorted(entry["free"]) == [900, 901]
+
+    def test_conversion_shrinks_the_directory(self, tree):
+        assigned = {f"OPRA:SYM{n:06d}": n for n in range(1, 20_001)}
+        header = self._v3("20260824", "XCBO", assigned)
+        from premarketv6.normalize import migrate_manifest
+
+        before = header.stat().st_size
+        migrate_manifest.convert(header)
+        after = header.stat().st_size + (
+            counter_token.manifests_dir("20260824") / "XCBO.alloc.parquet").stat().st_size
+        assert after < before / 3
+
+    def test_conversion_keeps_the_original_run_times(self, tree):
+        """started_at/completed_at say when the venue was NORMALIZED, which this
+        does not change. Overwriting them would destroy the only record of it."""
+        header = self._v3("20260824", "XCBO", {"A": 1})
+        from premarketv6.normalize import migrate_manifest
+
+        migrate_manifest.convert(header)
+        run = counter_token.venue_run("20260824", "XCBO")
+        assert run["started_at"] == "2026-08-24T01:02:03Z"
+        assert run["completed_at"] == "2026-08-24T01:05:06Z"
+
+    def test_conversion_does_not_claim_the_build_that_numbered_the_day(self, tree):
+        """v3 recorded no build. Stamping the migration's own sha would assert
+        something false about which code produced these tokens."""
+        header = self._v3("20260824", "XCBO", {"A": 1})
+        from premarketv6.normalize import migrate_manifest
+
+        migrate_manifest.convert(header)
+        code = json.loads(header.read_text())["code"]
+        assert code["build_sha"] == "unknown"
+        assert code["migrated_from"] == 3 and code["migrated_by"]
+
+    def test_verify_catches_a_conversion_that_moved_a_token(self, tree):
+        """Mutation check: prove verify() is not vacuous."""
+        header = self._v3("20260824", "XCBO", {"A": 1, "B": 2})
+        from premarketv6.normalize import migrate_manifest
+
+        migrate_manifest.convert(header)
+        wrong = counter_token.VenueTokens(venue_id=10, assigned={"A": 1, "B": 99})
+        assert migrate_manifest.verify(header, wrong)
+
+    def test_a_v4_manifest_is_not_reconverted(self, tree):
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO",
+            counter_token.VenueTokens(venue_id=10, assigned={"A": 1}))
+        from premarketv6.normalize import migrate_manifest
+
+        header = counter_token.manifests_dir("20260824") / "XCBO.json"
+        assert not migrate_manifest._is_v3(header)
+        assert migrate_manifest.v3_days(tree) == []
+
+    def test_the_sequence_file_is_not_treated_as_a_venue(self, tree):
+        self._v3("20260824", "XCBO", {"A": 1})
+        counter_token.write_sequence("20260824", counter_token.Sequence(5))
+        from premarketv6.normalize import migrate_manifest
+
+        assert migrate_manifest.run() == 0
+        assert counter_token.load_sequence("20260824") == 5
 
 
 if __name__ == "__main__":

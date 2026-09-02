@@ -194,6 +194,18 @@ def create_parser() -> argparse.ArgumentParser:
         help="Restrict to this MIC; repeatable.",
     )
 
+    # migrate-manifests subcommand
+    migrate_parser = subparsers.add_parser(
+        "migrate-manifests",
+        help="Convert v3 venue manifests (allocation inline in the JSON) to the "
+             "v4 header + Parquet allocation table",
+    )
+    migrate_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be converted without writing anything.",
+    )
+
     return parser
 
 
@@ -397,6 +409,9 @@ def main() -> int:
         elif args.command == "check-lineage":
             from .qa import lineage
             return lineage.run(_date_list(args.dates), _venue_selection(args.venue))
+        elif args.command == "migrate-manifests":
+            from .normalize import migrate_manifest
+            return migrate_manifest.run(dry_run=args.dry_run)
         else:
             parser.print_help()
             return 1

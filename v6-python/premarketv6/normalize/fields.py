@@ -238,7 +238,9 @@ def run(opts: runner.Opts) -> None:
             if tokens is not None:
                 counter_token.write_sequence(opts.date_dir, sequence)
                 counter_token.write_venue_manifest(
-                    opts.date_dir, mic, tokens, started_at=started_at)
+                    opts.date_dir, mic, tokens, started_at=started_at,
+                    run=counter_token.run_stats(
+                        previous, tokens, sequence, prev_day, seq_from))
             print(f"    Wrote {len(all_rows)} rows to {output_path}")
         else:
             # Nothing is written for an empty MIC. A schema-only file would look
