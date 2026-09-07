@@ -120,6 +120,7 @@ def build_normalizer_steps(
     only: List[str],
     contracts_push_only: bool = False,
     plugin: bool = False,
+    postgres_plugin: Optional[bool] = None,
     tokenmap: bool = False,
     csv_only: bool = False,
 ) -> List[Step]:
@@ -159,16 +160,22 @@ def build_normalizer_steps(
         all_steps.append(Step("baskets", baskets.run))
     all_steps.append(Step("csv-export", export.run))
 
+    # Plugin-family output, in the order the `plugin` command runs it: build the
+    # Parquet, push it, then generate the token map. Each is independently
+    # selectable so `plugin --postgres-push-only` can push without rebuilding.
+    #
+    # postgres_plugin defaults to "whenever the Parquet is being built", which is
+    # what --plugin used to mean; pass it explicitly to decouple the two.
+    if postgres_plugin is None:
+        postgres_plugin = plugin
     if plugin:
         all_steps.append(Step("plugin", plugin_build.run))
-        # Building plugin CSVs otherwise pushes them too -- --csv-only is the
-        # opt-out.
-        if not csv_only:
-            all_steps.append(Step("postgres-plugin", plugin_postgres.run))
-
-    # The MDF token map is plugin-family output -- someone else's binary format,
-    # like the pg schema -- but it is NOT built by --plugin and pushes nowhere:
-    # a C++ lane loads the file directly, on its own delivery cadence.
+    if postgres_plugin and not csv_only:
+        # --csv-only is the opt-out: building the Parquet otherwise pushes it too.
+        all_steps.append(Step("postgres-plugin", plugin_postgres.run))
+    # The token map is plugin-family output -- someone else's binary format, like
+    # the pg schema -- but it pushes nowhere: a C++ lane loads the file directly,
+    # on its own delivery cadence.
     if tokenmap:
         all_steps.append(Step("tokenmap", plugin_tokenmap.run))
 

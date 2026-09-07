@@ -3018,6 +3018,71 @@ class TestEnableFlags:
             assert col not in plugin_build.PLUGIN_COLUMNS
 
 
+class TestPluginCommandWiring:
+    """`premarketv6 plugin` is a sibling of normalize, not a flag on it."""
+
+    @staticmethod
+    def _names(**kw):
+        from premarketv6 import runner
+        return [s.name for s in runner.build_normalizer_steps([], **kw)]
+
+    def test_plugin_stages_run_in_order(self):
+        """Parquet, then the Postgres push, then the token map. The push reads
+        what the build just wrote, so the order is load-bearing, not cosmetic."""
+        names = self._names(plugin=True, postgres_plugin=True, tokenmap=True)
+        assert names[-3:] == ["plugin", "postgres-plugin", "tokenmap"]
+
+    def test_normalize_runs_before_any_plugin_stage(self):
+        """The reason plugin is a command and not a flag: the files must come
+        from the masters this run wrote, not yesterday's left on disk."""
+        names = self._names(plugin=True, postgres_plugin=True, tokenmap=True)
+        assert names.index("normalize-databento") < names.index("plugin")
+        assert names.index("csv-export") < names.index("plugin")
+
+    def test_each_stage_is_independently_selectable(self):
+        assert self._names(plugin=True, postgres_plugin=False)[-1] == "plugin"
+        assert self._names(plugin=False, postgres_plugin=True)[-1] == "postgres-plugin"
+        assert self._names(tokenmap=True, postgres_plugin=False)[-1] == "tokenmap"
+
+    def test_push_without_rebuild_is_possible(self):
+        """--postgres-push-only pushes the Parquet already on disk."""
+        names = self._names(plugin=False, postgres_plugin=True, tokenmap=False)
+        assert "plugin" not in names and "postgres-plugin" in names
+
+    def test_postgres_defaults_to_following_the_build(self):
+        """Left unset it means what --plugin used to: building the Parquet
+        pushes it too."""
+        assert "postgres-plugin" in self._names(plugin=True)
+        assert "postgres-plugin" not in self._names(plugin=False)
+
+    def test_csv_only_still_vetoes_the_push(self):
+        names = self._names(plugin=True, postgres_plugin=True, tokenmap=True, csv_only=True)
+        assert "postgres-plugin" not in names
+        assert "plugin" in names and "tokenmap" in names
+
+    def test_the_output_flags_are_mutually_exclusive(self):
+        from premarketv6 import cli
+        parser = cli.create_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["plugin", "--parquet-only", "--tokenmap-only"])
+        with pytest.raises(SystemExit):
+            parser.parse_args(["plugin", "--parquet-only", "--postgres-push-only"])
+
+    def test_normalize_no_longer_takes_plugin_flags(self):
+        """They moved to the plugin command; leaving them would give two ways to
+        do it, one of which skips the normalize that makes the output consistent."""
+        from premarketv6 import cli
+        parser = cli.create_parser()
+        for flag in ("--plugin", "--tokenmap"):
+            with pytest.raises(SystemExit):
+                parser.parse_args(["normalize", flag])
+
+    def test_bare_plugin_selects_every_stage(self):
+        from premarketv6 import cli
+        args = cli.create_parser().parse_args(["plugin"])
+        assert not (args.parquet_only or args.postgres_push_only or args.tokenmap_only)
+
+
 class TestTokenMap:
     """MDF's .bin token map. Every invariant here is a hard load failure in C++."""
 

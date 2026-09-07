@@ -123,21 +123,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="Push contracts/baskets to ClickHouse after normalization (files are still built first)",
     )
     normalize_parser.add_argument(
-        "--plugin",
-        action="store_true",
-        help="Build plugin-format Parquet (legacy pg symbol-master schema) in data/YYYYMMDD/v6/plugin/",
-    )
-    normalize_parser.add_argument(
-        "--tokenmap",
-        action="store_true",
-        help="Also emit MDF's tokenmap.<VENUE>.bin for each Databento venue",
-    )
-    normalize_parser.add_argument(
-        "--tokenmap-dir",
-        dest="tokenmap_dir",
-        help="Where --tokenmap writes (default: data/YYYYMMDD/v6/tokenmap/)",
-    )
-    normalize_parser.add_argument(
         "--csv-only",
         action="store_true",
         help="Write files only, never touch a database. Overrides --clickhouse-push-only "
@@ -163,11 +148,13 @@ def create_parser() -> argparse.ArgumentParser:
         help="Export aggregated CSVs to directory",
     )
 
-    # plugin subcommand -- the plugin-family outputs on their own, without a
-    # full normalize. Both read the normalized masters that are already on disk.
+    # plugin subcommand -- a sibling of normalize, not a flag on it. Running it
+    # normalizes FIRST and then emits the plugin-family output, so one command
+    # produces a consistent day: the masters the plugin files were built from are
+    # the ones just written, never yesterday's left on disk.
     plugin_parser = subparsers.add_parser(
         "plugin",
-        help="Build plugin-family output from the normalized masters already written",
+        help="Normalize, then emit plugin-family output (plugin Parquet + MDF token map)",
     )
     plugin_parser.add_argument(
         "--date-dir",
@@ -179,26 +166,43 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Don't write files, just simulate",
     )
-    plugin_parser.add_argument(
-        "--tokenmap",
+    outputs = plugin_parser.add_mutually_exclusive_group()
+    outputs.add_argument(
+        "--parquet-only",
         action="store_true",
-        help="Emit MDF's tokenmap.<VENUE>.bin (DBN instrument_id -> counterTokenV2) "
-             "for each Databento venue. Without this, builds the plugin Parquet.",
+        help="Emit only the plugin Parquet (legacy pg symbol-master schema), "
+             "not the token map. Normalize still runs first.",
+    )
+    outputs.add_argument(
+        "--postgres-push-only",
+        dest="postgres_push_only",
+        action="store_true",
+        help="Only push the plugin Parquet to Postgres. Normalize still runs "
+             "first, but the Parquet is NOT rebuilt -- this pushes whatever is "
+             "already in data/YYYYMMDD/v6/plugin/.",
+    )
+    outputs.add_argument(
+        "--tokenmap-only",
+        action="store_true",
+        help="Emit only MDF's tokenmap.<VENUE>.bin (DBN instrument_id -> "
+             "counterTokenV2, Databento venues), not the plugin Parquet. "
+             "Normalize still runs first.",
     )
     plugin_parser.add_argument(
         "--tokenmap-dir",
         dest="tokenmap_dir",
-        help="Where to write the .bin maps (default: data/YYYYMMDD/v6/tokenmap/). "
-             "Point at MDF's config/cpp-vendor/ to deliver in place -- the write "
-             "is atomic, so a lane restarting mid-delivery cannot read a partial map.",
+        help="Where to write the .bin maps (default: "
+             "data/YYYYMMDD/v6/plugin/tokenmap/). Point at MDF's "
+             "config/cpp-vendor/ to deliver in place -- the write is atomic, so "
+             "a lane restarting mid-delivery cannot read a partial map.",
     )
     plugin_parser.add_argument(
         "--venue",
         action="append",
         default=[],
         metavar="MIC",
-        help="Restrict to this MIC; repeatable. Narrows only -- a venue with "
-             "enabled = 0 stays off even when named.",
+        help="Restrict the per-venue steps to this MIC; repeatable. Narrows only "
+             "-- a venue with enabled = 0 stays off even when named.",
     )
 
     # check-tokens subcommand
@@ -362,13 +366,17 @@ def run_normalize(args: argparse.Namespace) -> int:
         # no --only filter. postgres-plugin has no flag of its own -- it rides
         # along with --plugin (or is targeted directly via --only).
         contracts_push_only = getattr(args, "contracts_push_only", False) or "clickhouse" in only
-        plugin = args.plugin or "plugin" in only or "postgres-plugin" in only
-        tokenmap = getattr(args, "tokenmap", False) or "tokenmap" in only
+        # The flags are gone -- `premarketv6 plugin` is the way to produce
+        # plugin-family output, because it normalizes first. Naming a step in
+        # --only still targets it directly, for re-running one stage by hand.
+        plugin = "plugin" in only
+        tokenmap = "tokenmap" in only
 
         steps = runner.build_normalizer_steps(
             only,
             contracts_push_only=contracts_push_only,
             plugin=plugin,
+            postgres_plugin="postgres-plugin" in only,
             tokenmap=tokenmap,
             csv_only=getattr(args, "csv_only", False),
         )
@@ -434,10 +442,15 @@ def _venue_selection(raw: list) -> tuple:
 
 
 def run_plugin(args) -> int:
-    """`premarketv6 plugin` -- plugin-family output from the masters already on disk.
+    """`premarketv6 plugin` -- normalize, then the plugin-family output.
 
-    --tokenmap emits MDF's binary maps; without it this builds the plugin Parquet,
-    the same step --plugin adds to a normalize run. Neither re-normalizes.
+    Normalize runs FIRST, always. That is the point of making this a sibling of
+    normalize rather than a flag on it: the plugin files are built from the
+    masters this run just wrote, never from yesterday's left on disk.
+
+    With no flag it runs the whole chain in order -- plugin Parquet, then the
+    Postgres push, then the token map. Each --*-only isolates one of those three;
+    normalize still runs first in every case.
     """
     cleanup, log_path = runlog.setup("plugin", args.date_dir)
     try:
@@ -450,15 +463,25 @@ def run_plugin(args) -> int:
             venues=_venue_selection(getattr(args, "venue", []) or []),
             tokenmap_dir=getattr(args, "tokenmap_dir", None),
         )
-        want_tokenmap = getattr(args, "tokenmap", False)
+
+        parquet_only = getattr(args, "parquet_only", False)
+        push_only = getattr(args, "postgres_push_only", False)
+        tokenmap_only = getattr(args, "tokenmap_only", False)
+        everything = not (parquet_only or push_only or tokenmap_only)
+
+        if push_only:
+            # Said out loud: --postgres-push-only normalizes but does not rebuild
+            # the Parquet, so what lands in Postgres is whatever is already on
+            # disk -- possibly older than the masters just written.
+            print("  --postgres-push-only: pushing the plugin Parquet already in "
+                  f"{paths.plugin_dir(args.date_dir)}, not rebuilding it",
+                  file=sys.stderr)
+
         steps = runner.build_normalizer_steps(
-            ["tokenmap"] if want_tokenmap else ["plugin"],
-            plugin=not want_tokenmap,
-            tokenmap=want_tokenmap,
-            # Building the plugin Parquet otherwise drags postgres-plugin along,
-            # and `plugin` here means build the file, not push it. --only already
-            # filters it out; this makes that explicit rather than incidental.
-            csv_only=True,
+            [],                                   # the full normalize pipeline
+            plugin=everything or parquet_only,
+            postgres_plugin=everything or push_only,
+            tokenmap=everything or tokenmap_only,
         )
         return runner.run(steps, opts)
     finally:
