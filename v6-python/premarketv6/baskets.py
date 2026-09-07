@@ -298,14 +298,6 @@ def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
         idx = _sym_index(as_of, "XNSE", cache)
         return _resolve_by_script(name, baskets_dir / f"{name}.csv", idx, as_of)
 
-    if name == "XNSE_NIFTYFNO_FUTURES_NEAR":
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_equity_futures(name, baskets_dir / "XNSE_NIFTYFNO_EQUITY.csv", idx, as_of, near_only=True)
-
-    if name == "XNSE_NIFTYFNO_FUTURES_ALL":
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_equity_futures(name, baskets_dir / "XNSE_NIFTYFNO_EQUITY.csv", idx, as_of, near_only=False)
-
     if name == "XNSE_INDEX_FUTURES_NEAR":
         idx = _sym_index(as_of, "XNSE", cache)
         return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=True)
@@ -321,6 +313,12 @@ def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
     if name == "XIMC_FUTURES_ALL":
         idx = _sym_index(as_of, "XIMC", cache)
         return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
+
+    if name in paths.EQUITY_FUTURES_SOURCES:
+        equity, near_only = paths.EQUITY_FUTURES_SOURCES[name]
+        idx = _sym_index(as_of, "XNSE", cache)
+        return _resolve_equity_futures(
+            name, baskets_dir / f"{equity}.csv", idx, as_of, near_only)
 
     if name in paths.OPTION_BASKET_SOURCES:
         source, mic, near_only = paths.OPTION_BASKET_SOURCES[name]
@@ -343,10 +341,6 @@ def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
     if name in ("XNSE_NIFTY50_EQUITY", "XNSE_NIFTY100_EQUITY", "XNSE_NIFTY200_EQUITY", "XNSE_NIFTY500_EQUITY"):
         idx = _sym_index(as_of, "XNSE", cache)
         return _resolve_by_script(name, baskets_dir / f"{name}.csv", idx, as_of)
-
-    if name == "XNSE_NIFTY500_FUTURES":
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_equity_futures(name, baskets_dir / "XNSE_NIFTY500_EQUITY.csv", idx, as_of, near_only=False)
 
     raise ValueError(f"unknown basket {name!r}")
 

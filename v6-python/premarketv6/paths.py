@@ -421,6 +421,8 @@ BASKET_NAMES = [
     "XNSE_NIFTY200_EQUITY",
     "XNSE_NIFTY500_EQUITY",
     "XNSE_NIFTY500_FUTURES",
+    "XNSE_NIFTY50_FUTURES",
+    "XNSE_NIFTY100_FUTURES",
     # Option chains, one per futures basket above: the futures basket supplies
     # the underlying roots, and every live option on those roots is emitted.
     # A NEAR source narrows to the expiry month(s) its futures occupy; an ALL
@@ -437,6 +439,8 @@ BASKET_NAMES = [
     "XNSE_OPTIONS_NIFTY500_FUTURES",
     "XBOM_OPTIONS_INDEX_FUTURES",
     "XIMC_OPTIONS_FUTURES_ALL",
+    "XNSE_OPTIONS_NIFTY50_FUTURES",
+    "XNSE_OPTIONS_NIFTY100_FUTURES",
 ]
 
 # Option basket -> (futures basket it takes its roots from, MIC, near_only).
@@ -450,6 +454,20 @@ OPTION_BASKET_SOURCES = {
     "XNSE_OPTIONS_NIFTY500_FUTURES":      ("XNSE_NIFTY500_FUTURES",      "XNSE", False),
     "XBOM_OPTIONS_INDEX_FUTURES":         ("XBOM_INDEX_FUTURES",         "XBOM", True),
     "XIMC_OPTIONS_FUTURES_ALL":           ("XIMC_FUTURES_ALL",           "XIMC", False),
+    "XNSE_OPTIONS_NIFTY50_FUTURES":       ("XNSE_NIFTY50_FUTURES",       "XNSE", False),
+    "XNSE_OPTIONS_NIFTY100_FUTURES":      ("XNSE_NIFTY100_FUTURES",      "XNSE", False),
+}
+
+# Futures basket -> the equity basket its underlyings come from, and whether the
+# roll keeps one contract per root (near) or every live one. The equity basket is
+# an index membership list; the futures are re-picked from today's data, so these
+# stay correct as contracts roll.
+EQUITY_FUTURES_SOURCES = {
+    "XNSE_NIFTYFNO_FUTURES_NEAR": ("XNSE_NIFTYFNO_EQUITY", True),
+    "XNSE_NIFTYFNO_FUTURES_ALL":  ("XNSE_NIFTYFNO_EQUITY", False),
+    "XNSE_NIFTY500_FUTURES":      ("XNSE_NIFTY500_EQUITY", False),
+    "XNSE_NIFTY50_FUTURES":       ("XNSE_NIFTY50_EQUITY",  False),
+    "XNSE_NIFTY100_FUTURES":      ("XNSE_NIFTY100_EQUITY", False),
 }
 
 

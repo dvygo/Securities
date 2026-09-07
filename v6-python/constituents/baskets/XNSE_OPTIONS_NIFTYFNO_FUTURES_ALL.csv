@@ -1,7 +1,7 @@
 # source: every live option on the underlyings of XNSE_NIFTYFNO_FUTURES_ALL
 # roots come from that futures basket; expiries are re-picked from today's data, so the strikes below go stale but the basket does not
 # all: every live option expiry
-# refreshed from constituents/contracts/20260907/XNSE_OPTIONS_NIFTYFNO_FUTURES_ALL.parquet at 2026-09-07T03:45:41Z
+# refreshed from constituents/contracts/20260907/XNSE_OPTIONS_NIFTYFNO_FUTURES_ALL.parquet at 2026-09-07T03:55:00Z
 # 63538 contract(s), 205 root(s), expiries 2026-09, 2026-10, 2026-11
 NSE:360ONE26NOV1000CE
 NSE:360ONE26NOV1000PE

@@ -2888,6 +2888,30 @@ class TestOptionsForFutures:
             assert source in paths.BASKET_NAMES, f"{name} sources missing {source}"
             assert mic in paths.FEED_OUTPUTS, f"{name} names unknown MIC {mic}"
 
+    def test_equity_futures_sources_are_wired(self):
+        for name, (equity, _near) in paths.EQUITY_FUTURES_SOURCES.items():
+            assert name in paths.BASKET_NAMES, f"{name} not registered"
+            assert equity in paths.BASKET_NAMES, f"{name} sources missing {equity}"
+            assert equity.endswith("_EQUITY"), f"{name} must source an equity list"
+
+    def test_index_chain_is_complete(self):
+        """Each NIFTY index list should carry a futures basket and an options
+        basket built on it, so adding an index means adding all three."""
+        for idx in ("NIFTY50", "NIFTY100", "NIFTY500"):
+            eq, fut = f"XNSE_{idx}_EQUITY", f"XNSE_{idx}_FUTURES"
+            opt = f"XNSE_OPTIONS_{idx}_FUTURES"
+            assert eq in paths.BASKET_NAMES
+            assert paths.EQUITY_FUTURES_SOURCES[fut][0] == eq
+            assert paths.OPTION_BASKET_SOURCES[opt][0] == fut
+
+    def test_every_basket_definition_file_exists(self):
+        """refresh_basket() returns None for a missing file, so an unregistered
+        definition is a silently empty basket."""
+        root = paths.baskets_dir()
+        missing = [b for b in paths.BASKET_NAMES
+                   if b != "ALL_INDEX_FUTURES" and not (root / f"{b}.csv").exists()]
+        assert not missing, f"registered baskets with no definition file: {missing}"
+
     def test_retired_mcx_baskets_are_gone(self):
         """XIMC_OPTIONS_FUTURES_ALL subsumes them: it covers all 29 MCX roots,
         including CRUDEOIL and MCXBULLDEX."""

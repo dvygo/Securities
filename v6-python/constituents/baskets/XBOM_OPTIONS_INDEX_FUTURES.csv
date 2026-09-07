@@ -1,7 +1,7 @@
 # source: every live option on the underlyings of XBOM_INDEX_FUTURES
 # roots come from that futures basket; expiries are re-picked from today's data, so the strikes below go stale but the basket does not
 # near: options in the month its futures occupy
-# refreshed from constituents/contracts/20260907/XBOM_OPTIONS_INDEX_FUTURES.parquet at 2026-09-07T03:45:41Z
+# refreshed from constituents/contracts/20260907/XBOM_OPTIONS_INDEX_FUTURES.parquet at 2026-09-07T03:55:00Z
 # 1356 contract(s), 2 root(s), expiries 2026-09
 BSE:BANKEX26SEP57200CE
 BSE:BANKEX26SEP57200PE

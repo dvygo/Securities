@@ -1,7 +1,7 @@
 # source: every live option on the underlyings of XNSE_INDEX_FUTURES_ALL
 # roots come from that futures basket; expiries are re-picked from today's data, so the strikes below go stale but the basket does not
 # all: every live option expiry
-# refreshed from constituents/contracts/20260907/XNSE_OPTIONS_INDEX_FUTURES_ALL.parquet at 2026-09-07T03:45:41Z
+# refreshed from constituents/contracts/20260907/XNSE_OPTIONS_INDEX_FUTURES_ALL.parquet at 2026-09-07T03:55:00Z
 # 10804 contract(s), 5 root(s), expiries 2026-09, 2026-10, 2026-11, 2026-12, 2027-03, 2027-06, 2027-12, 2028-06, 2028-12, 2029-06, 2029-12, 2030-06, 2030-12, 2031-06
 NSE:BANKNIFTY26DEC34500CE
 NSE:BANKNIFTY26DEC34500PE
