@@ -1,0 +1,26 @@
+<clickhouse>
+    <!-- Trimmed for a single-workstation symbology push, not a cluster. The
+         stock server sizes its caches for a dedicated box; these caps keep it
+         to roughly a gigabyte while still holding a ~1.09M-contract GLBX day. -->
+    <max_server_memory_usage_to_ram_ratio>0.3</max_server_memory_usage_to_ram_ratio>
+    <mark_cache_size>268435456</mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+
+    <!-- The default logs every query into system.* tables that then need their
+         own merges and TTLs. This push is a batch job with its own run log, so
+         that machinery costs disk and background CPU for nothing. -->
+    <query_log remove="1"/>
+    <query_thread_log remove="1"/>
+    <trace_log remove="1"/>
+    <metric_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <session_log remove="1"/>
+    <part_log remove="1"/>
+    <text_log remove="1"/>
+
+    <logger>
+        <level>warning</level>
+        <size>100M</size>
+        <count>3</count>
+    </logger>
+</clickhouse>
