@@ -1,4 +1,4 @@
-"""Postgres plugin-table appender: push data/YYYYMMDD/v6/plugin/*.parquet (legacy
+"""Postgres plugin-table appender: push data/YYYYMMDD/TRANSFORM/plugin/*.parquet (legacy
 pg symbol-master schema, see docs/plugin/pg_data_types.txt) into an existing,
 externally-managed Postgres table.
 

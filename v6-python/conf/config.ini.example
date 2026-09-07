@@ -2,7 +2,7 @@
 
 [paths]
 # All relative to repo root (v6-python/) unless absolute. v6 owns its own data
-# tree; the day layout underneath is unchanged (YYYYMMDD/v6/raw, .../normalized).
+# tree; the day layout underneath is unchanged (YYYYMMDD/TRANSFORM/raw, .../normalized).
 data_dir = premarketv6/data
 baskets_dir = constituents/baskets
 contracts_dir = constituents/contracts

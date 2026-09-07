@@ -84,11 +84,20 @@ def qat_dir() -> Path:
     return repo_root() / "docs" / "QAT_GENERATED"
 
 
+# The subdirectory holding everything this pipeline derives, under each day.
+# Named for what it contains rather than for the pipeline version: the raw vendor
+# drops sit beside it as data/YYYYMMDD/<VENUE>/, and this is what was made FROM
+# them. Was "v6" until 2026-09-07; every manifest written before that records its
+# outputs under the old name, so a rename has to rewrite those strings too (see
+# qa/lineage.py's "recorded on disk" check, which resolves them literally).
+TRANSFORM_DIR = "TRANSFORM"
+
+
 def day_dir(as_of: str) -> Path:
-    """Day directory: data/YYYYMMDD/v6/ -- nested under v6/ so this pipeline's
+    """Day directory: data/YYYYMMDD/TRANSFORM/ -- nested so this pipeline's
     output never collides with v5-python's data/YYYYMMDD/ tree even though
     both share the same data_root()."""
-    return data_root() / as_of / "v6"
+    return data_root() / as_of / TRANSFORM_DIR
 
 
 def raw_dir(as_of: str) -> Path:

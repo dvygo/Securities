@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 from typing import List, Tuple
 
+from .. import paths
 from . import counter_token
 
 
@@ -28,7 +29,7 @@ class ManifestMigrationFailed(RuntimeError):
 def v3_days(root: Path) -> List[Path]:
     """Every manifests/ directory holding at least one v3 header."""
     found = []
-    for path in sorted(root.glob("*/v6/manifests")):
+    for path in sorted(root.glob(f"*/{paths.TRANSFORM_DIR}/manifests")):
         if any(_is_v3(p) for p in sorted(path.glob("*.json"))
                if not p.name.startswith("_")):
             found.append(path)
@@ -250,7 +251,7 @@ def rebuild_day_blocks(dry_run: bool = False) -> int:
     """Bring every flat tokens block up to the day/run shape."""
     from .. import paths
 
-    found = [p for p in sorted(paths.data_root().glob("*/v6/manifests/*.json"))
+    found = [p for p in sorted(paths.data_root().glob(f"*/{paths.TRANSFORM_DIR}/manifests/*.json"))
              if not p.name.startswith("_") and needs_day_block(p)]
     if not found:
         print("Every tokens block already carries the day/run split.")

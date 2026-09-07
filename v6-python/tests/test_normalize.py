@@ -2445,7 +2445,7 @@ class TestRecordedArtifacts:
         import pyarrow.parquet as pq
 
         raw = self._file(tree / day / mic / "opra-pillar.definition.dbn.zst", b"raw" * 400)
-        out = tree / day / "v6" / "normalized" / f"{mic}-X.parquet"
+        out = tree / day / paths.TRANSFORM_DIR / "normalized" / f"{mic}-X.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.table({"script": pa.array([f"S{n}" for n in range(rows)])}), out)
         counter_token.write_venue_manifest(
@@ -2476,7 +2476,7 @@ class TestRecordedArtifacts:
             assert not item["path"].startswith("/")
             assert str(tree) not in item["path"]
         assert run["inputs"][0]["path"] == "XCBO/opra-pillar.definition.dbn.zst"
-        assert run["outputs"][0]["path"] == "v6/normalized/XCBO-X.parquet"
+        assert run["outputs"][0]["path"] == f"{paths.TRANSFORM_DIR}/normalized/XCBO-X.parquet"
 
     def test_a_file_outside_the_day_keeps_only_its_name(self, tree):
         stray = self._file(tree / "elsewhere.csv")
@@ -2542,7 +2542,7 @@ class TestRecordedArtifacts:
         import pyarrow.parquet as pq
 
         day, mic = "20260824", "XCBO"
-        out = tree / day / "v6" / "normalized" / f"{mic}-X.parquet"
+        out = tree / day / paths.TRANSFORM_DIR / "normalized" / f"{mic}-X.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.table({"a": pa.array([1, 2, 3])}), out)
         counter_token.write_venue_manifest(
@@ -2556,7 +2556,7 @@ class TestRecordedArtifacts:
         import pyarrow.parquet as pq
 
         day, mic = "20260824", "XCBO"
-        out = tree / day / "v6" / "normalized" / f"{mic}-X.parquet"
+        out = tree / day / paths.TRANSFORM_DIR / "normalized" / f"{mic}-X.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.table({"a": pa.array([1, 2, 3])}), out)
         counter_token.write_venue_manifest(

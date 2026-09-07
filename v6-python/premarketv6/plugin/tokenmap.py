@@ -327,7 +327,7 @@ def write(path: Path, blob: bytes) -> None:
 
 def tokenmap_dir(date_dir: str) -> Path:
     """Where maps land inside the day's tree, before delivery:
-    data/YYYYMMDD/v6/plugin/tokenmap/ -- under plugin/, because that is where
+    data/YYYYMMDD/TRANSFORM/plugin/tokenmap/ -- under plugin/, because that is where
     output in someone else's format lives."""
     return paths.plugin_dir(date_dir) / "tokenmap"
 

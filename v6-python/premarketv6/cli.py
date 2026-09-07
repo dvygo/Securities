@@ -179,7 +179,7 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only push the plugin Parquet to Postgres. Normalize still runs "
              "first, but the Parquet is NOT rebuilt -- this pushes whatever is "
-             "already in data/YYYYMMDD/v6/plugin/.",
+             "already in data/YYYYMMDD/TRANSFORM/plugin/.",
     )
     outputs.add_argument(
         "--tokenmap-only",
@@ -192,7 +192,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--tokenmap-dir",
         dest="tokenmap_dir",
         help="Where to write the .bin maps (default: "
-             "data/YYYYMMDD/v6/plugin/tokenmap/). Point at MDF's "
+             "data/YYYYMMDD/TRANSFORM/plugin/tokenmap/). Point at MDF's "
              "config/cpp-vendor/ to deliver in place -- the write is atomic, so "
              "a lane restarting mid-delivery cannot read a partial map.",
     )

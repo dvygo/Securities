@@ -75,9 +75,10 @@ data/YYYYMMDD/
   XCBO/  opra-pillar-YYYYMMDD.definition.dbn.zst
   XNSE/  XNSE-FYERS.csv XNFO-FYERS.csv XNCD-FYERS.csv   when feed = fyers
          NEW FILE FORMAT/                            when feed = nse
-  v6/
+  TRANSFORM/                                       everything derived from the above
     normalized/   <MIC>-<SOURCE>.parquet             one file per venue
     plugin/       <MIC>-<SOURCE>.parquet             legacy symbol-master shape
+                  tokenmap/tokenmap.<MIC>.bin        MDF's binary token map
     manifests/    <MIC>.json                         header: the completion record
                   <MIC>.alloc.parquet                the venue's token allocation
                   _sequence.json                     the day's shared counter
@@ -126,7 +127,7 @@ not done yet; it never means empty.
   "tokens":     { "arrived": 7937, "departed": 9396, "reused": 7937, "drawn": 0,
                   "sequence_before": 3367460, "sequence_after": 3367460 },
   "inputs":     [{ "path": "XCBO/opra-pillar-...dbn.zst", "sha256": "..." }],
-  "outputs":    [{ "path": "v6/normalized/...parquet", "rows": 2007183, "sha256": "..." }]
+  "outputs":    [{ "path": "TRANSFORM/normalized/...parquet", "rows": 2007183, "sha256": "..." }]
 }
 ```
 
