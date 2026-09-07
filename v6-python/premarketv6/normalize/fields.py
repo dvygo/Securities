@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 from .. import config, parquet_export, paths, runner
 from ..sources import fyers_src
-from . import broker_script, counter_token, price, session
+from . import broker_script, counter_token, flags, price, session
 
 
 # Broad category for scriptInstrumentType2.
@@ -138,6 +138,7 @@ def map_fyers_row(row: Dict[str, str]) -> Dict[str, Any]:
     # they cannot decompose.
     result["brokerScript1"] = broker_script.from_equity(result["script"])
     broker_script.fill_unspecified(result)
+    flags.fill(result)
 
     return result
 

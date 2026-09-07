@@ -2952,5 +2952,70 @@ class TestOptionsForFutures:
         assert not hasattr(baskets, "_resolve_option_chain")
 
 
+class TestEnableFlags:
+    """enable1/enable2: written as 0 by every normalizer, read by none of them."""
+
+    def test_declared_in_the_canonical_schema(self):
+        assert paths.ENABLE_COLUMNS == ["enable1", "enable2"]
+        for col in paths.ENABLE_COLUMNS:
+            assert col in paths.NORMALIZED_COLUMNS
+            assert col in paths.CONTRACT_COLUMNS
+
+    def test_sits_after_the_canonical_columns_and_before_the_passthrough(self):
+        """The definition passthrough is a verbatim vendor block; a pipeline
+        column belongs with the pipeline's own, not buried inside it."""
+        cols = paths.NORMALIZED_COLUMNS
+        assert cols.index("counterTokenV2") < cols.index("enable1")
+        assert cols.index("enable2") < cols.index(paths.DEFINITION_PASSTHROUGH_COLUMNS[0])
+        assert cols.index("enable2") == cols.index("enable1") + 1
+
+    def test_fill_sets_zero(self):
+        from premarketv6.normalize import flags
+        assert flags.fill({}) == {"enable1": "0", "enable2": "0"}
+
+    def test_fill_does_not_overwrite(self):
+        """setdefault, not assignment: a caller that already decided wins."""
+        from premarketv6.normalize import flags
+        assert flags.fill({"enable1": "1"})["enable1"] == "1"
+
+    def test_every_normalizer_row_mapper_fills_them(self):
+        """The fill is per-mapper, so a new venue path can forget it. Drive the
+        real mappers and check the columns arrive populated, rather than trusting
+        that every call site was edited."""
+        from premarketv6.normalize import fields as fyers_fields, nse_contract
+        mapped = {
+            "fyers": fyers_fields.map_fyers_row(
+                {"symTicker": "NSE:RELIANCE-EQ", "exchange": "10", "segment": "10",
+                 "exInstType": "0", "symDetails": "RELIANCE"}),
+            "nse cash": nse_contract.map_cash_row(
+                {"TckrSymb": "RELIANCE", "SctySrs": "EQ", "ISIN": "INE002A01018"}),
+            "nse derivative": nse_contract.map_derivative_row(
+                {"StockNm": "RELIANCE26SEPFUT", "OptnTp": "XX", "XpryDt": "1474243200",
+                 "StrkPric": "0", "LotSz": "500", "TckrSymb": "RELIANCE"},
+                nse_contract.DERIV),
+        }
+        for label, row in mapped.items():
+            assert row is not None, f"{label} mapper returned None -- fixture is wrong"
+            for col in paths.ENABLE_COLUMNS:
+                assert row.get(col) == "0", f"{label}: {col} is {row.get(col)!r}, not '0'"
+
+    def test_clickhouse_types_them_as_int(self):
+        from premarketv6 import clickhouse_export as ch
+        types = dict(ch._contract_column_ddl())
+        for col in paths.ENABLE_COLUMNS:
+            assert col in ch.CONTRACT_INT_COLUMNS
+            assert types[col] == "Nullable(Int64)"
+        # non-vacuous: a string column really does come back String
+        assert types["script"] == "String"
+
+    def test_plugin_schema_is_unchanged(self):
+        """The plugin maps named fields into its own 17-column schema, so a
+        canonical column added here must not reach it."""
+        from premarketv6.plugin import build as plugin_build
+        assert len(plugin_build.PLUGIN_COLUMNS) == 17
+        for col in paths.ENABLE_COLUMNS:
+            assert col not in plugin_build.PLUGIN_COLUMNS
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

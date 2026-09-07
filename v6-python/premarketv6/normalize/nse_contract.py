@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from .. import paths, parquet_export, runner, config
-from . import broker_script, counter_token, fields as fyers_fields
+from . import broker_script, counter_token, flags, fields as fyers_fields
 
 # The drop folder, named by the broker and kept verbatim so an operator sees the
 # same string in the pipeline as on disk.
@@ -233,6 +233,7 @@ def map_cash_row(row: Dict[str, str],
     }
     out["brokerScript1"] = broker_script.from_equity(script)
     broker_script.fill_unspecified(out)
+    flags.fill(out)
     return out
 
 
@@ -284,6 +285,7 @@ def map_derivative_row(row: Dict[str, str], segment: str) -> Optional[Dict[str, 
     }
     out["brokerScript1"] = broker_script.from_equity(script)
     broker_script.fill_unspecified(out)
+    flags.fill(out)
     return out
 
 

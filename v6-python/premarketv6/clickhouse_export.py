@@ -43,6 +43,11 @@ EXPORT_BATCH_ROWS = export.CONTRACT_BATCH_ROWS
 CONTRACT_INT_COLUMNS = {
     "multiplier", "lotSize", "tickSize", "expiration",
     "scriptToken", "strike", "counterToken", "counterTokenV2",
+    # enable1/enable2 are gating flags a downstream stage flips. Typed like the
+    # rest so a consumer can say `WHERE enable1 = 1` without a cast. Unlike the
+    # others they are never blank -- normalize/flags.py writes 0 on every row --
+    # so the Nullable is carried for uniformity, not because a NULL is expected.
+    "enable1", "enable2",
 }
 
 # The definition passthrough stays String, including the numeric fields.

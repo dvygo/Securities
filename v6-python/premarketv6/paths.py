@@ -289,6 +289,18 @@ DEFINITION_PASSTHROUGH_COLUMNS = [DEFINITION_COLUMN_PREFIX + f for f in DEFINITI
 
 
 # Canonical normalized column schema (16 columns)
+# Downstream gating flags. This pipeline writes 0 into both of them and never
+# reads either -- it has no opinion about whether a contract is enabled, because
+# it does not know what it would be enabled FOR. A later stage flips them and
+# further stages read them.
+#
+# Declared now, at 0, rather than when the first consumer appears: a column that
+# shows up later shifts the schema under whatever is already reading these files,
+# and qa/lineage.py has to report every earlier day as written without it. Two
+# are reserved because one was never going to be enough -- the same reasoning as
+# brokerScript2-4 below.
+ENABLE_COLUMNS = ["enable1", "enable2"]
+
 NORMALIZED_COLUMNS = [
     "scriptDetails",
     "scriptInstrumentType",
@@ -327,7 +339,7 @@ NORMALIZED_COLUMNS = [
     # script stops appearing. Carried in manifest.json per day. This is the one
     # to join on across dates -- counterToken is positional and must not be.
     "counterTokenV2",
-] + DEFINITION_PASSTHROUGH_COLUMNS
+] + ENABLE_COLUMNS + DEFINITION_PASSTHROUGH_COLUMNS
 
 # Contract columns = date + exchange + normalized columns
 CONTRACT_COLUMNS = ["date", "exchange"] + NORMALIZED_COLUMNS
