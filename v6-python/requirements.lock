@@ -1,0 +1,54 @@
+# Exact dependency closure, captured from a working environment.
+#
+# Generated:  2026-09-07T10:13:38Z
+# Python:     3.13.15
+# Platform:   Linux-x86_64
+#
+# Use this when standing up another host and you want the pipeline to behave
+# identically -- requirements.txt floats on >= and will drift over time.
+#
+#     python -m venv .venv && .venv/bin/pip install -r requirements.lock
+#
+# Regenerate after any intentional upgrade:
+#     .venv/bin/pip freeze > requirements.lock   (then re-add this header)
+
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+attrs==26.1.0
+backports.zstd==1.7.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+clickhouse-connect==1.7.2
+coverage==7.15.4
+databento==0.84.0
+databento-dbn==0.67.0
+duckdb==1.5.5
+exchange_calendars==4.13.2
+frozenlist==1.8.0
+idna==3.19
+iniconfig==2.3.0
+korean_lunar_calendar==0.4.0
+lz4==4.4.5
+multidict==6.7.1
+numpy==2.5.2
+packaging==26.3
+pandas==3.0.5
+pluggy==1.6.0
+propcache==0.5.2
+psycopg==3.3.4
+psycopg-binary==3.3.4
+pyarrow==25.0.1
+Pygments==2.21.0
+pyluach==2.3.0
+pytest==9.1.1
+pytest-cov==7.1.0
+python-dateutil==2.9.0.post0
+pytz==2026.3.post1
+requests==2.34.2
+six==1.17.0
+toolz==1.1.0
+tzdata==2026.3
+urllib3==2.7.0
+yarl==1.24.5
+zstandard==0.25.0

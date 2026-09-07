@@ -1,8 +1,24 @@
-databento>=0.81.0
+# Runtime dependencies, mirroring [project.dependencies] in pyproject.toml.
+# The two must agree by name -- tests/test_packaging.py enforces it.
+#
+# For a fresh environment that resolves current versions:
+#     pip install -r requirements.txt
+#
+# To reproduce a known-good machine exactly (recommended when moving hosts),
+# use the pinned closure instead:
+#     pip install -r requirements.lock
+#
+# Requires Python >= 3.12 (numpy 2.5 floor); see pyproject.toml.
+
+databento>=0.81.0,<1.0
 psycopg[binary]>=3.1.0
 pandas>=2.0.0
 requests>=2.31.0
 pytz>=2024.1
 exchange-calendars>=4.5
+pyarrow>=15.0
+clickhouse-connect>=0.7
+
+# dev
 pytest>=7.0.0
 pytest-cov>=4.0.0
