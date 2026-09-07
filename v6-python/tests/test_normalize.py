@@ -6,7 +6,7 @@ import os
 import pathlib
 import struct
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -3236,3 +3236,60 @@ class TestTokenMap:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# Databento publish-window timing hints
+# ---------------------------------------------------------------------------
+
+def test_timing_hint_reports_current_utc():
+    """The clock is the point -- every hint leads with it."""
+    now = datetime(2026, 9, 8, 3, 10, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("EQUS.MINI", date(2026, 9, 8), now)
+    assert hint.startswith("Now 03:10:00Z.")
+
+
+def test_timing_hint_counts_forward_to_an_unopened_window():
+    now = datetime(2026, 9, 8, 3, 10, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("EQUS.MINI", date(2026, 9, 8), now)
+    assert "~05:00-06:00Z, about 1h50m from now" in hint
+
+
+def test_timing_hint_marks_a_window_that_is_open():
+    now = datetime(2026, 9, 8, 5, 30, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("EQUS.MINI", date(2026, 9, 8), now)
+    assert "that window is open now" in hint
+
+
+def test_timing_hint_counts_back_from_a_closed_window():
+    now = datetime(2026, 9, 8, 11, 33, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 8), now)
+    assert "today's window closed 33m ago" in hint
+
+
+def test_timing_hint_says_a_closed_session_will_never_publish():
+    """2026-09-07 is Labor Day: XNYS is shut, so waiting cannot help."""
+    now = datetime(2026, 9, 7, 11, 33, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 7), now)
+    assert "not a session on the XNYS calendar" in hint
+    assert "re-running will not help" in hint
+
+
+def test_timing_hint_keeps_glbx_on_its_own_calendar():
+    """CME trades Labor Day even though NYSE does not; GLBX must not be
+    told its definitions are hopeless on a day CME is open."""
+    now = datetime(2026, 9, 7, 11, 33, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("GLBX.MDP3", date(2026, 9, 7), now)
+    assert "re-running will not help" not in hint
+
+
+def test_is_trading_session_returns_none_for_an_unknown_dataset():
+    """Unknowable must stay None -- a message may not assert a closure it
+    cannot back."""
+    assert databento_src._is_trading_session("XXXX.YYYY", date(2026, 9, 7)) is None
+
+
+def test_format_duration_shapes():
+    assert databento_src._format_duration(timedelta(seconds=30)) == "30s"
+    assert databento_src._format_duration(timedelta(minutes=48)) == "48m"
+    assert databento_src._format_duration(timedelta(hours=11, minutes=5)) == "11h05m"

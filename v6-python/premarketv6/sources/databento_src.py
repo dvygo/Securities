@@ -527,6 +527,92 @@ def _available_end(client: db.Historical, dataset: str, schema: str) -> dt.datet
 # treat the absence as unknown rather than as a reason to block the download.
 PRIOR_SESSION_LOOKBACK_DAYS = 5
 
+# When each venue's definition files land, in UTC. Observed windows rather
+# than a Databento guarantee -- they answer "when should I look again", not
+# "when is it late".
+PUBLISH_WINDOWS_UTC = {
+    "GLBX": (0, 1),
+    "EQUS": (5, 6),
+    "OPRA": (10, 11),
+}
+
+# The session calendar that decides whether a date can have definitions at
+# all. A closed session is the one cause waiting cannot fix, so it is worth
+# naming instead of advising a re-run that can never succeed. CME trades
+# several days NYSE does not -- Labor Day among them -- which is why GLBX
+# gets its own calendar rather than sharing XNYS.
+SESSION_CALENDARS = {
+    "GLBX": "CMES",
+    "EQUS": "XNYS",
+    "OPRA": "XNYS",
+}
+
+
+def _dataset_key(dataset: str) -> str:
+    """'OPRA.PILLAR' -> 'OPRA'."""
+    return dataset.split(".", 1)[0].strip().upper()
+
+
+def _is_trading_session(dataset: str, day: dt.date) -> Optional[bool]:
+    """Whether day is a session for this dataset's venue, None if unknowable.
+
+    None rather than a guess when the calendar package or the named calendar
+    is missing, so the caller never asserts a closure it cannot back.
+    """
+    name = SESSION_CALENDARS.get(_dataset_key(dataset))
+    if not name:
+        return None
+    try:
+        import exchange_calendars as xcals
+        return bool(xcals.get_calendar(name).is_session(day.isoformat()))
+    except Exception:
+        return None
+
+
+def _format_duration(delta: dt.timedelta) -> str:
+    """'11h05m', '48m', '30s'."""
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    hours, remainder = divmod(seconds, 3600)
+    minutes = remainder // 60
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
+
+
+def _timing_hint(dataset: str, as_of: dt.date,
+                 now: Optional[dt.datetime] = None) -> str:
+    """Current UTC, plus what it implies for this dataset and date.
+
+    Appended to every "not published yet" error. Re-running is the natural
+    response to one, and it is worth knowing whether the wait is twenty
+    minutes, tomorrow morning, or futile.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    parts = [f"Now {now.strftime('%H:%M:%S')}Z."]
+
+    window = PUBLISH_WINDOWS_UTC.get(_dataset_key(dataset))
+    if window:
+        open_hour, close_hour = window
+        opens = now.replace(hour=open_hour, minute=0, second=0, microsecond=0)
+        closes = now.replace(hour=close_hour, minute=0, second=0, microsecond=0)
+        line = f"{dataset} publishes ~{open_hour:02d}:00-{close_hour:02d}:00Z"
+        if now < opens:
+            line += f", about {_format_duration(opens - now)} from now."
+        elif now < closes:
+            line += ", and that window is open now."
+        else:
+            line += f", and today's window closed {_format_duration(now - closes)} ago."
+        parts.append(line)
+
+    if _is_trading_session(dataset, as_of) is False:
+        calendar = SESSION_CALENDARS[_dataset_key(dataset)]
+        parts.append(
+            f"{as_of.isoformat()} is not a session on the {calendar} calendar, "
+            f"so definitions "
+            f"are not expected for it at all -- re-running will not help."
+        )
+    return " ".join(parts)
+
 
 def _definition_count(
     client: db.Historical, dataset: str, schema: str, stype_in: str,
@@ -734,12 +820,16 @@ def _prepare_batch_window(client, venue_cfg, stype_in: str, date_dir: str):
 
     available_end = _available_end(client, venue_cfg.dataset, venue_cfg.schema)
     if (available_end - dt.timedelta(microseconds=1)).date() < as_of:
+        through = (available_end - dt.timedelta(microseconds=1)).date()
+        # "Check back later" is wrong advice on a closed session -- nothing is
+        # coming. Say which situation this is before describing it.
+        lead = ("today's contract files are not updated yet, please check back later"
+                if _is_trading_session(venue_cfg.dataset, as_of) is not False
+                else f"there are no contract files for {as_of.isoformat()}")
         raise RuntimeError(
-            f"today's contract files are not updated yet, please check back later "
-            f"-- {venue_cfg.dataset} has data through "
-            f"{(available_end - dt.timedelta(microseconds=1)).date().isoformat()}, "
-            f"asked for {as_of.isoformat()}. "
-            f"GLBX publishes ~00:00-01:00Z, EQUS ~05:00-06:00Z, OPRA ~10:00-11:00Z."
+            f"{lead} -- {venue_cfg.dataset} has data through "
+            f"{through.isoformat()}, asked for {as_of.isoformat()}. "
+            f"{_timing_hint(venue_cfg.dataset, as_of)}"
         )
     end = min(day_end, available_end)
 
@@ -755,8 +845,8 @@ def _prepare_batch_window(client, venue_cfg, stype_in: str, date_dir: str):
             f"{prior:,} on {prior_day.isoformat()} "
             f"({have / prior:.1%}, floor {venue_cfg.definition_ready_ratio:.0%}). "
             f"Downloading now would write a file holding a fraction of the "
-            f"session. Re-run once they land -- OPRA publishes ~06:00-07:00 ET, "
-            f"GLBX before 04:00 ET."
+            f"session. Re-run once they land. "
+            f"{_timing_hint(venue_cfg.dataset, as_of)}"
         )
 
     clamped = " (clamped to available)" if end < day_end else ""
