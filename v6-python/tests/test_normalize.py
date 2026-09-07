@@ -3271,7 +3271,7 @@ def test_timing_hint_says_a_closed_session_will_never_publish():
     """2026-09-07 is Labor Day: XNYS is shut, so waiting cannot help."""
     now = datetime(2026, 9, 7, 11, 33, 0, tzinfo=timezone.utc)
     hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 7), now)
-    assert "not a session on the XNYS calendar" in hint
+    assert "not a trading day for US options markets" in hint
     assert "re-running will not help" in hint
 
 
@@ -3293,3 +3293,31 @@ def test_format_duration_shapes():
     assert databento_src._format_duration(timedelta(seconds=30)) == "30s"
     assert databento_src._format_duration(timedelta(minutes=48)) == "48m"
     assert databento_src._format_duration(timedelta(hours=11, minutes=5)) == "11h05m"
+
+
+def test_timing_hint_never_leaks_a_calendar_id():
+    """An XCBO run has no business naming XNYS -- a different exchange. The
+    calendar is an implementation detail; the message names the market."""
+    now = datetime(2026, 9, 7, 11, 40, 0, tzinfo=timezone.utc)
+    for dataset in ("EQUS.MINI", "OPRA.PILLAR", "GLBX.MDP3"):
+        hint = databento_src._timing_hint(dataset, date(2026, 9, 7), now)
+        for calendar, _label in databento_src.SESSION_CALENDARS.values():
+            assert calendar not in hint, f"{dataset} leaked {calendar}"
+
+
+def test_options_and_equities_share_the_us_session_calendar():
+    """US options follow the US equity holiday schedule, and there is no OPRA
+    calendar to use instead."""
+    calendars = databento_src.SESSION_CALENDARS
+    assert calendars["OPRA"][0] == calendars["EQUS"][0]
+    assert calendars["GLBX"][0] != calendars["EQUS"][0]
+
+
+def test_cme_is_named_singular_and_markets_plural():
+    """'CME are not open' was the bug in the first wording."""
+    shut_cme = datetime(2026, 12, 25, 3, 0, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("GLBX.MDP3", date(2026, 12, 25), shut_cme)
+    assert "is not a trading day for CME" in hint
+    now = datetime(2026, 9, 7, 11, 40, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 7), now)
+    assert "is not a trading day for US options markets" in hint

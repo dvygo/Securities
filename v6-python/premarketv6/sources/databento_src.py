@@ -537,14 +537,25 @@ PUBLISH_WINDOWS_UTC = {
 }
 
 # The session calendar that decides whether a date can have definitions at
-# all. A closed session is the one cause waiting cannot fix, so it is worth
-# naming instead of advising a re-run that can never succeed. CME trades
-# several days NYSE does not -- Labor Day among them -- which is why GLBX
-# gets its own calendar rather than sharing XNYS.
+# all, and the market to name when it is shut. A closed session is the one
+# cause waiting cannot fix, so it is worth saying instead of advising a
+# re-run that can never succeed.
+#
+# The label is what the message prints. Calendar ids are an implementation
+# detail and naming one in an error is actively misleading -- an XCBO run
+# has no business mentioning XNYS, which is a different exchange entirely.
+#
+# OPRA is the consolidated tape for every US options exchange, not Cboe's
+# alone; exchange_calendars ships no OPRA calendar, and US options follow
+# the US equity holiday schedule, so XNYS stands in. XNAS would do equally
+# well -- the two calendars agree on every session from 2020 to 2030.
+#
+# GLBX does not share that calendar: CME trades 75 days between 2020 and
+# 2030 that NYSE is shut for, Labor Day among them.
 SESSION_CALENDARS = {
-    "GLBX": "CMES",
-    "EQUS": "XNYS",
-    "OPRA": "XNYS",
+    "GLBX": ("CMES", "CME"),
+    "EQUS": ("XNYS", "US equity markets"),
+    "OPRA": ("XNYS", "US options markets"),
 }
 
 
@@ -559,12 +570,12 @@ def _is_trading_session(dataset: str, day: dt.date) -> Optional[bool]:
     None rather than a guess when the calendar package or the named calendar
     is missing, so the caller never asserts a closure it cannot back.
     """
-    name = SESSION_CALENDARS.get(_dataset_key(dataset))
-    if not name:
+    entry = SESSION_CALENDARS.get(_dataset_key(dataset))
+    if not entry:
         return None
     try:
         import exchange_calendars as xcals
-        return bool(xcals.get_calendar(name).is_session(day.isoformat()))
+        return bool(xcals.get_calendar(entry[0]).is_session(day.isoformat()))
     except Exception:
         return None
 
@@ -605,11 +616,11 @@ def _timing_hint(dataset: str, as_of: dt.date,
         parts.append(line)
 
     if _is_trading_session(dataset, as_of) is False:
-        calendar = SESSION_CALENDARS[_dataset_key(dataset)]
+        market = SESSION_CALENDARS[_dataset_key(dataset)][1]
         parts.append(
-            f"{as_of.isoformat()} is not a session on the {calendar} calendar, "
-            f"so definitions "
-            f"are not expected for it at all -- re-running will not help."
+            f"{as_of.isoformat()} is not a trading day for {market}, so "
+            f"definitions are not expected for it at all -- re-running "
+            f"will not help."
         )
     return " ".join(parts)
 
