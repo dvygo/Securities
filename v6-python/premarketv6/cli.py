@@ -114,7 +114,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--only",
         action="append",
         default=[],
-        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, normalize-nse-contract, baskets, csv-export, plugin, postgres-plugin, clickhouse)",
+        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, normalize-nse-contract, baskets, csv-export, plugin, postgres-plugin, tokenmap, clickhouse)",
     )
     normalize_parser.add_argument(
         "--clickhouse-push-only",
@@ -126,6 +126,16 @@ def create_parser() -> argparse.ArgumentParser:
         "--plugin",
         action="store_true",
         help="Build plugin-format Parquet (legacy pg symbol-master schema) in data/YYYYMMDD/v6/plugin/",
+    )
+    normalize_parser.add_argument(
+        "--tokenmap",
+        action="store_true",
+        help="Also emit MDF's tokenmap.<VENUE>.bin for each Databento venue",
+    )
+    normalize_parser.add_argument(
+        "--tokenmap-dir",
+        dest="tokenmap_dir",
+        help="Where --tokenmap writes (default: data/YYYYMMDD/v6/tokenmap/)",
     )
     normalize_parser.add_argument(
         "--csv-only",
@@ -151,6 +161,44 @@ def create_parser() -> argparse.ArgumentParser:
         "--csv",
         dest="csv_export_dir",
         help="Export aggregated CSVs to directory",
+    )
+
+    # plugin subcommand -- the plugin-family outputs on their own, without a
+    # full normalize. Both read the normalized masters that are already on disk.
+    plugin_parser = subparsers.add_parser(
+        "plugin",
+        help="Build plugin-family output from the normalized masters already written",
+    )
+    plugin_parser.add_argument(
+        "--date-dir",
+        default=datetime.now().strftime("%Y%m%d"),
+        help="Date directory (YYYYMMDD, default: today)",
+    )
+    plugin_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Don't write files, just simulate",
+    )
+    plugin_parser.add_argument(
+        "--tokenmap",
+        action="store_true",
+        help="Emit MDF's tokenmap.<VENUE>.bin (DBN instrument_id -> counterTokenV2) "
+             "for each Databento venue. Without this, builds the plugin Parquet.",
+    )
+    plugin_parser.add_argument(
+        "--tokenmap-dir",
+        dest="tokenmap_dir",
+        help="Where to write the .bin maps (default: data/YYYYMMDD/v6/tokenmap/). "
+             "Point at MDF's config/cpp-vendor/ to deliver in place -- the write "
+             "is atomic, so a lane restarting mid-delivery cannot read a partial map.",
+    )
+    plugin_parser.add_argument(
+        "--venue",
+        action="append",
+        default=[],
+        metavar="MIC",
+        help="Restrict to this MIC; repeatable. Narrows only -- a venue with "
+             "enabled = 0 stays off even when named.",
     )
 
     # check-tokens subcommand
@@ -305,6 +353,7 @@ def run_normalize(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             basket=getattr(args, "basket", None),
             venues=_venue_selection(getattr(args, "venue", []) or []),
+            tokenmap_dir=getattr(args, "tokenmap_dir", None),
         )
 
         only = getattr(args, "only", []) or []
@@ -314,11 +363,13 @@ def run_normalize(args: argparse.Namespace) -> int:
         # along with --plugin (or is targeted directly via --only).
         contracts_push_only = getattr(args, "contracts_push_only", False) or "clickhouse" in only
         plugin = args.plugin or "plugin" in only or "postgres-plugin" in only
+        tokenmap = getattr(args, "tokenmap", False) or "tokenmap" in only
 
         steps = runner.build_normalizer_steps(
             only,
             contracts_push_only=contracts_push_only,
             plugin=plugin,
+            tokenmap=tokenmap,
             csv_only=getattr(args, "csv_only", False),
         )
 
@@ -382,6 +433,38 @@ def _venue_selection(raw: list) -> tuple:
     return tuple(dict.fromkeys(picked))
 
 
+def run_plugin(args) -> int:
+    """`premarketv6 plugin` -- plugin-family output from the masters already on disk.
+
+    --tokenmap emits MDF's binary maps; without it this builds the plugin Parquet,
+    the same step --plugin adds to a normalize run. Neither re-normalizes.
+    """
+    cleanup, log_path = runlog.setup("plugin", args.date_dir)
+    try:
+        print(f"Log: {log_path}", file=sys.stderr)
+
+        opts = runner.Opts(
+            as_of=args.date_dir,
+            date_dir=args.date_dir,
+            dry_run=args.dry_run,
+            venues=_venue_selection(getattr(args, "venue", []) or []),
+            tokenmap_dir=getattr(args, "tokenmap_dir", None),
+        )
+        want_tokenmap = getattr(args, "tokenmap", False)
+        steps = runner.build_normalizer_steps(
+            ["tokenmap"] if want_tokenmap else ["plugin"],
+            plugin=not want_tokenmap,
+            tokenmap=want_tokenmap,
+            # Building the plugin Parquet otherwise drags postgres-plugin along,
+            # and `plugin` here means build the file, not push it. --only already
+            # filters it out; this makes that explicit rather than incidental.
+            csv_only=True,
+        )
+        return runner.run(steps, opts)
+    finally:
+        cleanup()
+
+
 def main() -> int:
     """Main CLI entry point."""
     parser = create_parser()
@@ -403,6 +486,8 @@ def main() -> int:
             return run_download(args.command, args)
         elif args.command == "normalize":
             return run_normalize(args)
+        elif args.command == "plugin":
+            return run_plugin(args)
         elif args.command == "check-tokens":
             from .qa import tokens
             return tokens.run(_date_list(args.dates), _venue_selection(args.venue))

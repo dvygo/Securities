@@ -30,6 +30,9 @@ class Opts:
     # means every venue config.ini enables. Narrows a run; it cannot widen one,
     # so a venue with enabled = 0 stays off even when named here.
     venues: tuple = ()
+    # --tokenmap-dir: where the MDF .bin maps are written. None puts them in the
+    # day's own tree; point it at MDF's config/cpp-vendor/ to deliver directly.
+    tokenmap_dir: Optional[str] = None
 
 
 def venue_selected(opts: "Opts", mic: str) -> bool:
@@ -117,6 +120,7 @@ def build_normalizer_steps(
     only: List[str],
     contracts_push_only: bool = False,
     plugin: bool = False,
+    tokenmap: bool = False,
     csv_only: bool = False,
 ) -> List[Step]:
     """
@@ -141,7 +145,7 @@ def build_normalizer_steps(
     # to repeat an argument.
     baskets_enabled = config.load_baskets().enabled
     from .normalize import fields, databento_norm, nse_norm, nse_contract
-    from .plugin import build as plugin_build, postgres as plugin_postgres
+    from .plugin import build as plugin_build, tokenmap as plugin_tokenmap, postgres as plugin_postgres
 
     all_steps = [
         Step("normalize-fyers", fields.run),
@@ -161,6 +165,12 @@ def build_normalizer_steps(
         # opt-out.
         if not csv_only:
             all_steps.append(Step("postgres-plugin", plugin_postgres.run))
+
+    # The MDF token map is plugin-family output -- someone else's binary format,
+    # like the pg schema -- but it is NOT built by --plugin and pushes nowhere:
+    # a C++ lane loads the file directly, on its own delivery cadence.
+    if tokenmap:
+        all_steps.append(Step("tokenmap", plugin_tokenmap.run))
 
     # The contracts push is ClickHouse now (see clickhouse_export). postgres-plugin
     # above is unaffected and still writes to Postgres.

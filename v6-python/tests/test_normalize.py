@@ -4,6 +4,7 @@ import json
 import contextlib
 import os
 import pathlib
+import struct
 import tempfile
 from datetime import date, datetime, timezone
 
@@ -3015,6 +3016,157 @@ class TestEnableFlags:
         assert len(plugin_build.PLUGIN_COLUMNS) == 17
         for col in paths.ENABLE_COLUMNS:
             assert col not in plugin_build.PLUGIN_COLUMNS
+
+
+class TestTokenMap:
+    """MDF's .bin token map. Every invariant here is a hard load failure in C++."""
+
+    @staticmethod
+    def _rows(pairs, key="def_raw_instrument_id"):
+        return [{key: str(i), "counterTokenV2": str(t)} for i, t in pairs]
+
+    def _built(self, pairs, venue="XCME", **kw):
+        from premarketv6.plugin import tokenmap
+        return tokenmap.build(venue, self._rows(pairs), **kw)
+
+    def test_fnv1a_matches_the_reference(self):
+        from premarketv6.plugin import tokenmap
+        def reference(body):
+            h = 0xCBF29CE484222325
+            for c in body:
+                h = ((h ^ c) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+            return h
+        for body in (b"", b"\x00", b"MDFVTOK1", bytes(range(256))):
+            assert tokenmap.fnv1a(body) == reference(body)
+
+    def test_header_layout_is_exact(self):
+        from premarketv6.plugin import tokenmap
+        blob = tokenmap.encode(self._built([(7, 11), (9, 12)]), built_at_ns=123)
+        assert blob[0:8] == b"MDFVTOK1"
+        assert struct.unpack_from("<II", blob, 8) == (1, 2)
+        assert blob[16:24] == b"XCME\x00\x00\x00\x00"
+        assert struct.unpack_from("<Q", blob, 24)[0] == 2
+        assert struct.unpack_from("<Q", blob, 32)[0] == 123
+        assert struct.unpack_from("<II", blob, 40) == (7, 9)
+        assert struct.unpack_from("<Q", blob, 48)[0] == tokenmap.fnv1a(blob[64:])
+        assert blob[56:64] == b"\x00" * 8
+        assert len(blob) == 64 + 2 * 8
+
+    def test_entries_are_u32_id_then_i32_token_little_endian(self):
+        from premarketv6.plugin import tokenmap
+        blob = tokenmap.encode(self._built([(0x01020304, 0x05060708)]))
+        assert blob[64:72] == bytes([4, 3, 2, 1, 8, 7, 6, 5])
+
+    def test_sorted_strictly_ascending(self):
+        assert [i for i, _ in self._built([(30, 1), (10, 2), (20, 3)]).entries] == [10, 20, 30]
+
+    def test_duplicate_instrument_id_is_fatal(self):
+        from premarketv6.plugin import tokenmap
+        with pytest.raises(tokenmap.DuplicateInstrumentId):
+            self._built([(5, 1), (5, 2)])
+
+    def test_identical_duplicate_is_not_fatal(self):
+        assert self._built([(5, 1), (5, 1)]).entries == [(5, 1)]
+
+    def test_instrument_id_zero_is_skipped_and_counted(self):
+        """0 is the C++ hash table's empty-slot marker, so such an entry would be
+        invisible to every lookup. Key given explicitly: with the column left to
+        precedence, a 0 among non-zeros is the ambiguity case below, not a bad row."""
+        built = self._built([(0, 1), (4, 2)], key="def_raw_instrument_id")
+        assert built.entries == [(4, 2)]
+        assert built.skips.reserved_id == 1
+        assert "reserved" in built.skips.describe()
+
+    def test_a_lone_zero_in_def_raw_is_ambiguity_not_a_bad_row(self):
+        """Deliberate, and the sharp edge of this module: 0 means both "drop this
+        row" (invariant 7) and "this column is unpopulated" (the XNAS fallback).
+        Precedence cannot tell them apart, so a mixed column stops the build
+        rather than guessing -- either answer yields a file that loads cleanly
+        while resolving every instrument to someone else's token."""
+        from premarketv6.plugin import tokenmap
+        with pytest.raises(tokenmap.PartiallyPopulated, match="1 of 2"):
+            self._built([(0, 1), (4, 2)])
+
+    def test_token_outside_positive_int32_is_skipped_and_counted(self):
+        built = self._built([(1, 0), (2, -5), (3, 2147483648), (4, 2147483647)])
+        assert built.entries == [(4, 2147483647)]
+        assert built.skips.token_out_of_range == 3
+
+    def test_unparseable_values_are_skipped_not_fatal(self):
+        from premarketv6.plugin import tokenmap
+        built = tokenmap.build("XCME", [
+            {"def_raw_instrument_id": "abc", "counterTokenV2": "1"},
+            {"def_raw_instrument_id": "5", "counterTokenV2": ""},
+            {"def_raw_instrument_id": "6", "counterTokenV2": "9"},
+        ], key="def_raw_instrument_id")
+        assert built.entries == [(6, 9)]
+        assert built.skips.unparseable_id == 1
+        assert built.skips.unparseable_token == 1
+
+    def test_key_column_precedence_not_size(self):
+        from premarketv6.plugin import tokenmap
+        rows = [{"def_raw_instrument_id": "7", "scriptToken": "100", "counterTokenV2": "1"},
+                {"def_raw_instrument_id": "8", "scriptToken": "200", "counterTokenV2": "2"}]
+        assert tokenmap.key_column(rows) == "def_raw_instrument_id"
+
+    def test_key_column_falls_back_when_def_raw_is_all_zero(self):
+        from premarketv6.plugin import tokenmap
+        rows = [{"def_raw_instrument_id": "0", "scriptToken": "5", "counterTokenV2": "1"},
+                {"def_raw_instrument_id": "0", "scriptToken": "6", "counterTokenV2": "2"}]
+        assert tokenmap.key_column(rows) == "scriptToken"
+
+    def test_partially_populated_def_raw_refuses_to_guess(self):
+        from premarketv6.plugin import tokenmap
+        rows = [{"def_raw_instrument_id": "7", "scriptToken": "5", "counterTokenV2": "1"},
+                {"def_raw_instrument_id": "0", "scriptToken": "6", "counterTokenV2": "2"}]
+        with pytest.raises(tokenmap.PartiallyPopulated):
+            tokenmap.key_column(rows)
+
+    def test_empty_map_refuses_to_encode(self):
+        from premarketv6.plugin import tokenmap
+        with pytest.raises(ValueError, match="no entries survived"):
+            tokenmap.encode(self._built([(0, 1)]))
+
+    def test_verify_accepts_our_own_output(self):
+        from premarketv6.plugin import tokenmap
+        info = tokenmap.verify(tokenmap.encode(self._built([(3, 1), (4, 2)])), "XCME")
+        assert info["entries"] == 2 and info["min_id"] == 3 and info["max_id"] == 4
+        assert info["bytes"] == 64 + 2 * 8
+
+    @pytest.mark.parametrize("corrupt,message", [
+        (lambda b: b"XXXXXXXX" + b[8:], "magic"),
+        (lambda b: b[:8] + struct.pack("<I", 2) + b[12:], "format version"),
+        (lambda b: b + b"\x00", "expected exactly"),
+        (lambda b: b[:-1], "expected exactly"),
+        (lambda b: b[:48] + struct.pack("<Q", 0) + b[56:], "FNV-1a"),
+        (lambda b: b[:56] + b"\x01" * 8, "reserved"),
+    ])
+    def test_verify_catches_each_corruption(self, corrupt, message):
+        from premarketv6.plugin import tokenmap
+        blob = tokenmap.encode(self._built([(3, 1), (4, 2)]))
+        with pytest.raises(ValueError, match=message):
+            tokenmap.verify(corrupt(blob), "XCME")
+
+    def test_verify_rejects_the_wrong_venue(self):
+        from premarketv6.plugin import tokenmap
+        with pytest.raises(ValueError, match="venue"):
+            tokenmap.verify(tokenmap.encode(self._built([(3, 1)])), "XNAS")
+
+    def test_filename_is_exact(self):
+        from premarketv6.plugin import tokenmap
+        assert tokenmap.filename("XCME") == "tokenmap.XCME.bin"
+        assert tokenmap.filename("xnas") == "tokenmap.XNAS.bin"
+
+    def test_write_is_atomic_and_leaves_no_temp(self, tmp_path):
+        from premarketv6.plugin import tokenmap
+        target = tmp_path / "sub" / tokenmap.filename("XCME")
+        tokenmap.write(target, tokenmap.encode(self._built([(3, 1)])))
+        assert target.exists()
+        assert [p.name for p in target.parent.iterdir()] == [target.name]
+
+    def test_output_lands_under_the_plugin_directory(self):
+        from premarketv6.plugin import tokenmap
+        assert tokenmap.tokenmap_dir("20260907") == paths.plugin_dir("20260907") / "tokenmap"
 
 
 if __name__ == "__main__":
