@@ -2895,14 +2895,46 @@ class TestOptionsForFutures:
             assert equity.endswith("_EQUITY"), f"{name} must source an equity list"
 
     def test_index_chain_is_complete(self):
-        """Each NIFTY index list should carry a futures basket and an options
-        basket built on it, so adding an index means adding all three."""
-        for idx in ("NIFTY50", "NIFTY100", "NIFTY500"):
-            eq, fut = f"XNSE_{idx}_EQUITY", f"XNSE_{idx}_FUTURES"
-            opt = f"XNSE_OPTIONS_{idx}_FUTURES"
+        """Each NIFTY index list carries a NEAR and an ALL futures basket, and an
+        options basket on each, so adding an index means adding the whole chain."""
+        for idx in ("NIFTYFNO", "NIFTY50", "NIFTY100", "NIFTY500"):
+            eq = f"XNSE_{idx}_EQUITY"
             assert eq in paths.BASKET_NAMES
-            assert paths.EQUITY_FUTURES_SOURCES[fut][0] == eq
-            assert paths.OPTION_BASKET_SOURCES[opt][0] == fut
+            for depth in ("NEAR", "ALL"):
+                fut = f"XNSE_{idx}_FUTURES_{depth}"
+                opt = f"XNSE_OPTIONS_{idx}_FUTURES_{depth}"
+                assert paths.EQUITY_FUTURES_SOURCES[fut][0] == eq
+                assert paths.OPTION_BASKET_SOURCES[opt][0] == fut
+
+    def test_every_futures_basket_is_a_near_all_pair(self):
+        """An unsuffixed futures basket is ambiguous about its depth -- a caller
+        cannot tell whether it holds the front month or every expiry."""
+        futures = set(paths.INDEX_FUTURES_SOURCES) | set(paths.EQUITY_FUTURES_SOURCES)
+        for name in futures:
+            assert name.endswith(("_NEAR", "_ALL")), f"{name} states no depth"
+            stem, _, depth = name.rpartition("_")
+            sibling = f"{stem}_{'ALL' if depth == 'NEAR' else 'NEAR'}"
+            assert sibling in futures, f"{name} has no {sibling}"
+
+    def test_near_is_shallower_than_all(self):
+        """The pair must actually differ: near_only True for _NEAR, False for _ALL."""
+        for table, near_at in ((paths.INDEX_FUTURES_SOURCES, 1),
+                               (paths.EQUITY_FUTURES_SOURCES, 1)):
+            for name, row in table.items():
+                assert row[near_at] is name.endswith("_NEAR"), name
+
+    def test_options_are_derived_from_futures(self):
+        """Every futures basket has exactly one option chain at the same depth,
+        and no option basket exists without a futures basket behind it."""
+        futures = set(paths.INDEX_FUTURES_SOURCES) | set(paths.EQUITY_FUTURES_SOURCES)
+        assert {paths.options_basket_name(f) for f in futures} == set(paths.OPTION_BASKET_SOURCES)
+        for opt, (src, _mic, near) in paths.OPTION_BASKET_SOURCES.items():
+            assert src in futures
+            assert near is opt.endswith("_NEAR")
+
+    def test_all_index_futures_parts_are_registered(self):
+        for part in paths.ALL_INDEX_FUTURES_PARTS:
+            assert part in paths.INDEX_FUTURES_SOURCES, part
 
     def test_every_basket_definition_file_exists(self):
         """refresh_basket() returns None for a missing file, so an unregistered

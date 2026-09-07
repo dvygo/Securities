@@ -407,68 +407,81 @@ NSE_SEGMENTS = {
 # *_FUTURES baskets below). XNAS/XCBO/XCME are venue underlying-symbol lists
 # consumed directly by sources/databento_src.py for download selection, not
 # basket-refresh targets -- excluded here.
-BASKET_NAMES = [
-    "XNSE_NIFTYFNO_EQUITY",
-    "XNSE_NIFTYFNO_FUTURES_ALL",
-    "XNSE_NIFTYFNO_FUTURES_NEAR",
-    "ALL_INDEX_FUTURES",
-    "XNSE_INDEX_FUTURES_ALL",
-    "XNSE_INDEX_FUTURES_NEAR",
-    "XBOM_INDEX_FUTURES",
-    "XIMC_FUTURES_ALL",
-    "XNSE_NIFTY50_EQUITY",
-    "XNSE_NIFTY100_EQUITY",
-    "XNSE_NIFTY200_EQUITY",
-    "XNSE_NIFTY500_EQUITY",
-    "XNSE_NIFTY500_FUTURES",
-    "XNSE_NIFTY50_FUTURES",
-    "XNSE_NIFTY100_FUTURES",
-    # Option chains, one per futures basket above: the futures basket supplies
-    # the underlying roots, and every live option on those roots is emitted.
-    # A NEAR source narrows to the expiry month(s) its futures occupy; an ALL
-    # source takes every live option expiry, which is what "all" has to mean --
-    # MCX bullion options do not share months with their futures (a November
-    # GOLD option settles into the December future), so month-filtering an ALL
-    # basket would drop thousands of real contracts.
-    # These replace XIMC_CRUDE/BULLDEX_NEAREST_NXTNEAREST, which were the same
-    # idea hand-rolled for two roots; XIMC_OPTIONS_FUTURES_ALL covers all 29.
-    "XNSE_OPTIONS_NIFTYFNO_FUTURES_NEAR",
-    "XNSE_OPTIONS_NIFTYFNO_FUTURES_ALL",
-    "XNSE_OPTIONS_INDEX_FUTURES_NEAR",
-    "XNSE_OPTIONS_INDEX_FUTURES_ALL",
-    "XNSE_OPTIONS_NIFTY500_FUTURES",
-    "XBOM_OPTIONS_INDEX_FUTURES",
-    "XIMC_OPTIONS_FUTURES_ALL",
-    "XNSE_OPTIONS_NIFTY50_FUTURES",
-    "XNSE_OPTIONS_NIFTY100_FUTURES",
-]
-
-# Option basket -> (futures basket it takes its roots from, MIC, near_only).
-# near_only mirrors the source futures basket's own roll: True means the source
-# resolved one expiry per root, so the options narrow to that month.
-OPTION_BASKET_SOURCES = {
-    "XNSE_OPTIONS_NIFTYFNO_FUTURES_NEAR": ("XNSE_NIFTYFNO_FUTURES_NEAR", "XNSE", True),
-    "XNSE_OPTIONS_NIFTYFNO_FUTURES_ALL":  ("XNSE_NIFTYFNO_FUTURES_ALL",  "XNSE", False),
-    "XNSE_OPTIONS_INDEX_FUTURES_NEAR":    ("XNSE_INDEX_FUTURES_NEAR",    "XNSE", True),
-    "XNSE_OPTIONS_INDEX_FUTURES_ALL":     ("XNSE_INDEX_FUTURES_ALL",     "XNSE", False),
-    "XNSE_OPTIONS_NIFTY500_FUTURES":      ("XNSE_NIFTY500_FUTURES",      "XNSE", False),
-    "XBOM_OPTIONS_INDEX_FUTURES":         ("XBOM_INDEX_FUTURES",         "XBOM", True),
-    "XIMC_OPTIONS_FUTURES_ALL":           ("XIMC_FUTURES_ALL",           "XIMC", False),
-    "XNSE_OPTIONS_NIFTY50_FUTURES":       ("XNSE_NIFTY50_FUTURES",       "XNSE", False),
-    "XNSE_OPTIONS_NIFTY100_FUTURES":      ("XNSE_NIFTY100_FUTURES",      "XNSE", False),
+# Futures whose roots come from their OWN definition file -- index and commodity
+# futures, where no equity membership list sits behind them.
+#   name -> (MIC, near_only)
+# near_only=True keeps one contract per root (the front month); False keeps every
+# live expiry. Every futures basket exists as a NEAR/ALL pair so a caller never
+# has to know which depth an unsuffixed name meant.
+INDEX_FUTURES_SOURCES = {
+    "XNSE_INDEX_FUTURES_NEAR": ("XNSE", True),
+    "XNSE_INDEX_FUTURES_ALL":  ("XNSE", False),
+    "XBOM_INDEX_FUTURES_NEAR": ("XBOM", True),
+    "XBOM_INDEX_FUTURES_ALL":  ("XBOM", False),
+    "XIMC_FUTURES_NEAR":       ("XIMC", True),
+    "XIMC_FUTURES_ALL":        ("XIMC", False),
 }
 
-# Futures basket -> the equity basket its underlyings come from, and whether the
-# roll keeps one contract per root (near) or every live one. The equity basket is
-# an index membership list; the futures are re-picked from today's data, so these
-# stay correct as contracts roll.
+# Futures whose roots come from an equity index list.
+#   name -> (equity basket, near_only)
+# The equity basket is index membership; the futures are re-picked from today's
+# data, so these stay correct as contracts roll.
 EQUITY_FUTURES_SOURCES = {
     "XNSE_NIFTYFNO_FUTURES_NEAR": ("XNSE_NIFTYFNO_EQUITY", True),
     "XNSE_NIFTYFNO_FUTURES_ALL":  ("XNSE_NIFTYFNO_EQUITY", False),
-    "XNSE_NIFTY500_FUTURES":      ("XNSE_NIFTY500_EQUITY", False),
-    "XNSE_NIFTY50_FUTURES":       ("XNSE_NIFTY50_EQUITY",  False),
-    "XNSE_NIFTY100_FUTURES":      ("XNSE_NIFTY100_EQUITY", False),
+    "XNSE_NIFTY50_FUTURES_NEAR":  ("XNSE_NIFTY50_EQUITY",  True),
+    "XNSE_NIFTY50_FUTURES_ALL":   ("XNSE_NIFTY50_EQUITY",  False),
+    "XNSE_NIFTY100_FUTURES_NEAR": ("XNSE_NIFTY100_EQUITY", True),
+    "XNSE_NIFTY100_FUTURES_ALL":  ("XNSE_NIFTY100_EQUITY", False),
+    "XNSE_NIFTY500_FUTURES_NEAR": ("XNSE_NIFTY500_EQUITY", True),
+    "XNSE_NIFTY500_FUTURES_ALL":  ("XNSE_NIFTY500_EQUITY", False),
 }
+
+# Equity index membership lists, resolved by exact script match.
+EQUITY_BASKETS = {
+    "XNSE_NIFTYFNO_EQUITY": "XNSE",
+    "XNSE_NIFTY50_EQUITY":  "XNSE",
+    "XNSE_NIFTY100_EQUITY": "XNSE",
+    "XNSE_NIFTY200_EQUITY": "XNSE",
+    "XNSE_NIFTY500_EQUITY": "XNSE",
+}
+
+
+def options_basket_name(futures: str) -> str:
+    """XNSE_NIFTY50_FUTURES_NEAR -> XNSE_OPTIONS_NIFTY50_FUTURES_NEAR."""
+    mic, _, rest = futures.partition("_")
+    return f"{mic}_OPTIONS_{rest}"
+
+
+# Every futures basket gets an option chain on the same underlyings at the same
+# depth: option basket -> (futures basket it takes roots from, MIC, near_only).
+# DERIVED, not typed out -- a futures basket added above cannot be left without
+# its options, which is the drift that would otherwise need remembering.
+OPTION_BASKET_SOURCES = {
+    options_basket_name(f): (f, mic, near)
+    for f, (mic, near) in INDEX_FUTURES_SOURCES.items()
+}
+OPTION_BASKET_SOURCES.update({
+    options_basket_name(f): (f, "XNSE", near)
+    for f, (_equity, near) in EQUITY_FUTURES_SOURCES.items()
+})
+
+# The union basket, spelled out because its parts are deliberately asymmetric:
+# NSE and BSE contribute their front month, MCX every live expiry.
+ALL_INDEX_FUTURES_PARTS = [
+    "XNSE_INDEX_FUTURES_NEAR",
+    "XBOM_INDEX_FUTURES_NEAR",
+    "XIMC_FUTURES_ALL",
+]
+
+# Derived so a basket can never be defined above and left unregistered here.
+BASKET_NAMES = [
+    *EQUITY_BASKETS,
+    "ALL_INDEX_FUTURES",
+    *INDEX_FUTURES_SOURCES,
+    *EQUITY_FUTURES_SOURCES,
+    *OPTION_BASKET_SOURCES,
+]
 
 
 def promote_staging(temp_path, output_path) -> None:

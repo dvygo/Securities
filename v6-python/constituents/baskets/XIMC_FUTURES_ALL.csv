@@ -1,4 +1,7 @@
-# refreshed from constituents/contracts/20260907/XIMC_FUTURES_ALL.parquet at 2026-09-07T03:35:24Z
+# futures basket -- roots from its own definition file
+# all: every live expiry per root
+# expiries are re-picked from today's data, so the contracts below go stale but the basket does not
+# refreshed from constituents/contracts/20260907/XIMC_FUTURES_ALL.parquet at 2026-09-07T04:00:13Z
 # 148 contract(s), expiries 26DEC, 26NOV, 26OCT, 26SEP, 27APR, 27AUG, 27FEB, 27JAN, 27JUL, 27JUN, 27MAR, 27MAY
 MCX:ALUMINI26DECFUT
 MCX:ALUMINI26NOVFUT

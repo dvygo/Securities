@@ -1,7 +1,7 @@
-# source: futures on the underlyings of XNSE_NIFTY500_EQUITY
-# roots come from that index list; expiries are re-picked from today's data
+# futures basket -- roots from XNSE_NIFTY500_EQUITY
 # all: every live expiry per root
-# refreshed from constituents/contracts/20260907/XNSE_NIFTY500_FUTURES.parquet at 2026-09-07T03:55:00Z
+# expiries are re-picked from today's data, so the contracts below go stale but the basket does not
+# refreshed from constituents/contracts/20260907/XNSE_NIFTY500_FUTURES_ALL.parquet at 2026-09-07T04:00:13Z
 # 629 contract(s), expiries 26NOV, 26OCT, 26SEP
 NSE:360ONE26NOVFUT
 NSE:360ONE26OCTFUT

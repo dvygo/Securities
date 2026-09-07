@@ -288,31 +288,23 @@ def _resolve_options_for_futures(name: str, futures_template: Path, idx: SymInde
 
 def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
     """Resolve one basket's constituent rows.
-    Basket names are standardized to {MIC}_{purpose} and match their definition CSV's
-    filename 1:1, except where noted (futures-roll baskets derive roots from a spots/
-    equity basket rather than their own frozen file, and ALL_INDEX_FUTURES has no file
-    of its own -- it's the union of the three index-futures baskets)."""
+
+    Every basket belongs to exactly one of five kinds, each a table in paths:
+    an equity membership list, index/commodity futures rooted in their own file,
+    futures rooted in an equity list, an option chain on a futures basket, or the
+    ALL_INDEX_FUTURES union. A name in no table is a registration bug and raises.
+    """
     baskets_dir = paths.baskets_dir()
 
-    if name == "XNSE_NIFTYFNO_EQUITY":
-        idx = _sym_index(as_of, "XNSE", cache)
+    if name in paths.EQUITY_BASKETS:
+        idx = _sym_index(as_of, paths.EQUITY_BASKETS[name], cache)
         return _resolve_by_script(name, baskets_dir / f"{name}.csv", idx, as_of)
 
-    if name == "XNSE_INDEX_FUTURES_NEAR":
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=True)
-
-    if name == "XNSE_INDEX_FUTURES_ALL":
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
-
-    if name == "XBOM_INDEX_FUTURES":
-        idx = _sym_index(as_of, "XBOM", cache)
-        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=True)
-
-    if name == "XIMC_FUTURES_ALL":
-        idx = _sym_index(as_of, "XIMC", cache)
-        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
+    if name in paths.INDEX_FUTURES_SOURCES:
+        mic, near_only = paths.INDEX_FUTURES_SOURCES[name]
+        idx = _sym_index(as_of, mic, cache)
+        return _resolve_index_futures(
+            name, baskets_dir / f"{name}.csv", idx, as_of, near_only)
 
     if name in paths.EQUITY_FUTURES_SOURCES:
         equity, near_only = paths.EQUITY_FUTURES_SOURCES[name]
@@ -327,20 +319,13 @@ def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
             name, baskets_dir / f"{source}.csv", idx, as_of, near_only)
 
     if name == "ALL_INDEX_FUTURES":
-        nse_rows = _resolve_index_futures(
-            "XNSE_INDEX_FUTURES_NEAR", baskets_dir / "XNSE_INDEX_FUTURES_NEAR.csv", _sym_index(as_of, "XNSE", cache), as_of, near_only=True
-        )
-        xbom_rows = _resolve_index_futures(
-            "XBOM_INDEX_FUTURES", baskets_dir / "XBOM_INDEX_FUTURES.csv", _sym_index(as_of, "XBOM", cache), as_of, near_only=True
-        )
-        ximc_rows = _resolve_index_futures(
-            "XIMC_FUTURES_ALL", baskets_dir / "XIMC_FUTURES_ALL.csv", _sym_index(as_of, "XIMC", cache), as_of, near_only=False
-        )
-        return nse_rows + xbom_rows + ximc_rows
-
-    if name in ("XNSE_NIFTY50_EQUITY", "XNSE_NIFTY100_EQUITY", "XNSE_NIFTY200_EQUITY", "XNSE_NIFTY500_EQUITY"):
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_by_script(name, baskets_dir / f"{name}.csv", idx, as_of)
+        rows = []
+        for part in paths.ALL_INDEX_FUTURES_PARTS:
+            mic, near_only = paths.INDEX_FUTURES_SOURCES[part]
+            rows += _resolve_index_futures(
+                part, baskets_dir / f"{part}.csv",
+                _sym_index(as_of, mic, cache), as_of, near_only)
+        return rows
 
     raise ValueError(f"unknown basket {name!r}")
 

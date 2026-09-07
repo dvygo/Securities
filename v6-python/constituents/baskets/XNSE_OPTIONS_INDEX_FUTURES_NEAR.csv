@@ -1,7 +1,7 @@
 # source: every live option on the underlyings of XNSE_INDEX_FUTURES_NEAR
 # roots come from that futures basket; expiries are re-picked from today's data, so the strikes below go stale but the basket does not
 # near: options in the month its futures occupy
-# refreshed from constituents/contracts/20260907/XNSE_OPTIONS_INDEX_FUTURES_NEAR.parquet at 2026-09-07T03:55:00Z
+# refreshed from constituents/contracts/20260907/XNSE_OPTIONS_INDEX_FUTURES_NEAR.parquet at 2026-09-07T04:00:13Z
 # 4274 contract(s), 5 root(s), expiries 2026-09
 NSE:BANKNIFTY26SEP28500CE
 NSE:BANKNIFTY26SEP28500PE
