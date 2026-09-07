@@ -11,9 +11,25 @@ builds the plugin Parquet the downstream symbol-master consumes.
 | `XCME` | CME Globex futures/options | Databento `GLBX.MDP3` | 00:00–01:00 | 05:30–06:30 |
 | `XNAS` | US equities | Databento `EQUS.MINI` | 05:00–06:00 | 10:30–11:30 |
 | `XCBO` | US options | Databento `OPRA.PILLAR` | 10:00–11:00 | 15:30–16:30 |
-| `XNSE` | NSE India (cash, F&O, currency) | NSE contract masters, dropped by the broker | — | — |
+| `XNSE` | NSE India (cash, F&O, currency) | Fyers *or* NSE contract masters — see below | — | — |
 | `XBOM` | BSE India | Fyers | — | — |
 | `XIMC` | MCX India | Fyers | — | — |
+
+`XNSE` is the one venue two feeds can serve, and `conf/config.ini` picks which:
+
+```ini
+[EXCHANGE:XNSE]
+feed = fyers   ; Fyers CDN (NSE_CM/FO/CD)      -> XNSE-FYERS.parquet
+# feed = nse   ; NSE's own contract masters    -> XNSE-NSE.parquet
+```
+
+That value is the whole switch. A normalize step runs a venue only when it owns
+it, so the two never both write `XNSE`, and baskets resolve the filename through
+the same setting rather than assuming a vendor. Under `feed = fyers` the
+`NEW FILE FORMAT/` drop is ignored; under `feed = nse` the Fyers NSE segments are
+not downloaded. Switching costs no tokens — the carry-forward keys on the script,
+not the source, so a swap keeps every symbol's `counterTokenV2` and draws nothing
+new from the shared sequence.
 
 **The venues do not arrive together.** A full day is not available before roughly
 **16:30 IST**, because OPRA publishes last. The pipeline is built for this: run
@@ -57,7 +73,8 @@ data/YYYYMMDD/
   XCME/  glbx-mdp3-YYYYMMDD.definition.dbn.zst      raw vendor payload
   XNAS/  equs-mini-YYYYMMDD.definition.dbn.zst
   XCBO/  opra-pillar-YYYYMMDD.definition.dbn.zst
-  XNSE/  NEW FILE FORMAT/                            NSE contract masters
+  XNSE/  XNSE-FYERS.csv XNFO-FYERS.csv XNCD-FYERS.csv   when feed = fyers
+         NEW FILE FORMAT/                            when feed = nse
   v6/
     normalized/   <MIC>-<SOURCE>.parquet             one file per venue
     plugin/       <MIC>-<SOURCE>.parquet             legacy symbol-master shape
@@ -154,7 +171,7 @@ counterTokenV2's expected offset reuse) are reported and do not fail the run.
 - **A venue's raw directory must hold only that day's payload.** A stray file from
   another date is silently blended into the output; `check-lineage` catches this
   as `raw is this day`.
-- India (`XBOM`, `XIMC`) has no historical backfill — Fyers serves the current day
+- India (`XBOM`, `XIMC`, and `XNSE` on the Fyers feed) has no historical backfill — Fyers serves the current day only
   only.
 
 ## Known gaps

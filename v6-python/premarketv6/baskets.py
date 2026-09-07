@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from . import parquet_export, paths, runner
+from . import config, parquet_export, paths, runner
 
 
 # "NSE:360ONE-EQ" -> "360ONE"
@@ -98,7 +98,14 @@ class SymIndex:
         self.futures_by_root: Dict[str, List[dict]] = {}
         self.options_by_root: Dict[str, List[dict]] = {}
 
-        if not normalized_csv.exists():
+        self.source = normalized_csv
+        self.present = normalized_csv.exists()
+        if not self.present:
+            # Every basket on this MIC is about to report all its constituents
+            # missing. Say why once, here, rather than letting ten baskets each
+            # blame their own definition file.
+            print(f"    {exchange_mic}: no normalized data at {normalized_csv.name} "
+                  f"-- baskets on this venue will be empty")
             return
         for row in parquet_export.read_rows(normalized_csv):
             script = (row.get("script") or "").strip()
@@ -138,10 +145,32 @@ def _as_of_start_ns(as_of: str) -> int:
     return int(d.timestamp()) * 10**9
 
 
+def _normalized_output(mic: str) -> str:
+    """The normalized filename for a MIC, from whichever feed owns it today.
+
+    Baskets have no business knowing which vendor produced a venue -- they want
+    "today's XNSE rows". Reaching into FYERS_MIC_BUNDLES for the name meant the
+    XNSE source switch raised a bare KeyError('XNSE') here, which the caller's
+    except swallowed into an empty basket.
+    """
+    by_feed = paths.FEED_OUTPUTS.get(mic)
+    if not by_feed:
+        raise ValueError(f"{mic}: no normalized output is defined for this MIC "
+                         f"(paths.FEED_OUTPUTS knows {sorted(paths.FEED_OUTPUTS)})")
+    feed = config.feed_for(mic)
+    output = by_feed.get(feed)
+    if output is None:
+        raise ValueError(
+            f"{mic}: conf/config.ini says feed = {feed!r}, but no normalize step "
+            f"writes {mic} from that feed (this MIC is served by "
+            f"{sorted(by_feed)}). Fix [EXCHANGE:{mic}] feed =.")
+    return output
+
+
 def _sym_index(as_of: str, mic: str, cache: Dict[str, SymIndex]) -> SymIndex:
     if mic not in cache:
-        output_csv, _, _ = paths.FYERS_MIC_BUNDLES[mic]
-        cache[mic] = SymIndex(mic, paths.normalized_dir(as_of) / output_csv)
+        path = paths.normalized_dir(as_of) / _normalized_output(mic)
+        cache[mic] = SymIndex(mic, path)
     return cache[mic]
 
 
@@ -320,6 +349,8 @@ def refresh_all(as_of: str, normalized_dir: Path, dry_run: bool = False) -> None
     contracts_day_dir.mkdir(parents=True, exist_ok=True)
 
     cache: Dict[str, SymIndex] = {}
+    failed: List[str] = []
+    empty: List[str] = []
 
     for basket_name in paths.BASKET_NAMES:
         if dry_run:
@@ -332,8 +363,23 @@ def refresh_all(as_of: str, normalized_dir: Path, dry_run: bool = False) -> None
                 output_path = contracts_day_dir / f"{basket_name}{parquet_export.SUFFIX}"
                 parquet_export.write_rows(output_path, list(rows[0].keys()), rows)
                 print(f"    Wrote {basket_name}: {len(rows)} contracts")
+            else:
+                empty.append(basket_name)
         except Exception as e:
-            print(f"    Error refreshing {basket_name}: {e}")
+            # One basket's bad data must not take the rest of the run down, but
+            # a swallowed error that leaves no file behind used to be
+            # indistinguishable from a basket that legitimately resolved to
+            # nothing. Both are now counted and reported at the end.
+            failed.append(f"{basket_name}: {type(e).__name__}: {e}")
+            print(f"    ERROR refreshing {basket_name}: {type(e).__name__}: {e}")
+
+    if empty:
+        print(f"    {len(empty)} basket(s) resolved to no contracts: "
+              f"{', '.join(empty)}")
+    if failed:
+        print(f"    {len(failed)}/{len(paths.BASKET_NAMES)} basket(s) FAILED:")
+        for msg in failed:
+            print(f"      {msg}")
 
 
 def run(opts: runner.Opts) -> None:

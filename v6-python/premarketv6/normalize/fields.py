@@ -163,6 +163,13 @@ def run(opts: runner.Opts) -> None:
         if mic_cfg is not None and not mic_cfg.enabled:
             print(f"  Skipping Fyers {mic}: enabled = 0")
             continue
+        # Another feed may own this MIC today (XNSE can come from NSE's own
+        # contract masters instead). Both steps run in the "normalize" alias, so
+        # without this the two would write the same venue and the later one
+        # would silently win.
+        if not config.owns(mic, "fyers"):
+            print(f"  Skipping Fyers {mic}: feed = {config.feed_for(mic)}")
+            continue
         if mic in token_errors:
             for msg in token_errors[mic]:
                 print(f"  CRITICAL [{mic}] counterToken config: {msg}")

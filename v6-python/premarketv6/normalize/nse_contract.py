@@ -366,6 +366,9 @@ def run(opts: runner.Opts) -> None:
     if opts.dry_run:
         print("DRY RUN: Would normalize NSE contract masters")
         return
+    if not config.owns("XNSE", "nse"):
+        print(f"  Skipping XNSE contract masters: feed = {config.feed_for('XNSE')}")
+        return
     if not runner.venue_selected(opts, "XNSE"):
         return
     if not present(opts.date_dir):

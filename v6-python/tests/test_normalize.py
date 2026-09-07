@@ -2564,6 +2564,20 @@ class TestRecordedArtifacts:
         assert self._named(lineage.check_recorded(day, mic), "recorded rows").ok
 
 
+def _write_config(tmp_path, monkeypatch, feed: str) -> None:
+    """Point config at a throwaway config.ini whose XNSE section uses `feed`.
+
+    load_exchanges() is uncached and re-reads the file, so a later call in the
+    same test sees a rewritten value.
+    """
+    ini = tmp_path / "config.ini"
+    ini.write_text(
+        f"[EXCHANGE:XNSE]\nfeed = {feed}\nenabled = 1\nvenue_id = 16\n\n"
+        "[EXCHANGE:XBOM]\nfeed = fyers\nenabled = 1\nvenue_id = 17\n\n"
+        "[EXCHANGE:XIMC]\nfeed = fyers\nenabled = 1\nvenue_id = 18\n")
+    monkeypatch.setenv("PREMARKET_CONFIG", str(ini))
+
+
 class TestNseContract:
     """The exchange's own contract masters, which replace Fyers for XNSE.
 
@@ -2729,10 +2743,63 @@ class TestNseContract:
         assert {nc.CM_FILE, nc.FO_FILE, nc.CD_FILE} == {
             nc.CM_FILE, nc.FO_FILE, nc.CD_FILE}
 
-    def test_xnse_no_longer_comes_from_fyers(self):
-        """Both steps writing the venue would let the later one silently win."""
-        assert "XNSE" not in paths.FYERS_MIC_BUNDLES
-        assert set(paths.FYERS_MIC_BUNDLES) == {"XBOM", "XIMC"}
+    def test_exactly_one_feed_owns_xnse(self, tmp_path, monkeypatch):
+        """The invariant that matters is not "XNSE is absent from Fyers" -- it is
+        that exactly one normalize step claims the venue on any given day.
+        Asserting absence instead is what broke download-india and every XNSE
+        basket: three tables derived from FYERS_MIC_BUNDLES, and deleting the row
+        silently unrouted three raw segments."""
+        for feed, expect_fyers, expect_nse in (("fyers", True, False),
+                                               ("nse", False, True)):
+            _write_config(tmp_path, monkeypatch, feed=feed)
+            assert config.owns("XNSE", "fyers") is expect_fyers
+            assert config.owns("XNSE", "nse") is expect_nse
+            # never both, never neither
+            assert sum([config.owns("XNSE", "fyers"),
+                        config.owns("XNSE", "nse")]) == 1
+
+    def test_every_downloadable_segment_can_be_routed(self):
+        """paths raises at import if a segment is downloadable but unroutable, so
+        this pins the derivation that used to drop them silently."""
+        assert set(paths.FYERS_RAW_SEGMENTS) == set(paths.FYERS_SEGMENT_MIC)
+        for segment, mic in paths.FYERS_SEGMENT_MIC.items():
+            assert mic in paths.FYERS_MIC_BUNDLES
+            _vendor, local = paths.FYERS_RAW_SEGMENTS[segment]
+            assert local in paths.FYERS_MIC_BUNDLES[mic][2]
+
+    def test_unroutable_segment_fails_loudly(self):
+        """Reproduce the deletion that caused the outage: a MIC bundle removed
+        while its segments stay in FYERS_RAW_SEGMENTS must not yield a silent
+        drop. Rebuilds paths' own derivation + guard over doctored tables."""
+        raw = dict(paths.FYERS_RAW_SEGMENTS)
+        bundles = {m: v for m, v in paths.FYERS_MIC_BUNDLES.items() if m != "XNSE"}
+        seg_mic = {seg: mic for mic, (_o, _t, srcs) in bundles.items()
+                   for seg, (_v, local) in raw.items() if local in srcs}
+        unrouted = set(raw) - set(seg_mic)
+        assert unrouted == {"xnse", "xnfo", "xncd"}, (
+            "removing the XNSE bundle must orphan exactly its three segments")
+
+    def test_nse_contract_output_matches_the_paths_table(self):
+        """paths.FEED_OUTPUTS restates nse_contract.OUTPUT to avoid an import
+        cycle; if they drift, baskets read a file nothing writes."""
+        from premarketv6.normalize import nse_contract as nc
+        assert paths.FEED_OUTPUTS["XNSE"]["nse"] == nc.OUTPUT
+
+    def test_baskets_resolve_the_owning_feeds_file(self, tmp_path, monkeypatch):
+        """Baskets must follow the toggle, not a hardcoded vendor name."""
+        from premarketv6 import baskets
+        for feed, expected in (("fyers", "XNSE-FYERS.parquet"),
+                               ("nse", "XNSE-NSE.parquet")):
+            _write_config(tmp_path, monkeypatch, feed=feed)
+            assert baskets._normalized_output("XNSE") == expected
+
+    def test_baskets_reject_a_feed_that_writes_nothing(self, tmp_path, monkeypatch):
+        """A typo in feed = must name the problem, not KeyError into an empty
+        basket the way FYERS_MIC_BUNDLES[mic] did."""
+        from premarketv6 import baskets
+        _write_config(tmp_path, monkeypatch, feed="databento")
+        with pytest.raises(ValueError, match=r"feed = 'databento'"):
+            baskets._normalized_output("XNSE")
 
 
 if __name__ == "__main__":

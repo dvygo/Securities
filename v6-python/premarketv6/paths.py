@@ -139,7 +139,8 @@ def fyers_segment_path(as_of: str, segment: str) -> Path:
     so the folder matches the unit of work rather than the vendor's name.
     """
     mic = FYERS_SEGMENT_MIC[segment]
-    return venue_dir(as_of, mic) / FYERS_RAW_SEGMENTS[segment]
+    _vendor_file, local_file = FYERS_RAW_SEGMENTS[segment]
+    return venue_dir(as_of, mic) / local_file
 
 
 def nse_exchange_raw_dir(as_of: str) -> Path:
@@ -331,35 +332,67 @@ NORMALIZED_COLUMNS = [
 # Contract columns = date + exchange + normalized columns
 CONTRACT_COLUMNS = ["date", "exchange"] + NORMALIZED_COLUMNS
 
-# Fyers raw segments: segment name -> CSV filename (without day directory)
+# Fyers raw segments: segment key -> (vendor's filename on the CDN, ours on disk).
+# The two names differ deliberately -- Fyers names a file after the exchange
+# segment it came from, we name it after the MIC it normalizes into. They used
+# to live in two tables in two modules, which is exactly how they drifted.
 FYERS_RAW_SEGMENTS = {
-    "xnse": "XNSE-FYERS.csv",
-    "xnfo": "XNFO-FYERS.csv",
-    "xncd": "XNCD-FYERS.csv",
-    "xbse": "XBSE-FYERS.csv",
-    "xbfo": "XBFO-FYERS.csv",
-    "xmcx": "XMCX-FYERS.csv",
+    "xnse": ("NSE_CM.csv", "XNSE-FYERS.csv"),
+    "xnfo": ("NSE_FO.csv", "XNFO-FYERS.csv"),
+    "xncd": ("NSE_CD.csv", "XNCD-FYERS.csv"),
+    "xbse": ("BSE_CM.csv", "XBSE-FYERS.csv"),
+    "xbfo": ("BSE_FO.csv", "XBFO-FYERS.csv"),
+    "xmcx": ("MCX_COM.csv", "XMCX-FYERS.csv"),
 }
 
-# Fyers MIC bundles: MIC -> (output_csv_name, postgres_table, source_csv_list)
+# Fyers MIC bundles: MIC -> (normalized_output, postgres_table, source_csv_list)
+#
+# This is what Fyers CAN serve, not what runs today. XNSE is here because Fyers
+# still publishes NSE_CM/FO/CD; whether we USE it is conf/config.ini's
+# [EXCHANGE:XNSE] feed =, resolved at run time by config.feed_for(). Deleting a
+# row here to switch a source is what broke download-india and every XNSE
+# basket -- three things derive from this table and only one of them said so.
 FYERS_MIC_BUNDLES = {
     # First element is the NORMALIZED output (Parquet); the list is the RAW Fyers
     # CSVs it is built from, which stay CSV because that is what the vendor ships.
-    # XNSE is NOT here: it comes from the exchange's own contract masters now
-    # (normalize/nse_contract.py), not from Fyers. Leaving it would have both
-    # steps write the venue and the later one silently win.
+    "XNSE": ("XNSE-FYERS.parquet", "xnse",
+             ["XNSE-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv"]),
     "XBOM": ("XBOM-FYERS.parquet", "xbom", ["XBSE-FYERS.csv", "XBFO-FYERS.csv"]),  # BSE -> XBOM MIC
     "XIMC": ("XIMC-FYERS.parquet", "ximc", ["XMCX-FYERS.csv"]),
 }
+
+# Every normalized file a feed can write for a MIC: MIC -> feed -> filename.
+# A MIC served by more than one feed lists one entry per feed, and
+# config.feed_for() picks which is real on any given day. Anything that reads a
+# venue's normalized output (baskets, QA) resolves through here rather than
+# assuming a vendor, so a source switch does not rename a file out from under it.
+FEED_OUTPUTS = {
+    mic: {"fyers": output} for mic, (output, _table, _sources) in FYERS_MIC_BUNDLES.items()
+}
+# normalize/nse_contract.py's OUTPUT, stated here rather than imported to keep
+# paths.py free of pipeline imports. Guarded by a test that the two agree.
+FEED_OUTPUTS["XNSE"]["nse"] = "XNSE-NSE.parquet"
 
 # Segment -> owning MIC bundle, derived from FYERS_MIC_BUNDLES so a segment can
 # never be listed in one place and missing from the other.
 FYERS_SEGMENT_MIC = {
     segment: mic
     for mic, (_out, _table, sources) in FYERS_MIC_BUNDLES.items()
-    for segment, filename in FYERS_RAW_SEGMENTS.items()
-    if filename in sources
+    for segment, (_vendor, local) in FYERS_RAW_SEGMENTS.items()
+    if local in sources
 }
+
+# The derivation above drops silently: a segment whose file no MIC claims just
+# vanishes, and the KeyError only surfaces later, deep in a download. Fail here
+# instead, at import, naming the segment.
+_unrouted = set(FYERS_RAW_SEGMENTS) - set(FYERS_SEGMENT_MIC)
+if _unrouted:
+    raise RuntimeError(
+        f"Fyers segment(s) {sorted(_unrouted)} are in FYERS_RAW_SEGMENTS but no "
+        f"FYERS_MIC_BUNDLES entry lists their file. Add the segment to a bundle's "
+        f"source list, or drop it from FYERS_RAW_SEGMENTS -- do not leave it "
+        f"downloadable but unroutable.")
+del _unrouted
 
 # NSE segments
 NSE_SEGMENTS = {

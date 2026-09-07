@@ -145,19 +145,14 @@ def download(opts: runner.Opts) -> None:
         print("DRY RUN: Would download Fyers symbol master data")
         return
 
-    # Segment key -> source file mapping (from v4 Python)
-    segment_sources = {
-        "xnse": "NSE_CM.csv",
-        "xnfo": "NSE_FO.csv",
-        "xncd": "NSE_CD.csv",
-        "xbse": "BSE_CM.csv",
-        "xbfo": "BSE_FO.csv",
-        "xmcx": "MCX_COM.csv",
-    }
-
-    # Download each segment
-    for segment, source_file in segment_sources.items():
-        if segment not in paths.FYERS_RAW_SEGMENTS:
+    # The vendor filename now lives beside our own in paths.FYERS_RAW_SEGMENTS.
+    # It used to be a second copy of the segment list here, and the two drifted:
+    # this loop went right on visiting segments paths could no longer route.
+    for segment, (source_file, _local_file) in paths.FYERS_RAW_SEGMENTS.items():
+        mic = paths.FYERS_SEGMENT_MIC[segment]
+        if not config.owns(mic, "fyers"):
+            print(f"Skipping {segment}: {mic} is on the "
+                  f"{config.feed_for(mic)!r} feed, not Fyers")
             continue
 
         url = f"{cfg.base_url}/{source_file}"

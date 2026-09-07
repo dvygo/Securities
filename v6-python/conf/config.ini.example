@@ -190,10 +190,13 @@ hist_pin_latest_session = false
 hist_lookback_days = 7
 
 [EXCHANGE:XNSE]
-# NSE's own contract masters, dropped by the broker into
-# data/YYYYMMDD/XNSE/NEW FILE FORMAT/ (normalize/nse_contract.py). Fyers still
-# serves XBOM and XIMC below, but no longer XNSE.
-feed = nse
+# Which feed serves XNSE. This is the real switch -- normalize steps run a
+# venue only when they own it, and baskets resolve the normalized filename
+# through it, so nothing is written twice and no file is renamed underneath.
+#   fyers = Fyers CDN, NSE_CM/FO/CD  -> XNSE-FYERS.parquet
+#   nse   = NSE's own contract masters, dropped by the broker into
+#           data/YYYYMMDD/XNSE/NEW FILE FORMAT/ -> XNSE-NSE.parquet
+feed = fyers
 enabled = 1
 venue_id = 16
 
