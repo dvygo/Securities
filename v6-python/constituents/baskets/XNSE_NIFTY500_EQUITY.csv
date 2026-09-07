@@ -1,6 +1,7 @@
 # source: NIFTY 500 index list (ind_nifty500list.csv)
-# matched against XNSE-FYERS on 20260609 at 2026-06-09T04:59:00Z
-# symbols: 500 matched, 4 missing from XNSE
+# matched against XNSE-FYERS on 20260907 at 2026-09-07T03:35:55Z
+# 500 symbols; HEG and HFCL moved EQ -> BE
+# JBCHEPHARM-EQ retained: absent from Fyers, present in NSE's own masters
 NSE:360ONE-EQ
 NSE:3MINDIA-EQ
 NSE:AADHARHFC-EQ
@@ -202,10 +203,10 @@ NSE:HDBFS-EQ
 NSE:HDFCAMC-EQ
 NSE:HDFCBANK-EQ
 NSE:HDFCLIFE-EQ
-NSE:HEG-EQ
+NSE:HEG-BE
 NSE:HEROMOTOCO-EQ
 NSE:HEXT-EQ
-NSE:HFCL-EQ
+NSE:HFCL-BE
 NSE:HINDALCO-EQ
 NSE:HINDCOPPER-EQ
 NSE:HINDPETRO-EQ
