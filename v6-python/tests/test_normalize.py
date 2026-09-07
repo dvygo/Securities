@@ -2802,5 +2802,99 @@ class TestNseContract:
             baskets._normalized_output("XNSE")
 
 
+class TestOptionsForFutures:
+    """Option baskets derived from a futures basket's underlyings."""
+
+    @staticmethod
+    def _idx(rows):
+        from premarketv6 import baskets
+        idx = baskets.SymIndex.__new__(baskets.SymIndex)
+        idx.exchange_mic = "XTST"
+        idx.by_script, idx.futures_by_root, idx.options_by_root = {}, {}, {}
+        idx.source, idx.present = pathlib.Path("memory"), True
+        for r in rows:
+            idx.by_script[r["script"]] = r
+            root = r["underlying_root"]
+            if r.get("optionType"):
+                idx.options_by_root.setdefault(root, []).append(r)
+            else:
+                idx.futures_by_root.setdefault(root, []).append(r)
+        return idx
+
+    @staticmethod
+    def _ns(y, m, d):
+        return int(datetime(y, m, d, tzinfo=timezone.utc).timestamp()) * 10**9
+
+    def _fixture(self, tmp_path):
+        """A future in Sept and Oct, options in both months."""
+        rows = []
+        # Scripts must carry a real MONYY: _parse_fut_root anchors on it.
+        for mon, mth, day in (("SEP", 9, 29), ("OCT", 10, 27)):
+            rows.append({"script": f"X:R26{mon}FUT", "underlying_root": "R",
+                         "optionType": "", "expiration": str(self._ns(2026, mth, day)),
+                         "scriptInstrumentType": "FUTSTK"})
+            for opt in ("CE", "PE"):
+                rows.append({"script": f"X:R26{mon}100{opt}", "underlying_root": "R",
+                             "optionType": "CALL" if opt == "CE" else "PUT",
+                             "expiration": str(self._ns(2026, mth, day)),
+                             "scriptInstrumentType": "OPTSTK"})
+        tpl = tmp_path / "src.csv"
+        tpl.write_text("X:R26SEPFUT\nX:R26OCTFUT\n")
+        return self._idx(rows), tpl
+
+    def test_all_keeps_every_expiry(self, tmp_path):
+        from premarketv6 import baskets
+        idx, tpl = self._fixture(tmp_path)
+        rows = baskets._resolve_options_for_futures("t", tpl, idx, "20260907", near_only=False)
+        assert len(rows) == 4, "both months' options"
+
+    def test_near_keeps_only_the_nearest_future_month(self, tmp_path):
+        from premarketv6 import baskets
+        idx, tpl = self._fixture(tmp_path)
+        rows = baskets._resolve_options_for_futures("t", tpl, idx, "20260907", near_only=True)
+        assert len(rows) == 2
+        assert all("26SEP" in r["script"] for r in rows)
+
+    def test_all_keeps_options_whose_month_has_no_future(self, tmp_path):
+        """The MCX bullion case: a November GOLD option settles into December's
+        future, so its month contains no future at all. An ALL basket must keep
+        it -- month-filtering would silently drop thousands of real contracts."""
+        from premarketv6 import baskets
+        ns = self._ns
+        rows = [{"script": "X:G26DECFUT", "underlying_root": "G", "optionType": "",
+                 "expiration": str(ns(2026, 12, 5)), "scriptInstrumentType": "FUTCOM"},
+                {"script": "X:G26NOV50000CE", "underlying_root": "G", "optionType": "CALL",
+                 "expiration": str(ns(2026, 11, 25)), "scriptInstrumentType": "OPTFUT"}]
+        tpl = tmp_path / "src.csv"; tpl.write_text("X:G26DECFUT\n")
+        got = baskets._resolve_options_for_futures("t", tpl, self._idx(rows),
+                                                   "20260907", near_only=False)
+        assert [r["script"] for r in got] == ["X:G26NOV50000CE"]
+
+    def test_expired_options_are_excluded(self, tmp_path):
+        from premarketv6 import baskets
+        ns = self._ns
+        rows = [{"script": "X:R26SEPFUT", "underlying_root": "R", "optionType": "",
+                 "expiration": str(ns(2026, 9, 29)), "scriptInstrumentType": "FUTSTK"},
+                {"script": "X:R26AUG100CE", "underlying_root": "R", "optionType": "CALL",
+                 "expiration": str(ns(2026, 8, 27)), "scriptInstrumentType": "OPTSTK"}]
+        tpl = tmp_path / "src.csv"; tpl.write_text("X:R26SEPFUT\n")
+        got = baskets._resolve_options_for_futures("t", tpl, self._idx(rows),
+                                                   "20260907", near_only=False)
+        assert got == [], "an option that expired before as_of must not resolve"
+
+    def test_every_option_basket_names_a_real_futures_basket(self):
+        for name, (source, mic, _near) in paths.OPTION_BASKET_SOURCES.items():
+            assert name in paths.BASKET_NAMES, f"{name} not registered"
+            assert source in paths.BASKET_NAMES, f"{name} sources missing {source}"
+            assert mic in paths.FEED_OUTPUTS, f"{name} names unknown MIC {mic}"
+
+    def test_retired_mcx_baskets_are_gone(self):
+        """XIMC_OPTIONS_FUTURES_ALL subsumes them: it covers all 29 MCX roots,
+        including CRUDEOIL and MCXBULLDEX."""
+        assert not [b for b in paths.BASKET_NAMES if "NXTNEAREST" in b]
+        from premarketv6 import baskets
+        assert not hasattr(baskets, "_resolve_option_chain")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

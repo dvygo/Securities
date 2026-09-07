@@ -416,14 +416,41 @@ BASKET_NAMES = [
     "XNSE_INDEX_FUTURES_NEAR",
     "XBOM_INDEX_FUTURES",
     "XIMC_FUTURES_ALL",
-    "XIMC_CRUDE_NEAREST_NXTNEAREST",
-    "XIMC_BULLDEX_NEAREST_NXTNEAREST",
     "XNSE_NIFTY50_EQUITY",
     "XNSE_NIFTY100_EQUITY",
     "XNSE_NIFTY200_EQUITY",
     "XNSE_NIFTY500_EQUITY",
     "XNSE_NIFTY500_FUTURES",
+    # Option chains, one per futures basket above: the futures basket supplies
+    # the underlying roots, and every live option on those roots is emitted.
+    # A NEAR source narrows to the expiry month(s) its futures occupy; an ALL
+    # source takes every live option expiry, which is what "all" has to mean --
+    # MCX bullion options do not share months with their futures (a November
+    # GOLD option settles into the December future), so month-filtering an ALL
+    # basket would drop thousands of real contracts.
+    # These replace XIMC_CRUDE/BULLDEX_NEAREST_NXTNEAREST, which were the same
+    # idea hand-rolled for two roots; XIMC_OPTIONS_FUTURES_ALL covers all 29.
+    "XNSE_OPTIONS_NIFTYFNO_FUTURES_NEAR",
+    "XNSE_OPTIONS_NIFTYFNO_FUTURES_ALL",
+    "XNSE_OPTIONS_INDEX_FUTURES_NEAR",
+    "XNSE_OPTIONS_INDEX_FUTURES_ALL",
+    "XNSE_OPTIONS_NIFTY500_FUTURES",
+    "XBOM_OPTIONS_INDEX_FUTURES",
+    "XIMC_OPTIONS_FUTURES_ALL",
 ]
+
+# Option basket -> (futures basket it takes its roots from, MIC, near_only).
+# near_only mirrors the source futures basket's own roll: True means the source
+# resolved one expiry per root, so the options narrow to that month.
+OPTION_BASKET_SOURCES = {
+    "XNSE_OPTIONS_NIFTYFNO_FUTURES_NEAR": ("XNSE_NIFTYFNO_FUTURES_NEAR", "XNSE", True),
+    "XNSE_OPTIONS_NIFTYFNO_FUTURES_ALL":  ("XNSE_NIFTYFNO_FUTURES_ALL",  "XNSE", False),
+    "XNSE_OPTIONS_INDEX_FUTURES_NEAR":    ("XNSE_INDEX_FUTURES_NEAR",    "XNSE", True),
+    "XNSE_OPTIONS_INDEX_FUTURES_ALL":     ("XNSE_INDEX_FUTURES_ALL",     "XNSE", False),
+    "XNSE_OPTIONS_NIFTY500_FUTURES":      ("XNSE_NIFTY500_FUTURES",      "XNSE", False),
+    "XBOM_OPTIONS_INDEX_FUTURES":         ("XBOM_INDEX_FUTURES",         "XBOM", True),
+    "XIMC_OPTIONS_FUTURES_ALL":           ("XIMC_FUTURES_ALL",           "XIMC", False),
+}
 
 
 def promote_staging(temp_path, output_path) -> None:

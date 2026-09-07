@@ -24,12 +24,6 @@ EQ_TAIL_REGEX = re.compile(r"^[^:]+:(.+)-EQ$")
 FUT_TAIL_REGEX = re.compile(
     r"^[^:]+:(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))FUT$"
 )
-# "MCX:CRUDEOIL26AUG10000CE" -> "CRUDEOIL" (root non-greedy up to the first MONYY,
-# then strike digits, then CE/PE). Strike may be fractional (e.g. "...100.25PE").
-OPT_TAIL_REGEX = re.compile(
-    r"^[^:]+:(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))"
-    r"\d+(?:\.\d+)?(CE|PE)$"
-)
 
 
 def _load_basket_scripts(basket_file: Path) -> List[str]:
@@ -55,10 +49,6 @@ def _parse_fut_root(script: str) -> str:
     m = FUT_TAIL_REGEX.match(script.strip())
     return m.group(1).upper() if m else ""
 
-
-def _parse_opt_root(script: str) -> str:
-    m = OPT_TAIL_REGEX.match(script.strip())
-    return m.group(1).upper() if m else ""
 
 
 def _is_future_row(row: dict) -> bool:
@@ -240,33 +230,60 @@ def _resolve_index_futures(name: str, template: Path, idx: SymIndex, as_of: str,
     return rows
 
 
-def _resolve_option_chain(name: str, template: Path, idx: SymIndex, as_of: str, num_expiries: int) -> List[dict]:
-    """Roll an option-chain basket to its N nearest still-live expiries. The template
-    only supplies the underlying root(s) (parsed from any option script in it); the
-    concrete strikes/expiries in the file go stale and are ignored -- we re-pick the
-    num_expiries nearest distinct expiries from today's data and emit their full chains
-    (every CE/PE at every strike). Mirrors the futures roll, but keeps N expiries deep
-    and all strikes instead of collapsing to one contract per root."""
-    scripts = _load_basket_scripts(template)
+def _expiry_month(row: dict) -> str:
+    """The YYYY-MM a contract expires in, or "" if it carries no expiry.
+
+    Months, not exact dates, because an option and the future it settles into
+    rarely expire on the same day: MCX CRUDEOIL options expire 2026-09-17 and
+    the future 2026-09-21, and NSE index options run weekly against a monthly
+    future.
+    """
+    ns = _int_field(row, "expiration")
+    if ns <= 0:
+        return ""
+    return datetime.fromtimestamp(ns / 10**9, tz=timezone.utc).strftime("%Y-%m")
+
+
+def _resolve_options_for_futures(name: str, futures_template: Path, idx: SymIndex,
+                                 as_of: str, near_only: bool) -> List[dict]:
+    """Every live option on the underlyings of a futures basket.
+
+    The futures basket supplies the roots -- "NSE:RELIANCE26SEPFUT" means "give
+    me RELIANCE options" -- exactly as the futures rolls take their roots from a
+    spots basket. The frozen file's own expiries are ignored; today's data is
+    re-picked, so this stays correct as contracts roll.
+
+    near_only mirrors the source basket's roll. A NEAR source resolved one
+    expiry per root, so the options narrow to the month(s) those futures sit in.
+    An ALL source keeps every live option expiry -- month-filtering it would be
+    wrong, not merely narrower: MCX bullion options are monthly while their
+    futures are bi-monthly, so a November GOLD option (settling into December's
+    future) shares its month with no future at all.
+    """
+    scripts = _load_basket_scripts(futures_template)
     as_of_ns = _as_of_start_ns(as_of)
     rows, no_opt, seen = [], 0, set()
     for script in scripts:
-        root = _parse_opt_root(script)
+        root = _parse_fut_root(script)
         if not root or root in seen:
             continue
         seen.add(root)
 
         live = idx.live_options(root, as_of_ns)
+        if near_only:
+            months = {m for r in idx.live_futures(root, as_of_ns)
+                      if (m := _expiry_month(r))}
+            nearest = min(months) if months else ""
+            live = [r for r in live if _expiry_month(r) == nearest] if nearest else []
         if not live:
             no_opt += 1
             continue
-        keep = set(sorted({_int_field(r, "expiration") for r in live})[:num_expiries])
-        for r in sorted(live, key=lambda r: (_int_field(r, "expiration"), r.get("script", ""))):
-            if _int_field(r, "expiration") in keep:
-                rows.append(idx.to_contract_row(r, as_of))
+        rows.extend(idx.to_contract_row(r, as_of) for r in sorted(
+            live, key=lambda r: (_int_field(r, "expiration"), r.get("script", ""))))
     if no_opt:
-        print(f"    {name}: {no_opt}/{len(seen)} roots have no live option today")
+        print(f"    {name}: {no_opt}/{len(seen)} underlyings have no live option today")
     return rows
+
 
 
 def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
@@ -305,9 +322,11 @@ def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
         idx = _sym_index(as_of, "XIMC", cache)
         return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
 
-    if name in ("XIMC_CRUDE_NEAREST_NXTNEAREST", "XIMC_BULLDEX_NEAREST_NXTNEAREST"):
-        idx = _sym_index(as_of, "XIMC", cache)
-        return _resolve_option_chain(name, baskets_dir / f"{name}.csv", idx, as_of, num_expiries=2)
+    if name in paths.OPTION_BASKET_SOURCES:
+        source, mic, near_only = paths.OPTION_BASKET_SOURCES[name]
+        idx = _sym_index(as_of, mic, cache)
+        return _resolve_options_for_futures(
+            name, baskets_dir / f"{source}.csv", idx, as_of, near_only)
 
     if name == "ALL_INDEX_FUTURES":
         nse_rows = _resolve_index_futures(
