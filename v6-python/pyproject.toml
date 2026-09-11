@@ -8,7 +8,9 @@ version = "6.0.0"
 description = "Pre-market symbology/instrument data pipeline for financial markets"
 requires-python = ">=3.9"
 dependencies = [
-    "databento>=1.0.0",
+    # No 1.x has ever been published; >=1.0.0 made `pip install -e .` unresolvable.
+    # Floor matches requirements.txt's old one; 0.86.0 is the pinned, tested version.
+    "databento>=0.81.0",
     "psycopg[binary]>=3.1.0",
     "pandas>=2.0.0",
     "requests>=2.31.0",

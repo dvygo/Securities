@@ -1,8 +1,35 @@
-databento>=0.81.0
-psycopg[binary]>=3.1.0
-pandas>=2.0.0
-requests>=2.31.0
-pytz>=2024.1
-exchange-calendars>=4.5
-pytest>=7.0.0
-pytest-cov>=4.0.0
+# premarketv6 runtime dependencies.
+#
+# Pinned exactly (==) to the set verified green against the full test suite
+# (319 passed) on Python 3.12.14 / macOS arm64. Every package below is a DIRECT
+# import in this tree -- transitive deps are left to the resolver. To move a
+# pin: pip install -U <pkg>, run pytest, then update the line here.
+
+# Databento historical/live definition feeds (sources/databento_src.py).
+databento==0.86.0
+
+# Fyers symbol-master HTTP fetch (sources/fyers_src.py).
+requests==2.34.2
+
+# Postgres plugin push (plugin/postgres.py).
+psycopg[binary]==3.3.5
+
+# Parquet is the on-disk format for normalized/plugin output
+# (parquet_export.py, normalize/counter_token.py).
+pyarrow==25.0.1
+
+# ClickHouse HTTP client for the contracts push (clickhouse_export.py).
+# Was missing here entirely -- clickhouse_export.py imports it at call time, so
+# the gap only surfaced as 4 collection errors under pytest.
+clickhouse-connect==1.8.0
+
+# Basket/constituent resolution (baskets.py).
+pandas==3.0.5
+
+# Trading-session calendars (normalize/session.py, strategiesv6/STR04/loader.py).
+exchange-calendars==4.13.2
+pytz==2026.3.post1
+
+# --- dev / test ---
+pytest==9.1.1
+pytest-cov==7.1.0
