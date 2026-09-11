@@ -60,9 +60,18 @@ def create_parser() -> argparse.ArgumentParser:
             help="Include CSV header in output",
         )
 
-    # India (Fyers) subcommand
-    india_parser = subparsers.add_parser("india", help="Download Fyers Indian exchange data")
-    add_download_args(india_parser)
+    # India, two independent sources for the same exchanges.
+    #   fyers-india         the broker's symbol masters: XNSE, XBOM, XIMC
+    #   nse-original-india  NSE's own contract masters, as dropped by the broker
+    fyers_india_parser = subparsers.add_parser(
+        "fyers-india",
+        help="Download Fyers symbol masters for XNSE, XBOM and XIMC")
+    add_download_args(fyers_india_parser)
+
+    nse_original_parser = subparsers.add_parser(
+        "nse-original-india",
+        help="Check today's NSE contract-master drop (XNSE/NEW FILE FORMAT) is complete")
+    add_download_args(nse_original_parser)
 
     # Databento venue subcommands. The venue set, and whether --all-symbols is
     # on by default, both come from config.ini's [EXCHANGE:<CODE>] sections --
@@ -392,8 +401,8 @@ def main() -> int:
         return 1
 
     try:
-        if args.command == "india":
-            return run_download("india", args)
+        if args.command in ("fyers-india", "nse-original-india"):
+            return run_download(args.command, args)
         elif args.command in databento_src.VENUE_CONFIGS:
             raw_dates = getattr(args, "dates", None)
             if raw_dates and getattr(args, "today", False):

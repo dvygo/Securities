@@ -157,13 +157,18 @@ def download(opts: runner.Opts) -> None:
 
     # Download each segment
     for segment, source_file in segment_sources.items():
-        if segment not in paths.FYERS_RAW_SEGMENTS:
+        # Gate on the MIC map, not FYERS_RAW_SEGMENTS: the latter is only
+        # segment -> filename, while FYERS_SEGMENT_MIC is derived from
+        # FYERS_MIC_BUNDLES -- the segments some bundle actually owns. A segment
+        # dropped from its bundle is skipped here instead of reaching
+        # fyers_segment_path below and failing the whole step with a KeyError.
+        if segment not in paths.FYERS_SEGMENT_MIC:
             continue
 
         url = f"{cfg.base_url}/{source_file}"
-        # Each segment lands under the MIC bundle that owns it, so XNFO sits
-        # beside XNSE and XNCD in data/YYYYMMDD/XNSE/ -- one folder per thing
-        # normalize actually emits.
+        # Each segment lands under the MIC bundle that owns it, so XBSE sits
+        # beside XBFO in data/YYYYMMDD/XBOM/ -- one folder per thing normalize
+        # actually emits.
         output_path = paths.fyers_segment_path(opts.date_dir, segment)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 

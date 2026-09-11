@@ -190,9 +190,11 @@ hist_pin_latest_session = false
 hist_lookback_days = 7
 
 [EXCHANGE:XNSE]
-# NSE's own contract masters, dropped by the broker into
-# data/YYYYMMDD/XNSE/NEW FILE FORMAT/ (normalize/nse_contract.py). Fyers still
-# serves XBOM and XIMC below, but no longer XNSE.
+# Two sources. NSE's own contract masters, dropped by the broker into
+# data/YYYYMMDD/XNSE/NEW FILE FORMAT/ (normalize/nse_contract.py, checked by
+# `nse-original-india`), own this venue's counterTokenV2. Fyers serves XNSE too
+# (`fyers-india`), written as XNSE-FYERS.parquet without counterTokenV2 -- see
+# paths.VENUE_TOKEN_OWNER.
 feed = nse
 enabled = 1
 venue_id = 16

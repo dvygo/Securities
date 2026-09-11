@@ -2565,7 +2565,8 @@ class TestRecordedArtifacts:
 
 
 class TestNseContract:
-    """The exchange's own contract masters, which replace Fyers for XNSE.
+    """The exchange's own contract masters: the authoritative XNSE source,
+    alongside the Fyers view of the same venue.
 
     Three properties of this format cost real effort to establish and are the
     ones a regression would silently break: the 1980 epoch, the per-segment
@@ -2729,10 +2730,117 @@ class TestNseContract:
         assert {nc.CM_FILE, nc.FO_FILE, nc.CD_FILE} == {
             nc.CM_FILE, nc.FO_FILE, nc.CD_FILE}
 
-    def test_xnse_no_longer_comes_from_fyers(self):
-        """Both steps writing the venue would let the later one silently win."""
-        assert "XNSE" not in paths.FYERS_MIC_BUNDLES
-        assert set(paths.FYERS_MIC_BUNDLES) == {"XBOM", "XIMC"}
+    # -- two sources for XNSE --------------------------------------------
+
+    def test_fyers_covers_xnse_xbom_and_ximc(self):
+        """fyers-india is the whole Fyers footprint again, XNSE included."""
+        assert set(paths.FYERS_MIC_BUNDLES) == {"XNSE", "XBOM", "XIMC"}
+        assert paths.FYERS_SEGMENT_MIC == {
+            "xnse": "XNSE", "xnfo": "XNSE", "xncd": "XNSE",
+            "xbse": "XBOM", "xbfo": "XBOM", "xmcx": "XIMC"}
+
+    def test_every_fyers_segment_routes_under_its_mic(self, tree):
+        for segment, mic in paths.FYERS_SEGMENT_MIC.items():
+            path = paths.fyers_segment_path("20260911", segment)
+            assert path.parent == paths.venue_dir("20260911", mic)
+            assert path.name == paths.FYERS_RAW_SEGMENTS[segment]
+
+    def test_xnse_manifest_has_exactly_one_owner(self):
+        """Both steps emit XNSE but manifests/XNSE.json is one file. The owner
+        must name a real step, or the arbitration silently stops applying."""
+        import inspect
+        from premarketv6.normalize import fields
+        assert paths.VENUE_TOKEN_OWNER == {"XNSE": "normalize-nse-contract"}
+        source = inspect.getsource(runner.build_normalizer_steps)
+        assert f'Step("{fields.STEP_NAME}"' in source
+        for owner in paths.VENUE_TOKEN_OWNER.values():
+            assert f'Step("{owner}"' in source
+            assert owner != fields.STEP_NAME
+
+    def _fyers_day(self, monkeypatch, day, mics):
+        """Raw bundle dirs plus a stubbed parser, so fields.run is exercised for
+        real without hand-building Fyers wire rows."""
+        from premarketv6.normalize import fields
+        for mic in mics:
+            _out, _table, sources = paths.FYERS_MIC_BUNDLES[mic]
+            d = paths.venue_dir(day, mic)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / sources[0]).write_text("stub")
+        monkeypatch.setattr(fyers_src, "parse_fyers_csv",
+                            lambda path: [{"script": "A"}, {"script": "B"}])
+        monkeypatch.setattr(fields, "map_fyers_row",
+                            lambda raw: {"script": raw["script"], "exchange": "X"})
+        fields.run(runner.Opts(as_of=day, date_dir=day, venues=tuple(mics)))
+
+    def test_fyers_xnse_defers_counter_token_v2_to_the_owner(self, tree, monkeypatch):
+        from premarketv6 import parquet_export
+        day = "20260911"
+        self._fyers_day(monkeypatch, day, ["XNSE"])
+        out = paths.normalized_dir(day) / "XNSE-FYERS.parquet"
+        rows = parquet_export.read_rows(out)
+        assert [str(r["counterToken"]) for r in rows] == ["1", "2"]
+        assert all(not r["counterTokenV2"] for r in rows)
+        assert not (counter_token.manifests_dir(day) / "XNSE.json").exists()
+
+    def test_fyers_still_owns_the_venues_nobody_else_emits(self, tree, monkeypatch):
+        """Control: the guard is XNSE-specific, not a blanket skip."""
+        from premarketv6 import parquet_export
+        day = "20260911"
+        self._fyers_day(monkeypatch, day, ["XBOM"])
+        rows = parquet_export.read_rows(paths.normalized_dir(day) / "XBOM-FYERS.parquet")
+        assert all(r["counterTokenV2"] for r in rows)
+        assert (counter_token.manifests_dir(day) / "XBOM.json").exists()
+
+    # -- nse-original-india: the drop check ------------------------------
+
+    def _drop(self, day, files):
+        from premarketv6.normalize import nse_contract as nc
+        d = nc.drop_dir(day)
+        d.mkdir(parents=True)
+        for name, body in files.items():
+            (d / name).write_text(body)
+        return nc
+
+    def test_check_fails_when_the_drop_folder_is_absent(self, tree):
+        from premarketv6.sources import nse_original
+        with pytest.raises(FileNotFoundError, match="no NSE contract drop"):
+            nse_original.run(runner.Opts(as_of="20260911", date_dir="20260911"))
+
+    def test_check_fails_on_a_partial_drop(self, tree):
+        from premarketv6.normalize import nse_contract as nc
+        from premarketv6.sources import nse_original
+        self._drop("20260911", {nc.CM_FILE: "a,b\n1,2\n", nc.FO_FILE: "a,b\n1,2\n"})
+        with pytest.raises(RuntimeError, match="NSE_CD_contract.csv missing"):
+            nse_original.run(runner.Opts(as_of="20260911", date_dir="20260911"))
+
+    def test_check_fails_on_a_header_only_file(self, tree):
+        from premarketv6.normalize import nse_contract as nc
+        from premarketv6.sources import nse_original
+        self._drop("20260911", {nc.CM_FILE: "a,b\n1,2\n", nc.FO_FILE: "a,b\n",
+                                nc.CD_FILE: "a,b\n1,2\n"})
+        with pytest.raises(RuntimeError, match="NSE_FO_contract.csv has no rows"):
+            nse_original.run(runner.Opts(as_of="20260911", date_dir="20260911"))
+
+    def test_check_passes_and_counts_a_complete_drop(self, tree, capsys):
+        from premarketv6.normalize import nse_contract as nc
+        from premarketv6.sources import nse_original
+        self._drop("20260911", {nc.CM_FILE: "a,b\n1,2\n3,4\n",
+                                nc.FO_FILE: "a,b\n1,2\n", nc.CD_FILE: "a,b\n1,2\n"})
+        nse_original.run(runner.Opts(as_of="20260911", date_dir="20260911"))
+        out = capsys.readouterr().out
+        assert "2 rows  OK" in out and "drop complete" in out
+
+    # -- the two sibling commands -----------------------------------------
+
+    def test_india_is_split_into_two_sibling_commands(self):
+        from premarketv6 import cli
+        parser = cli.create_parser()
+        assert parser.parse_args(["fyers-india"]).command == "fyers-india"
+        assert parser.parse_args(["nse-original-india"]).command == "nse-original-india"
+        with pytest.raises(SystemExit):
+            parser.parse_args(["india"])
+        assert [s.name for s in runner.build_download_steps("fyers-india")] == ["download-fyers-india"]
+        assert [s.name for s in runner.build_download_steps("nse-original-india")] == ["check-nse-original"]
 
 
 if __name__ == "__main__":

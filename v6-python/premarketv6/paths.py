@@ -345,11 +345,35 @@ FYERS_RAW_SEGMENTS = {
 FYERS_MIC_BUNDLES = {
     # First element is the NORMALIZED output (Parquet); the list is the RAW Fyers
     # CSVs it is built from, which stay CSV because that is what the vendor ships.
-    # XNSE is NOT here: it comes from the exchange's own contract masters now
-    # (normalize/nse_contract.py), not from Fyers. Leaving it would have both
-    # steps write the venue and the later one silently win.
+    # XNSE is here again: `fyers-india` covers the whole Fyers footprint, so the
+    # broker's own NSE view is downloaded and normalized alongside XBOM/XIMC.
+    # It does NOT displace normalize/nse_contract.py -- that step reads the
+    # exchange's own contract masters and stays the authority for XNSE. The two
+    # emit different files (XNSE-FYERS.parquet vs XNSE-NSE.parquet), but they
+    # would otherwise both write the single manifests/XNSE.json; VENUE_TOKEN_OWNER
+    # below settles that explicitly instead of letting step order decide it.
+    "XNSE": ("XNSE-FYERS.parquet", "xnse", ["XNSE-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv"]),
     "XBOM": ("XBOM-FYERS.parquet", "xbom", ["XBSE-FYERS.csv", "XBFO-FYERS.csv"]),  # BSE -> XBOM MIC
     "XIMC": ("XIMC-FYERS.parquet", "ximc", ["XMCX-FYERS.csv"]),
+}
+
+# MIC -> the ONE step allowed to write that venue's counter-token manifest.
+#
+# A MIC emitted by a single step is absent here and needs no arbitration. XNSE
+# is the exception: both normalize-fyers and normalize-nse-contract produce it,
+# and manifests/XNSE.json is one file with one allocation table. Without an
+# owner the later step overwrites the earlier one's table, so scripts that only
+# appear in the loser's feed lose their allocation and counterTokenV2 redraws a
+# new number for them tomorrow -- exactly the cross-date instability that token
+# is supposed to rule out.
+#
+# The exchange's own masters win because they are the authoritative universe;
+# the Fyers view is a second opinion on the same instruments. The non-owner
+# still writes its Parquet and still fills the positional counterToken (which is
+# per-output-file and explicitly not joinable across venues or dates); it leaves
+# counterTokenV2 blank rather than minting numbers it cannot durably record.
+VENUE_TOKEN_OWNER = {
+    "XNSE": "normalize-nse-contract",
 }
 
 # Segment -> owning MIC bundle, derived from FYERS_MIC_BUNDLES so a segment can

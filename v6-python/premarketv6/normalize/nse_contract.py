@@ -1,7 +1,10 @@
 """NSE official contract masters -> the canonical schema, for XNSE.
 
-Replaces the three Fyers CSVs (XNSE/XNFO/XNCD) with the exchange's own files,
-which the broker drops in as a folder each day:
+The authoritative XNSE source, read from the exchange's own files, which the
+broker drops in as a folder each day (`nse-original-india` checks the drop is
+complete). Fyers' XNSE/XNFO/XNCD CSVs are still normalized alongside it as
+XNSE-FYERS.parquet, but this step owns manifests/XNSE.json -- see
+paths.VENUE_TOKEN_OWNER:
 
     data/YYYYMMDD/XNSE/NEW FILE FORMAT/
         NSE_CM_security.csv     cash market      -> equities, ETFs, debt, G-secs
@@ -29,9 +32,9 @@ the strike encoded in the contract name (EURINR26O09116.25CE carries StrkPric
 currency file and does NOT give the scale; do not trust it.
 
 EXPIRY TIME IS NOT IN THE FILE. XpryDt lands at 20:00 IST. The pipeline's
-convention, inherited from the Fyers feed this replaces, is the session close:
+convention, inherited from the Fyers feed, is the session close:
 10:10 UTC for F&O and 07:00 UTC for currency. Converting the date and applying
-the segment's close reproduces the previous feed's timestamps exactly.
+the segment's close reproduces the Fyers feed's timestamps exactly.
 """
 import csv
 import datetime as dt

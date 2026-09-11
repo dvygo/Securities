@@ -11,7 +11,7 @@ builds the plugin Parquet the downstream symbol-master consumes.
 | `XCME` | CME Globex futures/options | Databento `GLBX.MDP3` | 00:00–01:00 | 05:30–06:30 |
 | `XNAS` | US equities | Databento `EQUS.MINI` | 05:00–06:00 | 10:30–11:30 |
 | `XCBO` | US options | Databento `OPRA.PILLAR` | 10:00–11:00 | 15:30–16:30 |
-| `XNSE` | NSE India (cash, F&O, currency) | NSE contract masters, dropped by the broker | — | — |
+| `XNSE` | NSE India (cash, F&O, currency) | NSE contract masters, dropped by the broker (authoritative) · Fyers (second view) | — | — |
 | `XBOM` | BSE India | Fyers | — | — |
 | `XIMC` | MCX India | Fyers | — | — |
 
@@ -34,7 +34,8 @@ Download, then normalize:
 python -m premarketv6 xcme --all-symbols --today
 python -m premarketv6 xnas --all-symbols --today
 python -m premarketv6 xcbo --all-symbols --today
-python -m premarketv6 india
+python -m premarketv6 fyers-india
+python -m premarketv6 nse-original-india
 
 python -m premarketv6 normalize --plugin --csv-only
 ```
@@ -57,7 +58,10 @@ data/YYYYMMDD/
   XCME/  glbx-mdp3-YYYYMMDD.definition.dbn.zst      raw vendor payload
   XNAS/  equs-mini-YYYYMMDD.definition.dbn.zst
   XCBO/  opra-pillar-YYYYMMDD.definition.dbn.zst
-  XNSE/  NEW FILE FORMAT/                            NSE contract masters
+  XNSE/  NEW FILE FORMAT/                            NSE contract masters (broker drop)
+         XNSE-FYERS.csv XNFO-FYERS.csv XNCD-FYERS.csv  Fyers NSE segments
+  XBOM/  XBSE-FYERS.csv XBFO-FYERS.csv
+  XIMC/  XMCX-FYERS.csv
   v6/
     normalized/   <MIC>-<SOURCE>.parquet             one file per venue
     plugin/       <MIC>-<SOURCE>.parquet             legacy symbol-master shape
@@ -65,6 +69,41 @@ data/YYYYMMDD/
                   <MIC>.alloc.parquet                the venue's token allocation
                   _sequence.json                     the day's shared counter
 ```
+
+## India: two sources, two commands
+
+India is served twice, by independent sources, as two sibling commands.
+
+| Command | What it does | Covers | Normalized by | Output |
+|---------|--------------|--------|---------------|--------|
+| `fyers-india` | Downloads the Fyers symbol masters from `[fyers] base_url` | XNSE, XBOM, XIMC | `normalize-fyers` | `XNSE-FYERS.parquet`, `XBOM-FYERS.parquet`, `XIMC-FYERS.parquet` |
+| `nse-original-india` | **Checks** the broker's NSE drop is complete — downloads nothing | XNSE | `normalize-nse-contract` | `XNSE-NSE.parquet` |
+
+`nse-original-india` is a check, not a download: there is no NSE source URL. The
+broker drops the exchange's own contract masters into
+`data/YYYYMMDD/XNSE/NEW FILE FORMAT/`, and the command reports each file's row
+count and exits non-zero if the drop is missing, partial, or empty.
+
+| File | Segment | Instruments |
+|------|---------|-------------|
+| `NSE_CM_security.csv` | Cash market | equities, ETFs, debt, G-secs |
+| `NSE_FO_contract.csv` | Futures & options | FUTIDX, FUTSTK, OPTIDX, OPTSTK |
+| `NSE_CD_contract.csv` | Currency derivatives | FUTCUR, OPTCUR, FUTIRC, FUTIRT |
+
+Anything else in that folder (`contract.txt`, `security.txt`, the two
+`spdcontract` files, `fo_participant.txt`) is ignored on purpose — see
+`normalize/nse_contract.py`.
+
+`normalize-nse-contract` itself still skips quietly when the drop is absent, so one
+late venue cannot fail a whole normalize run. Run `nse-original-india` first when
+you need to know the files actually landed.
+
+**Who numbers XNSE.** Both steps emit XNSE, but `manifests/XNSE.json` is one file.
+`paths.VENUE_TOKEN_OWNER` gives it to `normalize-nse-contract`, the exchange's own
+universe. `XNSE-FYERS.parquet` is still written with its positional `counterToken`,
+but its `counterTokenV2` is left blank — minting stable numbers the owner would
+overwrite would break the very cross-date stability that token exists for. Join
+across dates on `XNSE-NSE.parquet`.
 
 ## counterTokenV2
 

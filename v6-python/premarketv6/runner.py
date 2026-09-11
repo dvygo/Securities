@@ -65,12 +65,13 @@ def expand_only(only: List[str], all_steps: List[Step]) -> List[Step]:
         "fyers": ["normalize-fyers"],
         "databento": ["normalize-databento"],
         "nse": ["normalize-nse"],
-        "india": ["download-india"],
+        "fyers-india": ["download-fyers-india"],
+        "nse-original-india": ["check-nse-original"],
         "xcme": ["download-xcme"],
         "xcbo": ["download-xcbo"],
         "xnas": ["download-xnas"],
-        "live": ["download-india-live", "download-xcme-live", "download-xcbo-live", "download-xnas-live"],
-        "hist": ["download-india-hist", "download-xcme-hist", "download-xcbo-hist", "download-xnas-hist"],
+        "live": ["download-fyers-india-live", "download-xcme-live", "download-xcbo-live", "download-xnas-live"],
+        "hist": ["download-fyers-india-hist", "download-xcme-hist", "download-xcbo-hist", "download-xnas-hist"],
         "normalize": [
             "normalize-fyers",
             "normalize-nse",
@@ -187,15 +188,22 @@ def build_normalizer_steps(
 
 
 def build_download_steps(
-    venue: str,  # "india", "xcme", "xcbo", "xnas"
+    venue: str,  # "fyers-india", "nse-original-india", "xcme", "xcbo", "xnas"
     mode: Optional[str] = None,  # "live" or "hist" or None for both
 ) -> List[Step]:
     """Build download steps for a given venue."""
-    from .sources import fyers_src, databento_src
+    from .sources import fyers_src, databento_src, nse_original
 
-    if venue == "india":
+    if venue == "fyers-india":
+        # Every segment Fyers serves: XNSE (cash, F&O, currency), XBOM, XIMC.
         return [
-            Step("download-india", lambda opts: fyers_src.download(opts)),
+            Step("download-fyers-india", lambda opts: fyers_src.download(opts)),
+        ]
+    elif venue == "nse-original-india":
+        # Not a download: NSE's own masters arrive as a broker drop, so this
+        # confirms today's drop is complete (sources/nse_original.py).
+        return [
+            Step("check-nse-original", nse_original.run),
         ]
     elif venue == "xcme":
         steps = []

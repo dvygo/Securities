@@ -7,6 +7,10 @@ from .. import config, parquet_export, paths, runner
 from ..sources import fyers_src
 from . import broker_script, counter_token, price, session
 
+# This module's runner step name. Compared against paths.VENUE_TOKEN_OWNER to
+# decide whether this step may write a venue's counter-token manifest.
+STEP_NAME = "normalize-fyers"
+
 
 # Broad category for scriptInstrumentType2.
 def instrument_type2(inst_type: str) -> str:
@@ -202,32 +206,43 @@ def run(opts: runner.Opts) -> None:
             for n, row in enumerate(all_rows, 1):
                 row["counterToken"] = str(n)
 
-            # counterTokenV2: stable across days. Every row is already in
-            # memory here, so the whole symbol set is known and the carry-
-            # forward needs no extra pass.
-            try:
-                previous, prev_day = counter_token.opening_tokens(
-                    opts.date_dir, mic, exchange_cfg.venue_id)
-            except ValueError as exc:
-                print(f"  CRITICAL: skipping Fyers {mic} -- {exc}")
-                continue
-            scripts = [r.get("script", "") for r in all_rows]
-            sequence, seq_from = counter_token.open_sequence(opts.date_dir)
-            counter_token.check_capacity(mic, sequence.issued, len(scripts))
-            tokens = counter_token.carry_forward(
-                previous, scripts, exchange_cfg.venue_id, sequence)
-            for row in all_rows:
-                row["counterTokenV2"] = tokens.token(row.get("script", ""))
+            # XNSE is emitted by normalize-nse-contract too, and that step owns
+            # manifests/XNSE.json (paths.VENUE_TOKEN_OWNER). Minting counterTokenV2
+            # here as well would draw live numbers from the shared sequence and then
+            # have them overwritten when the owner rewrites the allocation table, so
+            # the non-owner stops at the positional counterToken above.
+            owner = paths.VENUE_TOKEN_OWNER.get(mic)
+            if owner is not None and owner != STEP_NAME:
+                print(f"    {mic} counterTokenV2: skipped -- {owner} owns "
+                      f"manifests/{mic}.json; {output_csv} carries the "
+                      f"positional counterToken only")
+            else:
+                # counterTokenV2: stable across days. Every row is already in
+                # memory here, so the whole symbol set is known and the carry-
+                # forward needs no extra pass.
+                try:
+                    previous, prev_day = counter_token.opening_tokens(
+                        opts.date_dir, mic, exchange_cfg.venue_id)
+                except ValueError as exc:
+                    print(f"  CRITICAL: skipping Fyers {mic} -- {exc}")
+                    continue
+                scripts = [r.get("script", "") for r in all_rows]
+                sequence, seq_from = counter_token.open_sequence(opts.date_dir)
+                counter_token.check_capacity(mic, sequence.issued, len(scripts))
+                tokens = counter_token.carry_forward(
+                    previous, scripts, exchange_cfg.venue_id, sequence)
+                for row in all_rows:
+                    row["counterTokenV2"] = tokens.token(row.get("script", ""))
 
-            reused = len(tokens.assigned) - (
-                0 if previous is None
-                else len(set(tokens.assigned) & set(previous.assigned)))
-            print(f"    {mic} counterTokenV2: {len(tokens.assigned):,} symbol(s), "
-                  f"{reused:,} new, {sequence.drawn:,} drawn from the shared "
-                  f"sequence (now {sequence.issued:,})"
-                  + (", continuing today's earlier run" if prev_day == opts.date_dir
-                  else f", carried from {prev_day}" if previous else ", first day")
-                  + (f", sequence from {seq_from}" if seq_from else ", sequence from 1"))
+                reused = len(tokens.assigned) - (
+                    0 if previous is None
+                    else len(set(tokens.assigned) & set(previous.assigned)))
+                print(f"    {mic} counterTokenV2: {len(tokens.assigned):,} symbol(s), "
+                      f"{reused:,} new, {sequence.drawn:,} drawn from the shared "
+                      f"sequence (now {sequence.issued:,})"
+                      + (", continuing today's earlier run" if prev_day == opts.date_dir
+                      else f", carried from {prev_day}" if previous else ", first day")
+                      + (f", sequence from {seq_from}" if seq_from else ", sequence from 1"))
 
         # Write normalized Parquet
         output_path = normalized_dir / output_csv
