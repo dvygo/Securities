@@ -29,9 +29,50 @@ import clickhouse_connect
 
 from . import config, export, paths, runner
 
-# Rows per INSERT. Matches export.CONTRACT_BATCH_ROWS -- the iterator already
-# yields in that unit, so this is here to name the intent, not to re-chunk.
-EXPORT_BATCH_ROWS = export.CONTRACT_BATCH_ROWS
+# Rows per INSERT. Deliberately NOT export.CONTRACT_BATCH_ROWS (50,000): that
+# number is about how much the exporter holds in memory here, and this one is
+# about how much the SERVER holds per query, which is a far tighter budget.
+#
+# A contract row is 96 columns wide, and a MergeTree insert carries write
+# buffers per column, so server memory scales with the rows in one INSERT and
+# barely at all with their byte size. Measured on 2026-09-15 from
+# system.query_log: one 20,118-row INSERT peaked at 511.52 MiB against a
+# max_memory_usage of 512 MiB and died with MEMORY_LIMIT_EXCEEDED (code 241),
+# on a payload of only ~3 MiB of actual characters.
+#
+# 5,000 rows puts the same insert near 130 MiB, leaving room for the server to
+# be doing something else at the same time. Raise it only against the query_log
+# figure, not by eye.
+EXPORT_BATCH_ROWS = 5_000
+
+# Keep every part of these tables in Compact format, whatever its size.
+#
+# A contract row is 96 columns. In Wide format ClickHouse gives each column its
+# own stream, with its own read/write and compression buffers, so the cost of
+# touching a part scales with the column count and not with the bytes in it --
+# and both inserts and background merges pay it. The server default flips a part
+# to Wide at 10 MiB (min_bytes_for_wide_part), which this table crosses almost
+# immediately.
+#
+# Measured on 2026-09-15 against a server capped at 768 MiB total: ONE merge of
+# these parts held 607.51 MiB, leaving so little headroom that a 4 MiB insert
+# allocation was picked off by the OvercommitTracker. Compact keeps all columns
+# in a single stream, so the per-column multiplier disappears.
+#
+# The trade is that a Compact part reads every column to serve any of them. For
+# a mirror of this size (~136k rows, ~6 MiB) that is not a cost worth paying
+# attention to; running at all is.
+COMPACT_PARTS_SETTINGS = "min_bytes_for_wide_part = 1073741824, min_rows_for_wide_part = 0"
+
+# Basket rows per INSERT. Far smaller than EXPORT_BATCH_ROWS because a basket
+# row carries an entire constituent list, not one instrument: the row count is
+# meaningless here and the array contents are the whole payload.
+# One basket per INSERT. At 5 the load reached 30 of 38 rows and then timed out
+# client-side with nothing in the server's query_log -- the request carrying the
+# 66,472-script basket simply took longer than the socket would wait. One row at
+# a time bounds a request by the largest single basket instead of by whichever
+# happen to land in the same chunk.
+BASKET_BATCH_ROWS = 1
 
 # Canonical columns holding an integer. Everything else in CONTRACT_COLUMNS is
 # String. These are Nullable because they legitimately go blank -- tickSize is
@@ -145,7 +186,8 @@ def _drop_create(client, database: str, table: str, column_ddl: Sequence[tuple],
     client.command(f'DROP TABLE IF EXISTS "{database}"."{table}"')
     client.command(
         f'CREATE TABLE "{database}"."{table}" (\n    {cols_sql}\n) '
-        f"ENGINE = MergeTree ORDER BY ({order_by})"
+        f"ENGINE = MergeTree ORDER BY ({order_by}) "
+        f"SETTINGS {COMPACT_PARTS_SETTINGS}"
     )
 
 
@@ -160,7 +202,8 @@ def _ensure_target(client, database: str, table: str, column_ddl: Sequence[tuple
     cols_sql = ",\n    ".join(f'"{name}" {ddl}' for name, ddl in column_ddl)
     client.command(
         f'CREATE TABLE IF NOT EXISTS "{database}"."{table}" (\n    {cols_sql}\n) '
-        f"ENGINE = MergeTree ORDER BY ({order_by})"
+        f"ENGINE = MergeTree ORDER BY ({order_by}) "
+        f"SETTINGS {COMPACT_PARTS_SETTINGS}"
     )
 
 
@@ -237,8 +280,24 @@ def push_contracts(client, database: str, date_dir: str) -> int:
     current_staging = _staging_name(CURRENT_CONTRACTS_TABLE)
     _ensure_target(client, database, CURRENT_CONTRACTS_TABLE, column_ddl, order_by)
     _drop_create(client, database, current_staging, column_ddl, order_by)
+    # Filled server-side from the dated table so the rows are not re-read over
+    # HTTP -- but the server's per-query memory ceiling applies here exactly as
+    # it does to the batched inserts above, and this statement is not batched by
+    # anything on our side. ClickHouse squashes an INSERT ... SELECT into blocks
+    # of min_insert_block_size_rows (~1.05M) before writing, and at 96 columns
+    # that took this query to 511.03 MiB against a 512 MiB cap on 2026-09-15
+    # (MEMORY_LIMIT_EXCEEDED, code 241) -- leaving the dated table loaded and the
+    # mirror empty, which is the worst of the two outcomes. Capping the read and
+    # write blocks holds it to the same budget the client-side inserts respect.
     client.command(
-        f'INSERT INTO "{database}"."{current_staging}" SELECT * FROM "{database}"."{dated}"'
+        f'INSERT INTO "{database}"."{current_staging}" SELECT * FROM "{database}"."{dated}"',
+        settings={
+            "max_block_size": EXPORT_BATCH_ROWS,
+            "max_insert_block_size": EXPORT_BATCH_ROWS,
+            "min_insert_block_size_rows": EXPORT_BATCH_ROWS,
+            # Bytes threshold squashes blocks back together on its own.
+            "min_insert_block_size_bytes": 0,
+        },
     )
     _swap_into_place(client, database, current_staging, CURRENT_CONTRACTS_TABLE)
     print(f"    Pushed {total} rows -> {database}.{CURRENT_CONTRACTS_TABLE} (current mirror)")
@@ -266,12 +325,19 @@ def push_baskets(client, database: str, date_dir: str) -> int:
         staging = _staging_name(target)
         _ensure_target(client, database, target, BASKET_COLUMN_DDL, order_by)
         _drop_create(client, database, staging, BASKET_COLUMN_DDL, order_by)
-        client.insert(
-            table=staging,
-            database=database,
-            column_names=BASKET_COLUMNS,
-            data=[[r["date"], r["basket"], r["scripts"]] for r in rows],
-        )
+        # Chunked for the same reason the contract rows are, but the unit is
+        # tiny because a basket row is not: `scripts` is an Array(String) holding
+        # every constituent, so 38 rows carried 301,833 scripts (~6.3 MiB) on
+        # 2026-09-15 and went twice, once per target. As one INSERT that timed
+        # out against this server; a few rows at a time does not.
+        for i in range(0, len(rows), BASKET_BATCH_ROWS):
+            chunk = rows[i:i + BASKET_BATCH_ROWS]
+            client.insert(
+                table=staging,
+                database=database,
+                column_names=BASKET_COLUMNS,
+                data=[[r["date"], r["basket"], r["scripts"]] for r in chunk],
+            )
         _swap_into_place(client, database, staging, target)
         print(f"    Pushed {len(rows)} baskets -> {database}.{target}")
 
@@ -287,6 +353,18 @@ def connect(cfg: Optional[config.ClickHouseCfg] = None):
         username=cfg.username,
         password=cfg.password,
         secure=cfg.secure,
+        settings={
+            # The server profile has async_insert = 1, which is meant for many
+            # small concurrent inserts and coalesces them in a server-side
+            # buffer. This loader does the opposite: a few large batched inserts
+            # from one writer, where the buffer is pure overhead that counts
+            # against the server-wide ceiling (768 MiB here). On 2026-09-15 that
+            # ceiling, not the per-query one, is what stopped the load partway
+            # through -- and shrinking the batches made it worse, because it
+            # bought more inserts to buffer. Synchronous inserts write their part
+            # and release, so memory tracks one batch rather than the whole run.
+            "async_insert": 0,
+        },
     )
     client.command(f'CREATE DATABASE IF NOT EXISTS "{cfg.database}"')
     return client
