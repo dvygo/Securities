@@ -238,7 +238,7 @@ class ManifestCorrupt(ValueError):
 
 
 def manifests_dir(as_of: str) -> Path:
-    """data/YYYYMMDD/v6/manifests/ -- a header and a table per venue."""
+    """data/YYYYMMDD/TRANSFORM/manifests/ -- a header and a table per venue."""
     return paths.day_dir(as_of) / "manifests"
 
 

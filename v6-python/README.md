@@ -11,9 +11,25 @@ builds the plugin Parquet the downstream symbol-master consumes.
 | `XCME` | CME Globex futures/options | Databento `GLBX.MDP3` | 00:00–01:00 | 05:30–06:30 |
 | `XNAS` | US equities | Databento `EQUS.MINI` | 05:00–06:00 | 10:30–11:30 |
 | `XCBO` | US options | Databento `OPRA.PILLAR` | 10:00–11:00 | 15:30–16:30 |
-| `XNSE` | NSE India (cash, F&O, currency) | NSE contract masters, dropped by the broker (authoritative) · Fyers (second view) | — | — |
+| `XNSE` | NSE India (cash, F&O, currency) | Fyers *or* NSE contract masters — see below | — | — |
 | `XBOM` | BSE India | Fyers | — | — |
 | `XIMC` | MCX India | Fyers | — | — |
+
+`XNSE` is the one venue two feeds can serve, and `conf/config.ini` picks which:
+
+```ini
+[EXCHANGE:XNSE]
+feed = fyers   ; Fyers CDN (NSE_CM/FO/CD)      -> XNSE-FYERS.parquet
+# feed = nse   ; NSE's own contract masters    -> XNSE-NSE.parquet
+```
+
+That value is the whole switch. A normalize step runs a venue only when it owns
+it, so the two never both write `XNSE`, and baskets resolve the filename through
+the same setting rather than assuming a vendor. Under `feed = fyers` the
+`NEW FILE FORMAT/` drop is ignored; under `feed = nse` the Fyers NSE segments are
+not downloaded. Switching costs no tokens — the carry-forward keys on the script,
+not the source, so a swap keeps every symbol's `counterTokenV2` and draws nothing
+new from the shared sequence.
 
 **The venues do not arrive together.** A full day is not available before roughly
 **16:30 IST**, because OPRA publishes last. The pipeline is built for this: run
@@ -34,8 +50,7 @@ Download, then normalize:
 python -m premarketv6 xcme --all-symbols --today
 python -m premarketv6 xnas --all-symbols --today
 python -m premarketv6 xcbo --all-symbols --today
-python -m premarketv6 fyers-india
-python -m premarketv6 nse-original-india
+python -m premarketv6 india
 
 python -m premarketv6 normalize --plugin --csv-only
 ```
@@ -58,52 +73,16 @@ data/YYYYMMDD/
   XCME/  glbx-mdp3-YYYYMMDD.definition.dbn.zst      raw vendor payload
   XNAS/  equs-mini-YYYYMMDD.definition.dbn.zst
   XCBO/  opra-pillar-YYYYMMDD.definition.dbn.zst
-  XNSE/  NEW FILE FORMAT/                            NSE contract masters (broker drop)
-         XNSE-FYERS.csv XNFO-FYERS.csv XNCD-FYERS.csv  Fyers NSE segments
-  XBOM/  XBSE-FYERS.csv XBFO-FYERS.csv
-  XIMC/  XMCX-FYERS.csv
-  v6/
+  XNSE/  XNSE-FYERS.csv XNFO-FYERS.csv XNCD-FYERS.csv   when feed = fyers
+         NEW FILE FORMAT/                            when feed = nse
+  TRANSFORM/                                       everything derived from the above
     normalized/   <MIC>-<SOURCE>.parquet             one file per venue
     plugin/       <MIC>-<SOURCE>.parquet             legacy symbol-master shape
+                  tokenmap/tokenmap.<MIC>.bin        MDF's binary token map
     manifests/    <MIC>.json                         header: the completion record
                   <MIC>.alloc.parquet                the venue's token allocation
                   _sequence.json                     the day's shared counter
 ```
-
-## India: two sources, two commands
-
-India is served twice, by independent sources, as two sibling commands.
-
-| Command | What it does | Covers | Normalized by | Output |
-|---------|--------------|--------|---------------|--------|
-| `fyers-india` | Downloads the Fyers symbol masters from `[fyers] base_url` | XNSE, XBOM, XIMC | `normalize-fyers` | `XNSE-FYERS.parquet`, `XBOM-FYERS.parquet`, `XIMC-FYERS.parquet` |
-| `nse-original-india` | **Checks** the broker's NSE drop is complete — downloads nothing | XNSE | `normalize-nse-contract` | `XNSE-NSE.parquet` |
-
-`nse-original-india` is a check, not a download: there is no NSE source URL. The
-broker drops the exchange's own contract masters into
-`data/YYYYMMDD/XNSE/NEW FILE FORMAT/`, and the command reports each file's row
-count and exits non-zero if the drop is missing, partial, or empty.
-
-| File | Segment | Instruments |
-|------|---------|-------------|
-| `NSE_CM_security.csv` | Cash market | equities, ETFs, debt, G-secs |
-| `NSE_FO_contract.csv` | Futures & options | FUTIDX, FUTSTK, OPTIDX, OPTSTK |
-| `NSE_CD_contract.csv` | Currency derivatives | FUTCUR, OPTCUR, FUTIRC, FUTIRT |
-
-Anything else in that folder (`contract.txt`, `security.txt`, the two
-`spdcontract` files, `fo_participant.txt`) is ignored on purpose — see
-`normalize/nse_contract.py`.
-
-`normalize-nse-contract` itself still skips quietly when the drop is absent, so one
-late venue cannot fail a whole normalize run. Run `nse-original-india` first when
-you need to know the files actually landed.
-
-**Who numbers XNSE.** Both steps emit XNSE, but `manifests/XNSE.json` is one file.
-`paths.VENUE_TOKEN_OWNER` gives it to `normalize-nse-contract`, the exchange's own
-universe. `XNSE-FYERS.parquet` is still written with its positional `counterToken`,
-but its `counterTokenV2` is left blank — minting stable numbers the owner would
-overwrite would break the very cross-date stability that token exists for. Join
-across dates on `XNSE-NSE.parquet`.
 
 ## counterTokenV2
 
@@ -148,7 +127,7 @@ not done yet; it never means empty.
   "tokens":     { "arrived": 7937, "departed": 9396, "reused": 7937, "drawn": 0,
                   "sequence_before": 3367460, "sequence_after": 3367460 },
   "inputs":     [{ "path": "XCBO/opra-pillar-...dbn.zst", "sha256": "..." }],
-  "outputs":    [{ "path": "v6/normalized/...parquet", "rows": 2007183, "sha256": "..." }]
+  "outputs":    [{ "path": "TRANSFORM/normalized/...parquet", "rows": 2007183, "sha256": "..." }]
 }
 ```
 
@@ -193,7 +172,7 @@ counterTokenV2's expected offset reuse) are reported and do not fail the run.
 - **A venue's raw directory must hold only that day's payload.** A stray file from
   another date is silently blended into the output; `check-lineage` catches this
   as `raw is this day`.
-- India (`XBOM`, `XIMC`) has no historical backfill — Fyers serves the current day
+- India (`XBOM`, `XIMC`, and `XNSE` on the Fyers feed) has no historical backfill — Fyers serves the current day only
   only.
 
 ## Known gaps

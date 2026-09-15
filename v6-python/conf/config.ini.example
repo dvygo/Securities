@@ -2,7 +2,7 @@
 
 [paths]
 # All relative to repo root (v6-python/) unless absolute. v6 owns its own data
-# tree; the day layout underneath is unchanged (YYYYMMDD/v6/raw, .../normalized).
+# tree; the day layout underneath is unchanged (YYYYMMDD/TRANSFORM/raw, .../normalized).
 data_dir = premarketv6/data
 baskets_dir = constituents/baskets
 contracts_dir = constituents/contracts
@@ -190,12 +190,13 @@ hist_pin_latest_session = false
 hist_lookback_days = 7
 
 [EXCHANGE:XNSE]
-# Two sources. NSE's own contract masters, dropped by the broker into
-# data/YYYYMMDD/XNSE/NEW FILE FORMAT/ (normalize/nse_contract.py, checked by
-# `nse-original-india`), own this venue's counterTokenV2. Fyers serves XNSE too
-# (`fyers-india`), written as XNSE-FYERS.parquet without counterTokenV2 -- see
-# paths.VENUE_TOKEN_OWNER.
-feed = nse
+# Which feed serves XNSE. This is the real switch -- normalize steps run a
+# venue only when they own it, and baskets resolve the normalized filename
+# through it, so nothing is written twice and no file is renamed underneath.
+#   fyers = Fyers CDN, NSE_CM/FO/CD  -> XNSE-FYERS.parquet
+#   nse   = NSE's own contract masters, dropped by the broker into
+#           data/YYYYMMDD/XNSE/NEW FILE FORMAT/ -> XNSE-NSE.parquet
+feed = fyers
 enabled = 1
 venue_id = 16
 

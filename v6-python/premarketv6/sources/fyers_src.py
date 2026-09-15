@@ -145,30 +145,20 @@ def download(opts: runner.Opts) -> None:
         print("DRY RUN: Would download Fyers symbol master data")
         return
 
-    # Segment key -> source file mapping (from v4 Python)
-    segment_sources = {
-        "xnse": "NSE_CM.csv",
-        "xnfo": "NSE_FO.csv",
-        "xncd": "NSE_CD.csv",
-        "xbse": "BSE_CM.csv",
-        "xbfo": "BSE_FO.csv",
-        "xmcx": "MCX_COM.csv",
-    }
-
-    # Download each segment
-    for segment, source_file in segment_sources.items():
-        # Gate on the MIC map, not FYERS_RAW_SEGMENTS: the latter is only
-        # segment -> filename, while FYERS_SEGMENT_MIC is derived from
-        # FYERS_MIC_BUNDLES -- the segments some bundle actually owns. A segment
-        # dropped from its bundle is skipped here instead of reaching
-        # fyers_segment_path below and failing the whole step with a KeyError.
-        if segment not in paths.FYERS_SEGMENT_MIC:
+    # The vendor filename now lives beside our own in paths.FYERS_RAW_SEGMENTS.
+    # It used to be a second copy of the segment list here, and the two drifted:
+    # this loop went right on visiting segments paths could no longer route.
+    for segment, (source_file, _local_file) in paths.FYERS_RAW_SEGMENTS.items():
+        mic = paths.FYERS_SEGMENT_MIC[segment]
+        if not config.owns(mic, "fyers"):
+            print(f"Skipping {segment}: {mic} is on the "
+                  f"{config.feed_for(mic)!r} feed, not Fyers")
             continue
 
         url = f"{cfg.base_url}/{source_file}"
-        # Each segment lands under the MIC bundle that owns it, so XBSE sits
-        # beside XBFO in data/YYYYMMDD/XBOM/ -- one folder per thing normalize
-        # actually emits.
+        # Each segment lands under the MIC bundle that owns it, so XNFO sits
+        # beside XNSE and XNCD in data/YYYYMMDD/XNSE/ -- one folder per thing
+        # normalize actually emits.
         output_path = paths.fyers_segment_path(opts.date_dir, segment)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 

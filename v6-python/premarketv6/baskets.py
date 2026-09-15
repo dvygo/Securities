@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from . import parquet_export, paths, runner
+from . import config, parquet_export, paths, runner
 
 
 # "NSE:360ONE-EQ" -> "360ONE"
@@ -23,12 +23,6 @@ EQ_TAIL_REGEX = re.compile(r"^[^:]+:(.+)-EQ$")
 # first valid MONYY it can match).
 FUT_TAIL_REGEX = re.compile(
     r"^[^:]+:(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))FUT$"
-)
-# "MCX:CRUDEOIL26AUG10000CE" -> "CRUDEOIL" (root non-greedy up to the first MONYY,
-# then strike digits, then CE/PE). Strike may be fractional (e.g. "...100.25PE").
-OPT_TAIL_REGEX = re.compile(
-    r"^[^:]+:(.+?)(\d{2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))"
-    r"\d+(?:\.\d+)?(CE|PE)$"
 )
 
 
@@ -55,10 +49,6 @@ def _parse_fut_root(script: str) -> str:
     m = FUT_TAIL_REGEX.match(script.strip())
     return m.group(1).upper() if m else ""
 
-
-def _parse_opt_root(script: str) -> str:
-    m = OPT_TAIL_REGEX.match(script.strip())
-    return m.group(1).upper() if m else ""
 
 
 def _is_future_row(row: dict) -> bool:
@@ -98,7 +88,14 @@ class SymIndex:
         self.futures_by_root: Dict[str, List[dict]] = {}
         self.options_by_root: Dict[str, List[dict]] = {}
 
-        if not normalized_csv.exists():
+        self.source = normalized_csv
+        self.present = normalized_csv.exists()
+        if not self.present:
+            # Every basket on this MIC is about to report all its constituents
+            # missing. Say why once, here, rather than letting ten baskets each
+            # blame their own definition file.
+            print(f"    {exchange_mic}: no normalized data at {normalized_csv.name} "
+                  f"-- baskets on this venue will be empty")
             return
         for row in parquet_export.read_rows(normalized_csv):
             script = (row.get("script") or "").strip()
@@ -138,10 +135,32 @@ def _as_of_start_ns(as_of: str) -> int:
     return int(d.timestamp()) * 10**9
 
 
+def _normalized_output(mic: str) -> str:
+    """The normalized filename for a MIC, from whichever feed owns it today.
+
+    Baskets have no business knowing which vendor produced a venue -- they want
+    "today's XNSE rows". Reaching into FYERS_MIC_BUNDLES for the name meant the
+    XNSE source switch raised a bare KeyError('XNSE') here, which the caller's
+    except swallowed into an empty basket.
+    """
+    by_feed = paths.FEED_OUTPUTS.get(mic)
+    if not by_feed:
+        raise ValueError(f"{mic}: no normalized output is defined for this MIC "
+                         f"(paths.FEED_OUTPUTS knows {sorted(paths.FEED_OUTPUTS)})")
+    feed = config.feed_for(mic)
+    output = by_feed.get(feed)
+    if output is None:
+        raise ValueError(
+            f"{mic}: conf/config.ini says feed = {feed!r}, but no normalize step "
+            f"writes {mic} from that feed (this MIC is served by "
+            f"{sorted(by_feed)}). Fix [EXCHANGE:{mic}] feed =.")
+    return output
+
+
 def _sym_index(as_of: str, mic: str, cache: Dict[str, SymIndex]) -> SymIndex:
     if mic not in cache:
-        output_csv, _, _ = paths.FYERS_MIC_BUNDLES[mic]
-        cache[mic] = SymIndex(mic, paths.normalized_dir(as_of) / output_csv)
+        path = paths.normalized_dir(as_of) / _normalized_output(mic)
+        cache[mic] = SymIndex(mic, path)
     return cache[mic]
 
 
@@ -211,94 +230,102 @@ def _resolve_index_futures(name: str, template: Path, idx: SymIndex, as_of: str,
     return rows
 
 
-def _resolve_option_chain(name: str, template: Path, idx: SymIndex, as_of: str, num_expiries: int) -> List[dict]:
-    """Roll an option-chain basket to its N nearest still-live expiries. The template
-    only supplies the underlying root(s) (parsed from any option script in it); the
-    concrete strikes/expiries in the file go stale and are ignored -- we re-pick the
-    num_expiries nearest distinct expiries from today's data and emit their full chains
-    (every CE/PE at every strike). Mirrors the futures roll, but keeps N expiries deep
-    and all strikes instead of collapsing to one contract per root."""
-    scripts = _load_basket_scripts(template)
+def _expiry_month(row: dict) -> str:
+    """The YYYY-MM a contract expires in, or "" if it carries no expiry.
+
+    Months, not exact dates, because an option and the future it settles into
+    rarely expire on the same day: MCX CRUDEOIL options expire 2026-09-17 and
+    the future 2026-09-21, and NSE index options run weekly against a monthly
+    future.
+    """
+    ns = _int_field(row, "expiration")
+    if ns <= 0:
+        return ""
+    return datetime.fromtimestamp(ns / 10**9, tz=timezone.utc).strftime("%Y-%m")
+
+
+def _resolve_options_for_futures(name: str, futures_template: Path, idx: SymIndex,
+                                 as_of: str, near_only: bool) -> List[dict]:
+    """Every live option on the underlyings of a futures basket.
+
+    The futures basket supplies the roots -- "NSE:RELIANCE26SEPFUT" means "give
+    me RELIANCE options" -- exactly as the futures rolls take their roots from a
+    spots basket. The frozen file's own expiries are ignored; today's data is
+    re-picked, so this stays correct as contracts roll.
+
+    near_only mirrors the source basket's roll. A NEAR source resolved one
+    expiry per root, so the options narrow to the month(s) those futures sit in.
+    An ALL source keeps every live option expiry -- month-filtering it would be
+    wrong, not merely narrower: MCX bullion options are monthly while their
+    futures are bi-monthly, so a November GOLD option (settling into December's
+    future) shares its month with no future at all.
+    """
+    scripts = _load_basket_scripts(futures_template)
     as_of_ns = _as_of_start_ns(as_of)
     rows, no_opt, seen = [], 0, set()
     for script in scripts:
-        root = _parse_opt_root(script)
+        root = _parse_fut_root(script)
         if not root or root in seen:
             continue
         seen.add(root)
 
         live = idx.live_options(root, as_of_ns)
+        if near_only:
+            months = {m for r in idx.live_futures(root, as_of_ns)
+                      if (m := _expiry_month(r))}
+            nearest = min(months) if months else ""
+            live = [r for r in live if _expiry_month(r) == nearest] if nearest else []
         if not live:
             no_opt += 1
             continue
-        keep = set(sorted({_int_field(r, "expiration") for r in live})[:num_expiries])
-        for r in sorted(live, key=lambda r: (_int_field(r, "expiration"), r.get("script", ""))):
-            if _int_field(r, "expiration") in keep:
-                rows.append(idx.to_contract_row(r, as_of))
+        rows.extend(idx.to_contract_row(r, as_of) for r in sorted(
+            live, key=lambda r: (_int_field(r, "expiration"), r.get("script", ""))))
     if no_opt:
-        print(f"    {name}: {no_opt}/{len(seen)} roots have no live option today")
+        print(f"    {name}: {no_opt}/{len(seen)} underlyings have no live option today")
     return rows
+
 
 
 def _refresh(name: str, as_of: str, cache: Dict[str, SymIndex]) -> List[dict]:
     """Resolve one basket's constituent rows.
-    Basket names are standardized to {MIC}_{purpose} and match their definition CSV's
-    filename 1:1, except where noted (futures-roll baskets derive roots from a spots/
-    equity basket rather than their own frozen file, and ALL_INDEX_FUTURES has no file
-    of its own -- it's the union of the three index-futures baskets)."""
+
+    Every basket belongs to exactly one of five kinds, each a table in paths:
+    an equity membership list, index/commodity futures rooted in their own file,
+    futures rooted in an equity list, an option chain on a futures basket, or the
+    ALL_INDEX_FUTURES union. A name in no table is a registration bug and raises.
+    """
     baskets_dir = paths.baskets_dir()
 
-    if name == "XNSE_NIFTYFNO_EQUITY":
-        idx = _sym_index(as_of, "XNSE", cache)
+    if name in paths.EQUITY_BASKETS:
+        idx = _sym_index(as_of, paths.EQUITY_BASKETS[name], cache)
         return _resolve_by_script(name, baskets_dir / f"{name}.csv", idx, as_of)
 
-    if name == "XNSE_NIFTYFNO_FUTURES_NEAR":
+    if name in paths.INDEX_FUTURES_SOURCES:
+        mic, near_only = paths.INDEX_FUTURES_SOURCES[name]
+        idx = _sym_index(as_of, mic, cache)
+        return _resolve_index_futures(
+            name, baskets_dir / f"{name}.csv", idx, as_of, near_only)
+
+    if name in paths.EQUITY_FUTURES_SOURCES:
+        equity, near_only = paths.EQUITY_FUTURES_SOURCES[name]
         idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_equity_futures(name, baskets_dir / "XNSE_NIFTYFNO_EQUITY.csv", idx, as_of, near_only=True)
+        return _resolve_equity_futures(
+            name, baskets_dir / f"{equity}.csv", idx, as_of, near_only)
 
-    if name == "XNSE_NIFTYFNO_FUTURES_ALL":
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_equity_futures(name, baskets_dir / "XNSE_NIFTYFNO_EQUITY.csv", idx, as_of, near_only=False)
-
-    if name == "XNSE_INDEX_FUTURES_NEAR":
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=True)
-
-    if name == "XNSE_INDEX_FUTURES_ALL":
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
-
-    if name == "XBOM_INDEX_FUTURES":
-        idx = _sym_index(as_of, "XBOM", cache)
-        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=True)
-
-    if name == "XIMC_FUTURES_ALL":
-        idx = _sym_index(as_of, "XIMC", cache)
-        return _resolve_index_futures(name, baskets_dir / f"{name}.csv", idx, as_of, near_only=False)
-
-    if name in ("XIMC_CRUDE_NEAREST_NXTNEAREST", "XIMC_BULLDEX_NEAREST_NXTNEAREST"):
-        idx = _sym_index(as_of, "XIMC", cache)
-        return _resolve_option_chain(name, baskets_dir / f"{name}.csv", idx, as_of, num_expiries=2)
+    if name in paths.OPTION_BASKET_SOURCES:
+        source, mic, near_only = paths.OPTION_BASKET_SOURCES[name]
+        idx = _sym_index(as_of, mic, cache)
+        return _resolve_options_for_futures(
+            name, baskets_dir / f"{source}.csv", idx, as_of, near_only)
 
     if name == "ALL_INDEX_FUTURES":
-        nse_rows = _resolve_index_futures(
-            "XNSE_INDEX_FUTURES_NEAR", baskets_dir / "XNSE_INDEX_FUTURES_NEAR.csv", _sym_index(as_of, "XNSE", cache), as_of, near_only=True
-        )
-        xbom_rows = _resolve_index_futures(
-            "XBOM_INDEX_FUTURES", baskets_dir / "XBOM_INDEX_FUTURES.csv", _sym_index(as_of, "XBOM", cache), as_of, near_only=True
-        )
-        ximc_rows = _resolve_index_futures(
-            "XIMC_FUTURES_ALL", baskets_dir / "XIMC_FUTURES_ALL.csv", _sym_index(as_of, "XIMC", cache), as_of, near_only=False
-        )
-        return nse_rows + xbom_rows + ximc_rows
-
-    if name in ("XNSE_NIFTY50_EQUITY", "XNSE_NIFTY100_EQUITY", "XNSE_NIFTY200_EQUITY", "XNSE_NIFTY500_EQUITY"):
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_by_script(name, baskets_dir / f"{name}.csv", idx, as_of)
-
-    if name == "XNSE_NIFTY500_FUTURES":
-        idx = _sym_index(as_of, "XNSE", cache)
-        return _resolve_equity_futures(name, baskets_dir / "XNSE_NIFTY500_EQUITY.csv", idx, as_of, near_only=False)
+        rows = []
+        for part in paths.ALL_INDEX_FUTURES_PARTS:
+            mic, near_only = paths.INDEX_FUTURES_SOURCES[part]
+            rows += _resolve_index_futures(
+                part, baskets_dir / f"{part}.csv",
+                _sym_index(as_of, mic, cache), as_of, near_only)
+        return rows
 
     raise ValueError(f"unknown basket {name!r}")
 
@@ -320,6 +347,8 @@ def refresh_all(as_of: str, normalized_dir: Path, dry_run: bool = False) -> None
     contracts_day_dir.mkdir(parents=True, exist_ok=True)
 
     cache: Dict[str, SymIndex] = {}
+    failed: List[str] = []
+    empty: List[str] = []
 
     for basket_name in paths.BASKET_NAMES:
         if dry_run:
@@ -332,8 +361,23 @@ def refresh_all(as_of: str, normalized_dir: Path, dry_run: bool = False) -> None
                 output_path = contracts_day_dir / f"{basket_name}{parquet_export.SUFFIX}"
                 parquet_export.write_rows(output_path, list(rows[0].keys()), rows)
                 print(f"    Wrote {basket_name}: {len(rows)} contracts")
+            else:
+                empty.append(basket_name)
         except Exception as e:
-            print(f"    Error refreshing {basket_name}: {e}")
+            # One basket's bad data must not take the rest of the run down, but
+            # a swallowed error that leaves no file behind used to be
+            # indistinguishable from a basket that legitimately resolved to
+            # nothing. Both are now counted and reported at the end.
+            failed.append(f"{basket_name}: {type(e).__name__}: {e}")
+            print(f"    ERROR refreshing {basket_name}: {type(e).__name__}: {e}")
+
+    if empty:
+        print(f"    {len(empty)} basket(s) resolved to no contracts: "
+              f"{', '.join(empty)}")
+    if failed:
+        print(f"    {len(failed)}/{len(paths.BASKET_NAMES)} basket(s) FAILED:")
+        for msg in failed:
+            print(f"      {msg}")
 
 
 def run(opts: runner.Opts) -> None:

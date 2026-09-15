@@ -6,14 +6,25 @@ build-backend = "setuptools.build_meta"
 name = "premarketv6"
 version = "6.0.0"
 description = "Pre-market symbology/instrument data pipeline for financial markets"
-requires-python = ">=3.9"
+# numpy 2.5 requires >=3.12 and pandas 3.0 requires >=3.11, so the real floor is
+# 3.12 -- ">=3.9" let pip resolve numpy/pandas years out of date on an older
+# interpreter instead of refusing to install. clickhouse-connect currently caps
+# at <3.15, which is the practical ceiling.
+requires-python = ">=3.12"
 dependencies = [
-    # No 1.x has ever been published; >=1.0.0 made `pip install -e .` unresolvable.
-    # Floor matches requirements.txt's old one; 0.86.0 is the pinned, tested version.
-    "databento>=0.81.0",
+    # Keep this list and requirements.txt in step -- tests/test_packaging.py
+    # fails the build if they drift, or if premarketv6 imports something that
+    # neither one declares.
+    #
+    # databento is pre-1.0 and every minor is a breaking change; 1.0 does not
+    # exist yet, so cap below it rather than opting in to it sight unseen.
+    "databento>=0.81.0,<1.0",
     "psycopg[binary]>=3.1.0",
     "pandas>=2.0.0",
     "requests>=2.31.0",
+    # IST->UTC session conversion (premarketv6/normalize/session.py).
+    "pytz>=2024.1",
+    # Used by strategiesv6, which ships from this same source tree.
     "exchange-calendars>=4.5",
     # Parquet is the on-disk format for normalized/plugin output
     # (premarketv6/parquet_export.py).

@@ -1,6 +1,6 @@
 """Plugin normalization: map each canonical normalized CSV to the legacy pg
 symbol-master schema (docs/plugin/pg_data_types.txt), one output file per
-input file, written to data/YYYYMMDD/v6/plugin/ (sibling of normalized/)."""
+input file, written to data/YYYYMMDD/TRANSFORM/plugin/ (sibling of normalized/)."""
 from datetime import datetime, timezone
 
 
@@ -271,7 +271,7 @@ def map_row(row: dict, trade_date: str, exchange: str) -> dict:
 
 
 def run(opts: runner.Opts) -> None:
-    """Build plugin CSVs: mirror each normalized CSV into data/YYYYMMDD/v6/plugin/ under the legacy pg schema."""
+    """Build plugin CSVs: mirror each normalized CSV into data/YYYYMMDD/TRANSFORM/plugin/ under the legacy pg schema."""
     if opts.dry_run:
         print("DRY RUN: Would build plugin CSVs")
         return

@@ -60,18 +60,9 @@ def create_parser() -> argparse.ArgumentParser:
             help="Include CSV header in output",
         )
 
-    # India, two independent sources for the same exchanges.
-    #   fyers-india         the broker's symbol masters: XNSE, XBOM, XIMC
-    #   nse-original-india  NSE's own contract masters, as dropped by the broker
-    fyers_india_parser = subparsers.add_parser(
-        "fyers-india",
-        help="Download Fyers symbol masters for XNSE, XBOM and XIMC")
-    add_download_args(fyers_india_parser)
-
-    nse_original_parser = subparsers.add_parser(
-        "nse-original-india",
-        help="Check today's NSE contract-master drop (XNSE/NEW FILE FORMAT) is complete")
-    add_download_args(nse_original_parser)
+    # India (Fyers) subcommand
+    india_parser = subparsers.add_parser("india", help="Download Fyers Indian exchange data")
+    add_download_args(india_parser)
 
     # Databento venue subcommands. The venue set, and whether --all-symbols is
     # on by default, both come from config.ini's [EXCHANGE:<CODE>] sections --
@@ -123,18 +114,13 @@ def create_parser() -> argparse.ArgumentParser:
         "--only",
         action="append",
         default=[],
-        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, normalize-nse-contract, baskets, csv-export, plugin, postgres-plugin, clickhouse)",
+        help="Only run specific normalize steps (normalize-fyers, normalize-databento, normalize-nse, normalize-nse-contract, baskets, csv-export, plugin, postgres-plugin, tokenmap, clickhouse)",
     )
     normalize_parser.add_argument(
         "--clickhouse-push-only",
         dest="contracts_push_only",
         action="store_true",
         help="Push contracts/baskets to ClickHouse after normalization (files are still built first)",
-    )
-    normalize_parser.add_argument(
-        "--plugin",
-        action="store_true",
-        help="Build plugin-format Parquet (legacy pg symbol-master schema) in data/YYYYMMDD/v6/plugin/",
     )
     normalize_parser.add_argument(
         "--csv-only",
@@ -160,6 +146,63 @@ def create_parser() -> argparse.ArgumentParser:
         "--csv",
         dest="csv_export_dir",
         help="Export aggregated CSVs to directory",
+    )
+
+    # plugin subcommand -- a sibling of normalize, not a flag on it. Running it
+    # normalizes FIRST and then emits the plugin-family output, so one command
+    # produces a consistent day: the masters the plugin files were built from are
+    # the ones just written, never yesterday's left on disk.
+    plugin_parser = subparsers.add_parser(
+        "plugin",
+        help="Normalize, then emit plugin-family output (plugin Parquet + MDF token map)",
+    )
+    plugin_parser.add_argument(
+        "--date-dir",
+        default=datetime.now().strftime("%Y%m%d"),
+        help="Date directory (YYYYMMDD, default: today)",
+    )
+    plugin_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Don't write files, just simulate",
+    )
+    outputs = plugin_parser.add_mutually_exclusive_group()
+    outputs.add_argument(
+        "--parquet-only",
+        action="store_true",
+        help="Emit only the plugin Parquet (legacy pg symbol-master schema), "
+             "not the token map. Normalize still runs first.",
+    )
+    outputs.add_argument(
+        "--postgres-push-only",
+        dest="postgres_push_only",
+        action="store_true",
+        help="Only push the plugin Parquet to Postgres. Normalize still runs "
+             "first, but the Parquet is NOT rebuilt -- this pushes whatever is "
+             "already in data/YYYYMMDD/TRANSFORM/plugin/.",
+    )
+    outputs.add_argument(
+        "--tokenmap-only",
+        action="store_true",
+        help="Emit only MDF's tokenmap.<VENUE>.bin (DBN instrument_id -> "
+             "counterTokenV2, Databento venues), not the plugin Parquet. "
+             "Normalize still runs first.",
+    )
+    plugin_parser.add_argument(
+        "--tokenmap-dir",
+        dest="tokenmap_dir",
+        help="Where to write the .bin maps (default: "
+             "data/YYYYMMDD/TRANSFORM/plugin/tokenmap/). Point at MDF's "
+             "config/cpp-vendor/ to deliver in place -- the write is atomic, so "
+             "a lane restarting mid-delivery cannot read a partial map.",
+    )
+    plugin_parser.add_argument(
+        "--venue",
+        action="append",
+        default=[],
+        metavar="MIC",
+        help="Restrict the per-venue steps to this MIC; repeatable. Narrows only "
+             "-- a venue with enabled = 0 stays off even when named.",
     )
 
     # check-tokens subcommand
@@ -314,6 +357,7 @@ def run_normalize(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             basket=getattr(args, "basket", None),
             venues=_venue_selection(getattr(args, "venue", []) or []),
+            tokenmap_dir=getattr(args, "tokenmap_dir", None),
         )
 
         only = getattr(args, "only", []) or []
@@ -322,12 +366,18 @@ def run_normalize(args: argparse.Namespace) -> int:
         # no --only filter. postgres-plugin has no flag of its own -- it rides
         # along with --plugin (or is targeted directly via --only).
         contracts_push_only = getattr(args, "contracts_push_only", False) or "clickhouse" in only
-        plugin = args.plugin or "plugin" in only or "postgres-plugin" in only
+        # The flags are gone -- `premarketv6 plugin` is the way to produce
+        # plugin-family output, because it normalizes first. Naming a step in
+        # --only still targets it directly, for re-running one stage by hand.
+        plugin = "plugin" in only
+        tokenmap = "tokenmap" in only
 
         steps = runner.build_normalizer_steps(
             only,
             contracts_push_only=contracts_push_only,
             plugin=plugin,
+            postgres_plugin="postgres-plugin" in only,
+            tokenmap=tokenmap,
             csv_only=getattr(args, "csv_only", False),
         )
 
@@ -391,6 +441,53 @@ def _venue_selection(raw: list) -> tuple:
     return tuple(dict.fromkeys(picked))
 
 
+def run_plugin(args) -> int:
+    """`premarketv6 plugin` -- normalize, then the plugin-family output.
+
+    Normalize runs FIRST, always. That is the point of making this a sibling of
+    normalize rather than a flag on it: the plugin files are built from the
+    masters this run just wrote, never from yesterday's left on disk.
+
+    With no flag it runs the whole chain in order -- plugin Parquet, then the
+    Postgres push, then the token map. Each --*-only isolates one of those three;
+    normalize still runs first in every case.
+    """
+    cleanup, log_path = runlog.setup("plugin", args.date_dir)
+    try:
+        print(f"Log: {log_path}", file=sys.stderr)
+
+        opts = runner.Opts(
+            as_of=args.date_dir,
+            date_dir=args.date_dir,
+            dry_run=args.dry_run,
+            venues=_venue_selection(getattr(args, "venue", []) or []),
+            tokenmap_dir=getattr(args, "tokenmap_dir", None),
+        )
+
+        parquet_only = getattr(args, "parquet_only", False)
+        push_only = getattr(args, "postgres_push_only", False)
+        tokenmap_only = getattr(args, "tokenmap_only", False)
+        everything = not (parquet_only or push_only or tokenmap_only)
+
+        if push_only:
+            # Said out loud: --postgres-push-only normalizes but does not rebuild
+            # the Parquet, so what lands in Postgres is whatever is already on
+            # disk -- possibly older than the masters just written.
+            print("  --postgres-push-only: pushing the plugin Parquet already in "
+                  f"{paths.plugin_dir(args.date_dir)}, not rebuilding it",
+                  file=sys.stderr)
+
+        steps = runner.build_normalizer_steps(
+            [],                                   # the full normalize pipeline
+            plugin=everything or parquet_only,
+            postgres_plugin=everything or push_only,
+            tokenmap=everything or tokenmap_only,
+        )
+        return runner.run(steps, opts)
+    finally:
+        cleanup()
+
+
 def main() -> int:
     """Main CLI entry point."""
     parser = create_parser()
@@ -401,8 +498,8 @@ def main() -> int:
         return 1
 
     try:
-        if args.command in ("fyers-india", "nse-original-india"):
-            return run_download(args.command, args)
+        if args.command == "india":
+            return run_download("india", args)
         elif args.command in databento_src.VENUE_CONFIGS:
             raw_dates = getattr(args, "dates", None)
             if raw_dates and getattr(args, "today", False):
@@ -412,6 +509,8 @@ def main() -> int:
             return run_download(args.command, args)
         elif args.command == "normalize":
             return run_normalize(args)
+        elif args.command == "plugin":
+            return run_plugin(args)
         elif args.command == "check-tokens":
             from .qa import tokens
             return tokens.run(_date_list(args.dates), _venue_selection(args.venue))

@@ -4,8 +4,9 @@ import json
 import contextlib
 import os
 import pathlib
+import struct
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -2444,7 +2445,7 @@ class TestRecordedArtifacts:
         import pyarrow.parquet as pq
 
         raw = self._file(tree / day / mic / "opra-pillar.definition.dbn.zst", b"raw" * 400)
-        out = tree / day / "v6" / "normalized" / f"{mic}-X.parquet"
+        out = tree / day / paths.TRANSFORM_DIR / "normalized" / f"{mic}-X.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.table({"script": pa.array([f"S{n}" for n in range(rows)])}), out)
         counter_token.write_venue_manifest(
@@ -2475,7 +2476,7 @@ class TestRecordedArtifacts:
             assert not item["path"].startswith("/")
             assert str(tree) not in item["path"]
         assert run["inputs"][0]["path"] == "XCBO/opra-pillar.definition.dbn.zst"
-        assert run["outputs"][0]["path"] == "v6/normalized/XCBO-X.parquet"
+        assert run["outputs"][0]["path"] == f"{paths.TRANSFORM_DIR}/normalized/XCBO-X.parquet"
 
     def test_a_file_outside_the_day_keeps_only_its_name(self, tree):
         stray = self._file(tree / "elsewhere.csv")
@@ -2541,7 +2542,7 @@ class TestRecordedArtifacts:
         import pyarrow.parquet as pq
 
         day, mic = "20260824", "XCBO"
-        out = tree / day / "v6" / "normalized" / f"{mic}-X.parquet"
+        out = tree / day / paths.TRANSFORM_DIR / "normalized" / f"{mic}-X.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.table({"a": pa.array([1, 2, 3])}), out)
         counter_token.write_venue_manifest(
@@ -2555,7 +2556,7 @@ class TestRecordedArtifacts:
         import pyarrow.parquet as pq
 
         day, mic = "20260824", "XCBO"
-        out = tree / day / "v6" / "normalized" / f"{mic}-X.parquet"
+        out = tree / day / paths.TRANSFORM_DIR / "normalized" / f"{mic}-X.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.table({"a": pa.array([1, 2, 3])}), out)
         counter_token.write_venue_manifest(
@@ -2564,9 +2565,22 @@ class TestRecordedArtifacts:
         assert self._named(lineage.check_recorded(day, mic), "recorded rows").ok
 
 
+def _write_config(tmp_path, monkeypatch, feed: str) -> None:
+    """Point config at a throwaway config.ini whose XNSE section uses `feed`.
+
+    load_exchanges() is uncached and re-reads the file, so a later call in the
+    same test sees a rewritten value.
+    """
+    ini = tmp_path / "config.ini"
+    ini.write_text(
+        f"[EXCHANGE:XNSE]\nfeed = {feed}\nenabled = 1\nvenue_id = 16\n\n"
+        "[EXCHANGE:XBOM]\nfeed = fyers\nenabled = 1\nvenue_id = 17\n\n"
+        "[EXCHANGE:XIMC]\nfeed = fyers\nenabled = 1\nvenue_id = 18\n")
+    monkeypatch.setenv("PREMARKET_CONFIG", str(ini))
+
+
 class TestNseContract:
-    """The exchange's own contract masters: the authoritative XNSE source,
-    alongside the Fyers view of the same venue.
+    """The exchange's own contract masters, which replace Fyers for XNSE.
 
     Three properties of this format cost real effort to establish and are the
     ones a regression would silently break: the 1980 epoch, the per-segment
@@ -2730,118 +2744,580 @@ class TestNseContract:
         assert {nc.CM_FILE, nc.FO_FILE, nc.CD_FILE} == {
             nc.CM_FILE, nc.FO_FILE, nc.CD_FILE}
 
-    # -- two sources for XNSE --------------------------------------------
+    def test_exactly_one_feed_owns_xnse(self, tmp_path, monkeypatch):
+        """The invariant that matters is not "XNSE is absent from Fyers" -- it is
+        that exactly one normalize step claims the venue on any given day.
+        Asserting absence instead is what broke download-india and every XNSE
+        basket: three tables derived from FYERS_MIC_BUNDLES, and deleting the row
+        silently unrouted three raw segments."""
+        for feed, expect_fyers, expect_nse in (("fyers", True, False),
+                                               ("nse", False, True)):
+            _write_config(tmp_path, monkeypatch, feed=feed)
+            assert config.owns("XNSE", "fyers") is expect_fyers
+            assert config.owns("XNSE", "nse") is expect_nse
+            # never both, never neither
+            assert sum([config.owns("XNSE", "fyers"),
+                        config.owns("XNSE", "nse")]) == 1
 
-    def test_fyers_covers_xnse_xbom_and_ximc(self):
-        """fyers-india is the whole Fyers footprint again, XNSE included."""
-        assert set(paths.FYERS_MIC_BUNDLES) == {"XNSE", "XBOM", "XIMC"}
-        assert paths.FYERS_SEGMENT_MIC == {
-            "xnse": "XNSE", "xnfo": "XNSE", "xncd": "XNSE",
-            "xbse": "XBOM", "xbfo": "XBOM", "xmcx": "XIMC"}
-
-    def test_every_fyers_segment_routes_under_its_mic(self, tree):
+    def test_every_downloadable_segment_can_be_routed(self):
+        """paths raises at import if a segment is downloadable but unroutable, so
+        this pins the derivation that used to drop them silently."""
+        assert set(paths.FYERS_RAW_SEGMENTS) == set(paths.FYERS_SEGMENT_MIC)
         for segment, mic in paths.FYERS_SEGMENT_MIC.items():
-            path = paths.fyers_segment_path("20260911", segment)
-            assert path.parent == paths.venue_dir("20260911", mic)
-            assert path.name == paths.FYERS_RAW_SEGMENTS[segment]
+            assert mic in paths.FYERS_MIC_BUNDLES
+            _vendor, local = paths.FYERS_RAW_SEGMENTS[segment]
+            assert local in paths.FYERS_MIC_BUNDLES[mic][2]
 
-    def test_xnse_manifest_has_exactly_one_owner(self):
-        """Both steps emit XNSE but manifests/XNSE.json is one file. The owner
-        must name a real step, or the arbitration silently stops applying."""
-        import inspect
-        from premarketv6.normalize import fields
-        assert paths.VENUE_TOKEN_OWNER == {"XNSE": "normalize-nse-contract"}
-        source = inspect.getsource(runner.build_normalizer_steps)
-        assert f'Step("{fields.STEP_NAME}"' in source
-        for owner in paths.VENUE_TOKEN_OWNER.values():
-            assert f'Step("{owner}"' in source
-            assert owner != fields.STEP_NAME
+    def test_unroutable_segment_fails_loudly(self):
+        """Reproduce the deletion that caused the outage: a MIC bundle removed
+        while its segments stay in FYERS_RAW_SEGMENTS must not yield a silent
+        drop. Rebuilds paths' own derivation + guard over doctored tables."""
+        raw = dict(paths.FYERS_RAW_SEGMENTS)
+        bundles = {m: v for m, v in paths.FYERS_MIC_BUNDLES.items() if m != "XNSE"}
+        seg_mic = {seg: mic for mic, (_o, _t, srcs) in bundles.items()
+                   for seg, (_v, local) in raw.items() if local in srcs}
+        unrouted = set(raw) - set(seg_mic)
+        assert unrouted == {"xnse", "xnfo", "xncd"}, (
+            "removing the XNSE bundle must orphan exactly its three segments")
 
-    def _fyers_day(self, monkeypatch, day, mics):
-        """Raw bundle dirs plus a stubbed parser, so fields.run is exercised for
-        real without hand-building Fyers wire rows."""
-        from premarketv6.normalize import fields
-        for mic in mics:
-            _out, _table, sources = paths.FYERS_MIC_BUNDLES[mic]
-            d = paths.venue_dir(day, mic)
-            d.mkdir(parents=True, exist_ok=True)
-            (d / sources[0]).write_text("stub")
-        monkeypatch.setattr(fyers_src, "parse_fyers_csv",
-                            lambda path: [{"script": "A"}, {"script": "B"}])
-        monkeypatch.setattr(fields, "map_fyers_row",
-                            lambda raw: {"script": raw["script"], "exchange": "X"})
-        fields.run(runner.Opts(as_of=day, date_dir=day, venues=tuple(mics)))
-
-    def test_fyers_xnse_defers_counter_token_v2_to_the_owner(self, tree, monkeypatch):
-        from premarketv6 import parquet_export
-        day = "20260911"
-        self._fyers_day(monkeypatch, day, ["XNSE"])
-        out = paths.normalized_dir(day) / "XNSE-FYERS.parquet"
-        rows = parquet_export.read_rows(out)
-        assert [str(r["counterToken"]) for r in rows] == ["1", "2"]
-        assert all(not r["counterTokenV2"] for r in rows)
-        assert not (counter_token.manifests_dir(day) / "XNSE.json").exists()
-
-    def test_fyers_still_owns_the_venues_nobody_else_emits(self, tree, monkeypatch):
-        """Control: the guard is XNSE-specific, not a blanket skip."""
-        from premarketv6 import parquet_export
-        day = "20260911"
-        self._fyers_day(monkeypatch, day, ["XBOM"])
-        rows = parquet_export.read_rows(paths.normalized_dir(day) / "XBOM-FYERS.parquet")
-        assert all(r["counterTokenV2"] for r in rows)
-        assert (counter_token.manifests_dir(day) / "XBOM.json").exists()
-
-    # -- nse-original-india: the drop check ------------------------------
-
-    def _drop(self, day, files):
+    def test_nse_contract_output_matches_the_paths_table(self):
+        """paths.FEED_OUTPUTS restates nse_contract.OUTPUT to avoid an import
+        cycle; if they drift, baskets read a file nothing writes."""
         from premarketv6.normalize import nse_contract as nc
-        d = nc.drop_dir(day)
-        d.mkdir(parents=True)
-        for name, body in files.items():
-            (d / name).write_text(body)
-        return nc
+        assert paths.FEED_OUTPUTS["XNSE"]["nse"] == nc.OUTPUT
 
-    def test_check_fails_when_the_drop_folder_is_absent(self, tree):
-        from premarketv6.sources import nse_original
-        with pytest.raises(FileNotFoundError, match="no NSE contract drop"):
-            nse_original.run(runner.Opts(as_of="20260911", date_dir="20260911"))
+    def test_baskets_resolve_the_owning_feeds_file(self, tmp_path, monkeypatch):
+        """Baskets must follow the toggle, not a hardcoded vendor name."""
+        from premarketv6 import baskets
+        for feed, expected in (("fyers", "XNSE-FYERS.parquet"),
+                               ("nse", "XNSE-NSE.parquet")):
+            _write_config(tmp_path, monkeypatch, feed=feed)
+            assert baskets._normalized_output("XNSE") == expected
 
-    def test_check_fails_on_a_partial_drop(self, tree):
-        from premarketv6.normalize import nse_contract as nc
-        from premarketv6.sources import nse_original
-        self._drop("20260911", {nc.CM_FILE: "a,b\n1,2\n", nc.FO_FILE: "a,b\n1,2\n"})
-        with pytest.raises(RuntimeError, match="NSE_CD_contract.csv missing"):
-            nse_original.run(runner.Opts(as_of="20260911", date_dir="20260911"))
+    def test_baskets_reject_a_feed_that_writes_nothing(self, tmp_path, monkeypatch):
+        """A typo in feed = must name the problem, not KeyError into an empty
+        basket the way FYERS_MIC_BUNDLES[mic] did."""
+        from premarketv6 import baskets
+        _write_config(tmp_path, monkeypatch, feed="databento")
+        with pytest.raises(ValueError, match=r"feed = 'databento'"):
+            baskets._normalized_output("XNSE")
 
-    def test_check_fails_on_a_header_only_file(self, tree):
-        from premarketv6.normalize import nse_contract as nc
-        from premarketv6.sources import nse_original
-        self._drop("20260911", {nc.CM_FILE: "a,b\n1,2\n", nc.FO_FILE: "a,b\n",
-                                nc.CD_FILE: "a,b\n1,2\n"})
-        with pytest.raises(RuntimeError, match="NSE_FO_contract.csv has no rows"):
-            nse_original.run(runner.Opts(as_of="20260911", date_dir="20260911"))
 
-    def test_check_passes_and_counts_a_complete_drop(self, tree, capsys):
-        from premarketv6.normalize import nse_contract as nc
-        from premarketv6.sources import nse_original
-        self._drop("20260911", {nc.CM_FILE: "a,b\n1,2\n3,4\n",
-                                nc.FO_FILE: "a,b\n1,2\n", nc.CD_FILE: "a,b\n1,2\n"})
-        nse_original.run(runner.Opts(as_of="20260911", date_dir="20260911"))
-        out = capsys.readouterr().out
-        assert "2 rows  OK" in out and "drop complete" in out
+class TestOptionsForFutures:
+    """Option baskets derived from a futures basket's underlyings."""
 
-    # -- the two sibling commands -----------------------------------------
+    @staticmethod
+    def _idx(rows):
+        from premarketv6 import baskets
+        idx = baskets.SymIndex.__new__(baskets.SymIndex)
+        idx.exchange_mic = "XTST"
+        idx.by_script, idx.futures_by_root, idx.options_by_root = {}, {}, {}
+        idx.source, idx.present = pathlib.Path("memory"), True
+        for r in rows:
+            idx.by_script[r["script"]] = r
+            root = r["underlying_root"]
+            if r.get("optionType"):
+                idx.options_by_root.setdefault(root, []).append(r)
+            else:
+                idx.futures_by_root.setdefault(root, []).append(r)
+        return idx
 
-    def test_india_is_split_into_two_sibling_commands(self):
+    @staticmethod
+    def _ns(y, m, d):
+        return int(datetime(y, m, d, tzinfo=timezone.utc).timestamp()) * 10**9
+
+    def _fixture(self, tmp_path):
+        """A future in Sept and Oct, options in both months."""
+        rows = []
+        # Scripts must carry a real MONYY: _parse_fut_root anchors on it.
+        for mon, mth, day in (("SEP", 9, 29), ("OCT", 10, 27)):
+            rows.append({"script": f"X:R26{mon}FUT", "underlying_root": "R",
+                         "optionType": "", "expiration": str(self._ns(2026, mth, day)),
+                         "scriptInstrumentType": "FUTSTK"})
+            for opt in ("CE", "PE"):
+                rows.append({"script": f"X:R26{mon}100{opt}", "underlying_root": "R",
+                             "optionType": "CALL" if opt == "CE" else "PUT",
+                             "expiration": str(self._ns(2026, mth, day)),
+                             "scriptInstrumentType": "OPTSTK"})
+        tpl = tmp_path / "src.csv"
+        tpl.write_text("X:R26SEPFUT\nX:R26OCTFUT\n")
+        return self._idx(rows), tpl
+
+    def test_all_keeps_every_expiry(self, tmp_path):
+        from premarketv6 import baskets
+        idx, tpl = self._fixture(tmp_path)
+        rows = baskets._resolve_options_for_futures("t", tpl, idx, "20260907", near_only=False)
+        assert len(rows) == 4, "both months' options"
+
+    def test_near_keeps_only_the_nearest_future_month(self, tmp_path):
+        from premarketv6 import baskets
+        idx, tpl = self._fixture(tmp_path)
+        rows = baskets._resolve_options_for_futures("t", tpl, idx, "20260907", near_only=True)
+        assert len(rows) == 2
+        assert all("26SEP" in r["script"] for r in rows)
+
+    def test_all_keeps_options_whose_month_has_no_future(self, tmp_path):
+        """The MCX bullion case: a November GOLD option settles into December's
+        future, so its month contains no future at all. An ALL basket must keep
+        it -- month-filtering would silently drop thousands of real contracts."""
+        from premarketv6 import baskets
+        ns = self._ns
+        rows = [{"script": "X:G26DECFUT", "underlying_root": "G", "optionType": "",
+                 "expiration": str(ns(2026, 12, 5)), "scriptInstrumentType": "FUTCOM"},
+                {"script": "X:G26NOV50000CE", "underlying_root": "G", "optionType": "CALL",
+                 "expiration": str(ns(2026, 11, 25)), "scriptInstrumentType": "OPTFUT"}]
+        tpl = tmp_path / "src.csv"; tpl.write_text("X:G26DECFUT\n")
+        got = baskets._resolve_options_for_futures("t", tpl, self._idx(rows),
+                                                   "20260907", near_only=False)
+        assert [r["script"] for r in got] == ["X:G26NOV50000CE"]
+
+    def test_expired_options_are_excluded(self, tmp_path):
+        from premarketv6 import baskets
+        ns = self._ns
+        rows = [{"script": "X:R26SEPFUT", "underlying_root": "R", "optionType": "",
+                 "expiration": str(ns(2026, 9, 29)), "scriptInstrumentType": "FUTSTK"},
+                {"script": "X:R26AUG100CE", "underlying_root": "R", "optionType": "CALL",
+                 "expiration": str(ns(2026, 8, 27)), "scriptInstrumentType": "OPTSTK"}]
+        tpl = tmp_path / "src.csv"; tpl.write_text("X:R26SEPFUT\n")
+        got = baskets._resolve_options_for_futures("t", tpl, self._idx(rows),
+                                                   "20260907", near_only=False)
+        assert got == [], "an option that expired before as_of must not resolve"
+
+    def test_every_option_basket_names_a_real_futures_basket(self):
+        for name, (source, mic, _near) in paths.OPTION_BASKET_SOURCES.items():
+            assert name in paths.BASKET_NAMES, f"{name} not registered"
+            assert source in paths.BASKET_NAMES, f"{name} sources missing {source}"
+            assert mic in paths.FEED_OUTPUTS, f"{name} names unknown MIC {mic}"
+
+    def test_equity_futures_sources_are_wired(self):
+        for name, (equity, _near) in paths.EQUITY_FUTURES_SOURCES.items():
+            assert name in paths.BASKET_NAMES, f"{name} not registered"
+            assert equity in paths.BASKET_NAMES, f"{name} sources missing {equity}"
+            assert equity.endswith("_EQUITY"), f"{name} must source an equity list"
+
+    def test_index_chain_is_complete(self):
+        """Each NIFTY index list carries a NEAR and an ALL futures basket, and an
+        options basket on each, so adding an index means adding the whole chain."""
+        for idx in ("NIFTYFNO", "NIFTY50", "NIFTY100", "NIFTY500"):
+            eq = f"XNSE_{idx}_EQUITY"
+            assert eq in paths.BASKET_NAMES
+            for depth in ("NEAR", "ALL"):
+                fut = f"XNSE_{idx}_FUTURES_{depth}"
+                opt = f"XNSE_OPTIONS_{idx}_FUTURES_{depth}"
+                assert paths.EQUITY_FUTURES_SOURCES[fut][0] == eq
+                assert paths.OPTION_BASKET_SOURCES[opt][0] == fut
+
+    def test_every_futures_basket_is_a_near_all_pair(self):
+        """An unsuffixed futures basket is ambiguous about its depth -- a caller
+        cannot tell whether it holds the front month or every expiry."""
+        futures = set(paths.INDEX_FUTURES_SOURCES) | set(paths.EQUITY_FUTURES_SOURCES)
+        for name in futures:
+            assert name.endswith(("_NEAR", "_ALL")), f"{name} states no depth"
+            stem, _, depth = name.rpartition("_")
+            sibling = f"{stem}_{'ALL' if depth == 'NEAR' else 'NEAR'}"
+            assert sibling in futures, f"{name} has no {sibling}"
+
+    def test_near_is_shallower_than_all(self):
+        """The pair must actually differ: near_only True for _NEAR, False for _ALL."""
+        for table, near_at in ((paths.INDEX_FUTURES_SOURCES, 1),
+                               (paths.EQUITY_FUTURES_SOURCES, 1)):
+            for name, row in table.items():
+                assert row[near_at] is name.endswith("_NEAR"), name
+
+    def test_options_are_derived_from_futures(self):
+        """Every futures basket has exactly one option chain at the same depth,
+        and no option basket exists without a futures basket behind it."""
+        futures = set(paths.INDEX_FUTURES_SOURCES) | set(paths.EQUITY_FUTURES_SOURCES)
+        assert {paths.options_basket_name(f) for f in futures} == set(paths.OPTION_BASKET_SOURCES)
+        for opt, (src, _mic, near) in paths.OPTION_BASKET_SOURCES.items():
+            assert src in futures
+            assert near is opt.endswith("_NEAR")
+
+    def test_all_index_futures_parts_are_registered(self):
+        for part in paths.ALL_INDEX_FUTURES_PARTS:
+            assert part in paths.INDEX_FUTURES_SOURCES, part
+
+    def test_every_basket_definition_file_exists(self):
+        """refresh_basket() returns None for a missing file, so an unregistered
+        definition is a silently empty basket."""
+        root = paths.baskets_dir()
+        missing = [b for b in paths.BASKET_NAMES
+                   if b != "ALL_INDEX_FUTURES" and not (root / f"{b}.csv").exists()]
+        assert not missing, f"registered baskets with no definition file: {missing}"
+
+    def test_retired_mcx_baskets_are_gone(self):
+        """XIMC_OPTIONS_FUTURES_ALL subsumes them: it covers all 29 MCX roots,
+        including CRUDEOIL and MCXBULLDEX."""
+        assert not [b for b in paths.BASKET_NAMES if "NXTNEAREST" in b]
+        from premarketv6 import baskets
+        assert not hasattr(baskets, "_resolve_option_chain")
+
+
+class TestEnableFlags:
+    """enable1/enable2: written as 0 by every normalizer, read by none of them."""
+
+    def test_declared_in_the_canonical_schema(self):
+        assert paths.ENABLE_COLUMNS == ["enable1", "enable2"]
+        for col in paths.ENABLE_COLUMNS:
+            assert col in paths.NORMALIZED_COLUMNS
+            assert col in paths.CONTRACT_COLUMNS
+
+    def test_sits_after_the_canonical_columns_and_before_the_passthrough(self):
+        """The definition passthrough is a verbatim vendor block; a pipeline
+        column belongs with the pipeline's own, not buried inside it."""
+        cols = paths.NORMALIZED_COLUMNS
+        assert cols.index("counterTokenV2") < cols.index("enable1")
+        assert cols.index("enable2") < cols.index(paths.DEFINITION_PASSTHROUGH_COLUMNS[0])
+        assert cols.index("enable2") == cols.index("enable1") + 1
+
+    def test_fill_sets_zero(self):
+        from premarketv6.normalize import flags
+        assert flags.fill({}) == {"enable1": "0", "enable2": "0"}
+
+    def test_fill_does_not_overwrite(self):
+        """setdefault, not assignment: a caller that already decided wins."""
+        from premarketv6.normalize import flags
+        assert flags.fill({"enable1": "1"})["enable1"] == "1"
+
+    def test_every_normalizer_row_mapper_fills_them(self):
+        """The fill is per-mapper, so a new venue path can forget it. Drive the
+        real mappers and check the columns arrive populated, rather than trusting
+        that every call site was edited."""
+        from premarketv6.normalize import fields as fyers_fields, nse_contract
+        mapped = {
+            "fyers": fyers_fields.map_fyers_row(
+                {"symTicker": "NSE:RELIANCE-EQ", "exchange": "10", "segment": "10",
+                 "exInstType": "0", "symDetails": "RELIANCE"}),
+            "nse cash": nse_contract.map_cash_row(
+                {"TckrSymb": "RELIANCE", "SctySrs": "EQ", "ISIN": "INE002A01018"}),
+            "nse derivative": nse_contract.map_derivative_row(
+                {"StockNm": "RELIANCE26SEPFUT", "OptnTp": "XX", "XpryDt": "1474243200",
+                 "StrkPric": "0", "LotSz": "500", "TckrSymb": "RELIANCE"},
+                nse_contract.DERIV),
+        }
+        for label, row in mapped.items():
+            assert row is not None, f"{label} mapper returned None -- fixture is wrong"
+            for col in paths.ENABLE_COLUMNS:
+                assert row.get(col) == "0", f"{label}: {col} is {row.get(col)!r}, not '0'"
+
+    def test_clickhouse_types_them_as_int(self):
+        from premarketv6 import clickhouse_export as ch
+        types = dict(ch._contract_column_ddl())
+        for col in paths.ENABLE_COLUMNS:
+            assert col in ch.CONTRACT_INT_COLUMNS
+            assert types[col] == "Nullable(Int64)"
+        # non-vacuous: a string column really does come back String
+        assert types["script"] == "String"
+
+    def test_plugin_schema_is_unchanged(self):
+        """The plugin maps named fields into its own 17-column schema, so a
+        canonical column added here must not reach it."""
+        from premarketv6.plugin import build as plugin_build
+        assert len(plugin_build.PLUGIN_COLUMNS) == 17
+        for col in paths.ENABLE_COLUMNS:
+            assert col not in plugin_build.PLUGIN_COLUMNS
+
+
+class TestPluginCommandWiring:
+    """`premarketv6 plugin` is a sibling of normalize, not a flag on it."""
+
+    @staticmethod
+    def _names(**kw):
+        from premarketv6 import runner
+        return [s.name for s in runner.build_normalizer_steps([], **kw)]
+
+    def test_plugin_stages_run_in_order(self):
+        """Parquet, then the Postgres push, then the token map. The push reads
+        what the build just wrote, so the order is load-bearing, not cosmetic."""
+        names = self._names(plugin=True, postgres_plugin=True, tokenmap=True)
+        assert names[-3:] == ["plugin", "postgres-plugin", "tokenmap"]
+
+    def test_normalize_runs_before_any_plugin_stage(self):
+        """The reason plugin is a command and not a flag: the files must come
+        from the masters this run wrote, not yesterday's left on disk."""
+        names = self._names(plugin=True, postgres_plugin=True, tokenmap=True)
+        assert names.index("normalize-databento") < names.index("plugin")
+        assert names.index("csv-export") < names.index("plugin")
+
+    def test_each_stage_is_independently_selectable(self):
+        assert self._names(plugin=True, postgres_plugin=False)[-1] == "plugin"
+        assert self._names(plugin=False, postgres_plugin=True)[-1] == "postgres-plugin"
+        assert self._names(tokenmap=True, postgres_plugin=False)[-1] == "tokenmap"
+
+    def test_push_without_rebuild_is_possible(self):
+        """--postgres-push-only pushes the Parquet already on disk."""
+        names = self._names(plugin=False, postgres_plugin=True, tokenmap=False)
+        assert "plugin" not in names and "postgres-plugin" in names
+
+    def test_postgres_defaults_to_following_the_build(self):
+        """Left unset it means what --plugin used to: building the Parquet
+        pushes it too."""
+        assert "postgres-plugin" in self._names(plugin=True)
+        assert "postgres-plugin" not in self._names(plugin=False)
+
+    def test_csv_only_still_vetoes_the_push(self):
+        names = self._names(plugin=True, postgres_plugin=True, tokenmap=True, csv_only=True)
+        assert "postgres-plugin" not in names
+        assert "plugin" in names and "tokenmap" in names
+
+    def test_the_output_flags_are_mutually_exclusive(self):
         from premarketv6 import cli
         parser = cli.create_parser()
-        assert parser.parse_args(["fyers-india"]).command == "fyers-india"
-        assert parser.parse_args(["nse-original-india"]).command == "nse-original-india"
         with pytest.raises(SystemExit):
-            parser.parse_args(["india"])
-        assert [s.name for s in runner.build_download_steps("fyers-india")] == ["download-fyers-india"]
-        assert [s.name for s in runner.build_download_steps("nse-original-india")] == ["check-nse-original"]
+            parser.parse_args(["plugin", "--parquet-only", "--tokenmap-only"])
+        with pytest.raises(SystemExit):
+            parser.parse_args(["plugin", "--parquet-only", "--postgres-push-only"])
+
+    def test_normalize_no_longer_takes_plugin_flags(self):
+        """They moved to the plugin command; leaving them would give two ways to
+        do it, one of which skips the normalize that makes the output consistent."""
+        from premarketv6 import cli
+        parser = cli.create_parser()
+        for flag in ("--plugin", "--tokenmap"):
+            with pytest.raises(SystemExit):
+                parser.parse_args(["normalize", flag])
+
+    def test_bare_plugin_selects_every_stage(self):
+        from premarketv6 import cli
+        args = cli.create_parser().parse_args(["plugin"])
+        assert not (args.parquet_only or args.postgres_push_only or args.tokenmap_only)
+
+
+class TestTokenMap:
+    """MDF's .bin token map. Every invariant here is a hard load failure in C++."""
+
+    @staticmethod
+    def _rows(pairs, key="def_raw_instrument_id"):
+        return [{key: str(i), "counterTokenV2": str(t)} for i, t in pairs]
+
+    def _built(self, pairs, venue="XCME", **kw):
+        from premarketv6.plugin import tokenmap
+        return tokenmap.build(venue, self._rows(pairs), **kw)
+
+    def test_fnv1a_matches_the_reference(self):
+        from premarketv6.plugin import tokenmap
+        def reference(body):
+            h = 0xCBF29CE484222325
+            for c in body:
+                h = ((h ^ c) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+            return h
+        for body in (b"", b"\x00", b"MDFVTOK1", bytes(range(256))):
+            assert tokenmap.fnv1a(body) == reference(body)
+
+    def test_header_layout_is_exact(self):
+        from premarketv6.plugin import tokenmap
+        blob = tokenmap.encode(self._built([(7, 11), (9, 12)]), built_at_ns=123)
+        assert blob[0:8] == b"MDFVTOK1"
+        assert struct.unpack_from("<II", blob, 8) == (1, 2)
+        assert blob[16:24] == b"XCME\x00\x00\x00\x00"
+        assert struct.unpack_from("<Q", blob, 24)[0] == 2
+        assert struct.unpack_from("<Q", blob, 32)[0] == 123
+        assert struct.unpack_from("<II", blob, 40) == (7, 9)
+        assert struct.unpack_from("<Q", blob, 48)[0] == tokenmap.fnv1a(blob[64:])
+        assert blob[56:64] == b"\x00" * 8
+        assert len(blob) == 64 + 2 * 8
+
+    def test_entries_are_u32_id_then_i32_token_little_endian(self):
+        from premarketv6.plugin import tokenmap
+        blob = tokenmap.encode(self._built([(0x01020304, 0x05060708)]))
+        assert blob[64:72] == bytes([4, 3, 2, 1, 8, 7, 6, 5])
+
+    def test_sorted_strictly_ascending(self):
+        assert [i for i, _ in self._built([(30, 1), (10, 2), (20, 3)]).entries] == [10, 20, 30]
+
+    def test_duplicate_instrument_id_is_fatal(self):
+        from premarketv6.plugin import tokenmap
+        with pytest.raises(tokenmap.DuplicateInstrumentId):
+            self._built([(5, 1), (5, 2)])
+
+    def test_identical_duplicate_is_not_fatal(self):
+        assert self._built([(5, 1), (5, 1)]).entries == [(5, 1)]
+
+    def test_instrument_id_zero_is_skipped_and_counted(self):
+        """0 is the C++ hash table's empty-slot marker, so such an entry would be
+        invisible to every lookup. Key given explicitly: with the column left to
+        precedence, a 0 among non-zeros is the ambiguity case below, not a bad row."""
+        built = self._built([(0, 1), (4, 2)], key="def_raw_instrument_id")
+        assert built.entries == [(4, 2)]
+        assert built.skips.reserved_id == 1
+        assert "reserved" in built.skips.describe()
+
+    def test_a_lone_zero_in_def_raw_is_ambiguity_not_a_bad_row(self):
+        """Deliberate, and the sharp edge of this module: 0 means both "drop this
+        row" (invariant 7) and "this column is unpopulated" (the XNAS fallback).
+        Precedence cannot tell them apart, so a mixed column stops the build
+        rather than guessing -- either answer yields a file that loads cleanly
+        while resolving every instrument to someone else's token."""
+        from premarketv6.plugin import tokenmap
+        with pytest.raises(tokenmap.PartiallyPopulated, match="1 of 2"):
+            self._built([(0, 1), (4, 2)])
+
+    def test_token_outside_positive_int32_is_skipped_and_counted(self):
+        built = self._built([(1, 0), (2, -5), (3, 2147483648), (4, 2147483647)])
+        assert built.entries == [(4, 2147483647)]
+        assert built.skips.token_out_of_range == 3
+
+    def test_unparseable_values_are_skipped_not_fatal(self):
+        from premarketv6.plugin import tokenmap
+        built = tokenmap.build("XCME", [
+            {"def_raw_instrument_id": "abc", "counterTokenV2": "1"},
+            {"def_raw_instrument_id": "5", "counterTokenV2": ""},
+            {"def_raw_instrument_id": "6", "counterTokenV2": "9"},
+        ], key="def_raw_instrument_id")
+        assert built.entries == [(6, 9)]
+        assert built.skips.unparseable_id == 1
+        assert built.skips.unparseable_token == 1
+
+    def test_key_column_precedence_not_size(self):
+        from premarketv6.plugin import tokenmap
+        rows = [{"def_raw_instrument_id": "7", "scriptToken": "100", "counterTokenV2": "1"},
+                {"def_raw_instrument_id": "8", "scriptToken": "200", "counterTokenV2": "2"}]
+        assert tokenmap.key_column(rows) == "def_raw_instrument_id"
+
+    def test_key_column_falls_back_when_def_raw_is_all_zero(self):
+        from premarketv6.plugin import tokenmap
+        rows = [{"def_raw_instrument_id": "0", "scriptToken": "5", "counterTokenV2": "1"},
+                {"def_raw_instrument_id": "0", "scriptToken": "6", "counterTokenV2": "2"}]
+        assert tokenmap.key_column(rows) == "scriptToken"
+
+    def test_partially_populated_def_raw_refuses_to_guess(self):
+        from premarketv6.plugin import tokenmap
+        rows = [{"def_raw_instrument_id": "7", "scriptToken": "5", "counterTokenV2": "1"},
+                {"def_raw_instrument_id": "0", "scriptToken": "6", "counterTokenV2": "2"}]
+        with pytest.raises(tokenmap.PartiallyPopulated):
+            tokenmap.key_column(rows)
+
+    def test_empty_map_refuses_to_encode(self):
+        from premarketv6.plugin import tokenmap
+        with pytest.raises(ValueError, match="no entries survived"):
+            tokenmap.encode(self._built([(0, 1)]))
+
+    def test_verify_accepts_our_own_output(self):
+        from premarketv6.plugin import tokenmap
+        info = tokenmap.verify(tokenmap.encode(self._built([(3, 1), (4, 2)])), "XCME")
+        assert info["entries"] == 2 and info["min_id"] == 3 and info["max_id"] == 4
+        assert info["bytes"] == 64 + 2 * 8
+
+    @pytest.mark.parametrize("corrupt,message", [
+        (lambda b: b"XXXXXXXX" + b[8:], "magic"),
+        (lambda b: b[:8] + struct.pack("<I", 2) + b[12:], "format version"),
+        (lambda b: b + b"\x00", "expected exactly"),
+        (lambda b: b[:-1], "expected exactly"),
+        (lambda b: b[:48] + struct.pack("<Q", 0) + b[56:], "FNV-1a"),
+        (lambda b: b[:56] + b"\x01" * 8, "reserved"),
+    ])
+    def test_verify_catches_each_corruption(self, corrupt, message):
+        from premarketv6.plugin import tokenmap
+        blob = tokenmap.encode(self._built([(3, 1), (4, 2)]))
+        with pytest.raises(ValueError, match=message):
+            tokenmap.verify(corrupt(blob), "XCME")
+
+    def test_verify_rejects_the_wrong_venue(self):
+        from premarketv6.plugin import tokenmap
+        with pytest.raises(ValueError, match="venue"):
+            tokenmap.verify(tokenmap.encode(self._built([(3, 1)])), "XNAS")
+
+    def test_filename_is_exact(self):
+        from premarketv6.plugin import tokenmap
+        assert tokenmap.filename("XCME") == "tokenmap.XCME.bin"
+        assert tokenmap.filename("xnas") == "tokenmap.XNAS.bin"
+
+    def test_write_is_atomic_and_leaves_no_temp(self, tmp_path):
+        from premarketv6.plugin import tokenmap
+        target = tmp_path / "sub" / tokenmap.filename("XCME")
+        tokenmap.write(target, tokenmap.encode(self._built([(3, 1)])))
+        assert target.exists()
+        assert [p.name for p in target.parent.iterdir()] == [target.name]
+
+    def test_output_lands_under_the_plugin_directory(self):
+        from premarketv6.plugin import tokenmap
+        assert tokenmap.tokenmap_dir("20260907") == paths.plugin_dir("20260907") / "tokenmap"
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# Databento publish-window timing hints
+# ---------------------------------------------------------------------------
+
+def test_timing_hint_reports_current_utc():
+    """The clock is the point -- every hint leads with it."""
+    now = datetime(2026, 9, 8, 3, 10, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("EQUS.MINI", date(2026, 9, 8), now)
+    assert hint.startswith("Now 03:10:00Z.")
+
+
+def test_timing_hint_counts_forward_to_an_unopened_window():
+    now = datetime(2026, 9, 8, 3, 10, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("EQUS.MINI", date(2026, 9, 8), now)
+    assert "~05:00-06:00Z, about 1h50m from now" in hint
+
+
+def test_timing_hint_marks_a_window_that_is_open():
+    now = datetime(2026, 9, 8, 5, 30, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("EQUS.MINI", date(2026, 9, 8), now)
+    assert "that window is open now" in hint
+
+
+def test_timing_hint_counts_back_from_a_closed_window():
+    now = datetime(2026, 9, 8, 11, 33, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 8), now)
+    assert "today's window closed 33m ago" in hint
+
+
+def test_timing_hint_says_a_closed_session_will_never_publish():
+    """2026-09-07 is Labor Day: XNYS is shut, so waiting cannot help."""
+    now = datetime(2026, 9, 7, 11, 33, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 7), now)
+    assert "not a trading day for US options markets" in hint
+    assert "re-running will not help" in hint
+
+
+def test_timing_hint_keeps_glbx_on_its_own_calendar():
+    """CME trades Labor Day even though NYSE does not; GLBX must not be
+    told its definitions are hopeless on a day CME is open."""
+    now = datetime(2026, 9, 7, 11, 33, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("GLBX.MDP3", date(2026, 9, 7), now)
+    assert "re-running will not help" not in hint
+
+
+def test_is_trading_session_returns_none_for_an_unknown_dataset():
+    """Unknowable must stay None -- a message may not assert a closure it
+    cannot back."""
+    assert databento_src._is_trading_session("XXXX.YYYY", date(2026, 9, 7)) is None
+
+
+def test_format_duration_shapes():
+    assert databento_src._format_duration(timedelta(seconds=30)) == "30s"
+    assert databento_src._format_duration(timedelta(minutes=48)) == "48m"
+    assert databento_src._format_duration(timedelta(hours=11, minutes=5)) == "11h05m"
+
+
+def test_timing_hint_never_leaks_a_calendar_id():
+    """An XCBO run has no business naming XNYS -- a different exchange. The
+    calendar is an implementation detail; the message names the market."""
+    now = datetime(2026, 9, 7, 11, 40, 0, tzinfo=timezone.utc)
+    for dataset in ("EQUS.MINI", "OPRA.PILLAR", "GLBX.MDP3"):
+        hint = databento_src._timing_hint(dataset, date(2026, 9, 7), now)
+        for calendar, _label in databento_src.SESSION_CALENDARS.values():
+            assert calendar not in hint, f"{dataset} leaked {calendar}"
+
+
+def test_options_and_equities_share_the_us_session_calendar():
+    """US options follow the US equity holiday schedule, and there is no OPRA
+    calendar to use instead."""
+    calendars = databento_src.SESSION_CALENDARS
+    assert calendars["OPRA"][0] == calendars["EQUS"][0]
+    assert calendars["GLBX"][0] != calendars["EQUS"][0]
+
+
+def test_cme_is_named_singular_and_markets_plural():
+    """'CME are not open' was the bug in the first wording."""
+    shut_cme = datetime(2026, 12, 25, 3, 0, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("GLBX.MDP3", date(2026, 12, 25), shut_cme)
+    assert "is not a trading day for CME" in hint
+    now = datetime(2026, 9, 7, 11, 40, 0, tzinfo=timezone.utc)
+    hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 7), now)
+    assert "is not a trading day for US options markets" in hint

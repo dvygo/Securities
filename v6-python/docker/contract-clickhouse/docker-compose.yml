@@ -1,0 +1,64 @@
+# ClickHouse — contract symbology contracts/baskets push (single instance).
+#
+# Host ports:
+#   contractdb-clickhouse  localhost:8744  — HTTP, what clickhouse-connect uses
+#                          localhost:7744  — native TCP, for clickhouse-client
+#
+# From v6-python/:
+#   docker compose -f docker/contract-clickhouse/docker-compose.yml up -d
+#
+# Fresh cluster (wipes data):
+#   docker compose -f docker/contract-clickhouse/docker-compose.yml down -v
+#   docker compose -f docker/contract-clickhouse/docker-compose.yml up -d
+#
+# Matches conf/config.ini [clickhouse]:
+#   host = 127.0.0.1 / port = 8744 / tcp_port = 7744
+#   database = xdb / username = xuser / password = changeme
+#
+# The database must use the Atomic engine -- clickhouse_export swaps every load
+# in with EXCHANGE TABLES, which Ordinary does not support. Atomic is the default
+# for a database created by CLICKHOUSE_DB on any server since 20.10, so this is
+# a note for anyone creating one by hand, not something to configure here.
+
+name: contract-clickhouse
+
+services:
+  contractdb-clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: contractdb-clickhouse
+    hostname: contractdb-clickhouse
+    environment:
+      CLICKHOUSE_DB: xdb
+      CLICKHOUSE_USER: xuser
+      CLICKHOUSE_PASSWORD: changeme
+      # Without this the bootstrapped user cannot CREATE/DROP, and every push
+      # fails at the staging table rather than at connect, which reads as a
+      # data problem instead of a permissions one.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8744:8123"
+      - "7744:9000"
+    volumes:
+      - contract_clickhouse_data:/var/lib/clickhouse
+      # ONE FILE, not the directory. Mounting config.d/ wholesale shadows the
+      # image's own docker_related_config.xml, whose only job is to set
+      # listen_host to 0.0.0.0 -- without it the server binds 127.0.0.1 inside
+      # the container, stays healthy, and resets every connection on the
+      # published port.
+      - ./config.d/lightweight.xml:/etc/clickhouse-server/config.d/lightweight.xml:ro
+    ulimits:
+      # ClickHouse opens a file per column part; the Docker default of 1024
+      # trips "Too many open files" partway through a large insert.
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  contract_clickhouse_data:

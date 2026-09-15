@@ -84,11 +84,20 @@ def qat_dir() -> Path:
     return repo_root() / "docs" / "QAT_GENERATED"
 
 
+# The subdirectory holding everything this pipeline derives, under each day.
+# Named for what it contains rather than for the pipeline version: the raw vendor
+# drops sit beside it as data/YYYYMMDD/<VENUE>/, and this is what was made FROM
+# them. Was "v6" until 2026-09-07; every manifest written before that records its
+# outputs under the old name, so a rename has to rewrite those strings too (see
+# qa/lineage.py's "recorded on disk" check, which resolves them literally).
+TRANSFORM_DIR = "TRANSFORM"
+
+
 def day_dir(as_of: str) -> Path:
-    """Day directory: data/YYYYMMDD/v6/ -- nested under v6/ so this pipeline's
+    """Day directory: data/YYYYMMDD/TRANSFORM/ -- nested so this pipeline's
     output never collides with v5-python's data/YYYYMMDD/ tree even though
     both share the same data_root()."""
-    return data_root() / as_of / "v6"
+    return data_root() / as_of / TRANSFORM_DIR
 
 
 def raw_dir(as_of: str) -> Path:
@@ -139,7 +148,8 @@ def fyers_segment_path(as_of: str, segment: str) -> Path:
     so the folder matches the unit of work rather than the vendor's name.
     """
     mic = FYERS_SEGMENT_MIC[segment]
-    return venue_dir(as_of, mic) / FYERS_RAW_SEGMENTS[segment]
+    _vendor_file, local_file = FYERS_RAW_SEGMENTS[segment]
+    return venue_dir(as_of, mic) / local_file
 
 
 def nse_exchange_raw_dir(as_of: str) -> Path:
@@ -288,6 +298,18 @@ DEFINITION_PASSTHROUGH_COLUMNS = [DEFINITION_COLUMN_PREFIX + f for f in DEFINITI
 
 
 # Canonical normalized column schema (16 columns)
+# Downstream gating flags. This pipeline writes 0 into both of them and never
+# reads either -- it has no opinion about whether a contract is enabled, because
+# it does not know what it would be enabled FOR. A later stage flips them and
+# further stages read them.
+#
+# Declared now, at 0, rather than when the first consumer appears: a column that
+# shows up later shifts the schema under whatever is already reading these files,
+# and qa/lineage.py has to report every earlier day as written without it. Two
+# are reserved because one was never going to be enough -- the same reasoning as
+# brokerScript2-4 below.
+ENABLE_COLUMNS = ["enable1", "enable2"]
+
 NORMALIZED_COLUMNS = [
     "scriptDetails",
     "scriptInstrumentType",
@@ -326,64 +348,72 @@ NORMALIZED_COLUMNS = [
     # script stops appearing. Carried in manifest.json per day. This is the one
     # to join on across dates -- counterToken is positional and must not be.
     "counterTokenV2",
-] + DEFINITION_PASSTHROUGH_COLUMNS
+] + ENABLE_COLUMNS + DEFINITION_PASSTHROUGH_COLUMNS
 
 # Contract columns = date + exchange + normalized columns
 CONTRACT_COLUMNS = ["date", "exchange"] + NORMALIZED_COLUMNS
 
-# Fyers raw segments: segment name -> CSV filename (without day directory)
+# Fyers raw segments: segment key -> (vendor's filename on the CDN, ours on disk).
+# The two names differ deliberately -- Fyers names a file after the exchange
+# segment it came from, we name it after the MIC it normalizes into. They used
+# to live in two tables in two modules, which is exactly how they drifted.
 FYERS_RAW_SEGMENTS = {
-    "xnse": "XNSE-FYERS.csv",
-    "xnfo": "XNFO-FYERS.csv",
-    "xncd": "XNCD-FYERS.csv",
-    "xbse": "XBSE-FYERS.csv",
-    "xbfo": "XBFO-FYERS.csv",
-    "xmcx": "XMCX-FYERS.csv",
+    "xnse": ("NSE_CM.csv", "XNSE-FYERS.csv"),
+    "xnfo": ("NSE_FO.csv", "XNFO-FYERS.csv"),
+    "xncd": ("NSE_CD.csv", "XNCD-FYERS.csv"),
+    "xbse": ("BSE_CM.csv", "XBSE-FYERS.csv"),
+    "xbfo": ("BSE_FO.csv", "XBFO-FYERS.csv"),
+    "xmcx": ("MCX_COM.csv", "XMCX-FYERS.csv"),
 }
 
-# Fyers MIC bundles: MIC -> (output_csv_name, postgres_table, source_csv_list)
+# Fyers MIC bundles: MIC -> (normalized_output, postgres_table, source_csv_list)
+#
+# This is what Fyers CAN serve, not what runs today. XNSE is here because Fyers
+# still publishes NSE_CM/FO/CD; whether we USE it is conf/config.ini's
+# [EXCHANGE:XNSE] feed =, resolved at run time by config.feed_for(). Deleting a
+# row here to switch a source is what broke download-india and every XNSE
+# basket -- three things derive from this table and only one of them said so.
 FYERS_MIC_BUNDLES = {
     # First element is the NORMALIZED output (Parquet); the list is the RAW Fyers
     # CSVs it is built from, which stay CSV because that is what the vendor ships.
-    # XNSE is here again: `fyers-india` covers the whole Fyers footprint, so the
-    # broker's own NSE view is downloaded and normalized alongside XBOM/XIMC.
-    # It does NOT displace normalize/nse_contract.py -- that step reads the
-    # exchange's own contract masters and stays the authority for XNSE. The two
-    # emit different files (XNSE-FYERS.parquet vs XNSE-NSE.parquet), but they
-    # would otherwise both write the single manifests/XNSE.json; VENUE_TOKEN_OWNER
-    # below settles that explicitly instead of letting step order decide it.
-    "XNSE": ("XNSE-FYERS.parquet", "xnse", ["XNSE-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv"]),
+    "XNSE": ("XNSE-FYERS.parquet", "xnse",
+             ["XNSE-FYERS.csv", "XNFO-FYERS.csv", "XNCD-FYERS.csv"]),
     "XBOM": ("XBOM-FYERS.parquet", "xbom", ["XBSE-FYERS.csv", "XBFO-FYERS.csv"]),  # BSE -> XBOM MIC
     "XIMC": ("XIMC-FYERS.parquet", "ximc", ["XMCX-FYERS.csv"]),
 }
 
-# MIC -> the ONE step allowed to write that venue's counter-token manifest.
-#
-# A MIC emitted by a single step is absent here and needs no arbitration. XNSE
-# is the exception: both normalize-fyers and normalize-nse-contract produce it,
-# and manifests/XNSE.json is one file with one allocation table. Without an
-# owner the later step overwrites the earlier one's table, so scripts that only
-# appear in the loser's feed lose their allocation and counterTokenV2 redraws a
-# new number for them tomorrow -- exactly the cross-date instability that token
-# is supposed to rule out.
-#
-# The exchange's own masters win because they are the authoritative universe;
-# the Fyers view is a second opinion on the same instruments. The non-owner
-# still writes its Parquet and still fills the positional counterToken (which is
-# per-output-file and explicitly not joinable across venues or dates); it leaves
-# counterTokenV2 blank rather than minting numbers it cannot durably record.
-VENUE_TOKEN_OWNER = {
-    "XNSE": "normalize-nse-contract",
+# Every normalized file a feed can write for a MIC: MIC -> feed -> filename.
+# A MIC served by more than one feed lists one entry per feed, and
+# config.feed_for() picks which is real on any given day. Anything that reads a
+# venue's normalized output (baskets, QA) resolves through here rather than
+# assuming a vendor, so a source switch does not rename a file out from under it.
+FEED_OUTPUTS = {
+    mic: {"fyers": output} for mic, (output, _table, _sources) in FYERS_MIC_BUNDLES.items()
 }
+# normalize/nse_contract.py's OUTPUT, stated here rather than imported to keep
+# paths.py free of pipeline imports. Guarded by a test that the two agree.
+FEED_OUTPUTS["XNSE"]["nse"] = "XNSE-NSE.parquet"
 
 # Segment -> owning MIC bundle, derived from FYERS_MIC_BUNDLES so a segment can
 # never be listed in one place and missing from the other.
 FYERS_SEGMENT_MIC = {
     segment: mic
     for mic, (_out, _table, sources) in FYERS_MIC_BUNDLES.items()
-    for segment, filename in FYERS_RAW_SEGMENTS.items()
-    if filename in sources
+    for segment, (_vendor, local) in FYERS_RAW_SEGMENTS.items()
+    if local in sources
 }
+
+# The derivation above drops silently: a segment whose file no MIC claims just
+# vanishes, and the KeyError only surfaces later, deep in a download. Fail here
+# instead, at import, naming the segment.
+_unrouted = set(FYERS_RAW_SEGMENTS) - set(FYERS_SEGMENT_MIC)
+if _unrouted:
+    raise RuntimeError(
+        f"Fyers segment(s) {sorted(_unrouted)} are in FYERS_RAW_SEGMENTS but no "
+        f"FYERS_MIC_BUNDLES entry lists their file. Add the segment to a bundle's "
+        f"source list, or drop it from FYERS_RAW_SEGMENTS -- do not leave it "
+        f"downloadable but unroutable.")
+del _unrouted
 
 # NSE segments
 NSE_SEGMENTS = {
@@ -398,22 +428,80 @@ NSE_SEGMENTS = {
 # *_FUTURES baskets below). XNAS/XCBO/XCME are venue underlying-symbol lists
 # consumed directly by sources/databento_src.py for download selection, not
 # basket-refresh targets -- excluded here.
-BASKET_NAMES = [
-    "XNSE_NIFTYFNO_EQUITY",
-    "XNSE_NIFTYFNO_FUTURES_ALL",
-    "XNSE_NIFTYFNO_FUTURES_NEAR",
-    "ALL_INDEX_FUTURES",
-    "XNSE_INDEX_FUTURES_ALL",
+# Futures whose roots come from their OWN definition file -- index and commodity
+# futures, where no equity membership list sits behind them.
+#   name -> (MIC, near_only)
+# near_only=True keeps one contract per root (the front month); False keeps every
+# live expiry. Every futures basket exists as a NEAR/ALL pair so a caller never
+# has to know which depth an unsuffixed name meant.
+INDEX_FUTURES_SOURCES = {
+    "XNSE_INDEX_FUTURES_NEAR": ("XNSE", True),
+    "XNSE_INDEX_FUTURES_ALL":  ("XNSE", False),
+    "XBOM_INDEX_FUTURES_NEAR": ("XBOM", True),
+    "XBOM_INDEX_FUTURES_ALL":  ("XBOM", False),
+    "XIMC_FUTURES_NEAR":       ("XIMC", True),
+    "XIMC_FUTURES_ALL":        ("XIMC", False),
+}
+
+# Futures whose roots come from an equity index list.
+#   name -> (equity basket, near_only)
+# The equity basket is index membership; the futures are re-picked from today's
+# data, so these stay correct as contracts roll.
+EQUITY_FUTURES_SOURCES = {
+    "XNSE_NIFTYFNO_FUTURES_NEAR": ("XNSE_NIFTYFNO_EQUITY", True),
+    "XNSE_NIFTYFNO_FUTURES_ALL":  ("XNSE_NIFTYFNO_EQUITY", False),
+    "XNSE_NIFTY50_FUTURES_NEAR":  ("XNSE_NIFTY50_EQUITY",  True),
+    "XNSE_NIFTY50_FUTURES_ALL":   ("XNSE_NIFTY50_EQUITY",  False),
+    "XNSE_NIFTY100_FUTURES_NEAR": ("XNSE_NIFTY100_EQUITY", True),
+    "XNSE_NIFTY100_FUTURES_ALL":  ("XNSE_NIFTY100_EQUITY", False),
+    "XNSE_NIFTY500_FUTURES_NEAR": ("XNSE_NIFTY500_EQUITY", True),
+    "XNSE_NIFTY500_FUTURES_ALL":  ("XNSE_NIFTY500_EQUITY", False),
+}
+
+# Equity index membership lists, resolved by exact script match.
+EQUITY_BASKETS = {
+    "XNSE_NIFTYFNO_EQUITY": "XNSE",
+    "XNSE_NIFTY50_EQUITY":  "XNSE",
+    "XNSE_NIFTY100_EQUITY": "XNSE",
+    "XNSE_NIFTY200_EQUITY": "XNSE",
+    "XNSE_NIFTY500_EQUITY": "XNSE",
+}
+
+
+def options_basket_name(futures: str) -> str:
+    """XNSE_NIFTY50_FUTURES_NEAR -> XNSE_OPTIONS_NIFTY50_FUTURES_NEAR."""
+    mic, _, rest = futures.partition("_")
+    return f"{mic}_OPTIONS_{rest}"
+
+
+# Every futures basket gets an option chain on the same underlyings at the same
+# depth: option basket -> (futures basket it takes roots from, MIC, near_only).
+# DERIVED, not typed out -- a futures basket added above cannot be left without
+# its options, which is the drift that would otherwise need remembering.
+OPTION_BASKET_SOURCES = {
+    options_basket_name(f): (f, mic, near)
+    for f, (mic, near) in INDEX_FUTURES_SOURCES.items()
+}
+OPTION_BASKET_SOURCES.update({
+    options_basket_name(f): (f, "XNSE", near)
+    for f, (_equity, near) in EQUITY_FUTURES_SOURCES.items()
+})
+
+# The union basket, spelled out because its parts are deliberately asymmetric:
+# NSE and BSE contribute their front month, MCX every live expiry.
+ALL_INDEX_FUTURES_PARTS = [
     "XNSE_INDEX_FUTURES_NEAR",
-    "XBOM_INDEX_FUTURES",
+    "XBOM_INDEX_FUTURES_NEAR",
     "XIMC_FUTURES_ALL",
-    "XIMC_CRUDE_NEAREST_NXTNEAREST",
-    "XIMC_BULLDEX_NEAREST_NXTNEAREST",
-    "XNSE_NIFTY50_EQUITY",
-    "XNSE_NIFTY100_EQUITY",
-    "XNSE_NIFTY200_EQUITY",
-    "XNSE_NIFTY500_EQUITY",
-    "XNSE_NIFTY500_FUTURES",
+]
+
+# Derived so a basket can never be defined above and left unregistered here.
+BASKET_NAMES = [
+    *EQUITY_BASKETS,
+    "ALL_INDEX_FUTURES",
+    *INDEX_FUTURES_SOURCES,
+    *EQUITY_FUTURES_SOURCES,
+    *OPTION_BASKET_SOURCES,
 ]
 
 

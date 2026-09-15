@@ -30,6 +30,9 @@ class Opts:
     # means every venue config.ini enables. Narrows a run; it cannot widen one,
     # so a venue with enabled = 0 stays off even when named here.
     venues: tuple = ()
+    # --tokenmap-dir: where the MDF .bin maps are written. None puts them in the
+    # day's own tree; point it at MDF's config/cpp-vendor/ to deliver directly.
+    tokenmap_dir: Optional[str] = None
 
 
 def venue_selected(opts: "Opts", mic: str) -> bool:
@@ -65,13 +68,12 @@ def expand_only(only: List[str], all_steps: List[Step]) -> List[Step]:
         "fyers": ["normalize-fyers"],
         "databento": ["normalize-databento"],
         "nse": ["normalize-nse"],
-        "fyers-india": ["download-fyers-india"],
-        "nse-original-india": ["check-nse-original"],
+        "india": ["download-india"],
         "xcme": ["download-xcme"],
         "xcbo": ["download-xcbo"],
         "xnas": ["download-xnas"],
-        "live": ["download-fyers-india-live", "download-xcme-live", "download-xcbo-live", "download-xnas-live"],
-        "hist": ["download-fyers-india-hist", "download-xcme-hist", "download-xcbo-hist", "download-xnas-hist"],
+        "live": ["download-india-live", "download-xcme-live", "download-xcbo-live", "download-xnas-live"],
+        "hist": ["download-india-hist", "download-xcme-hist", "download-xcbo-hist", "download-xnas-hist"],
         "normalize": [
             "normalize-fyers",
             "normalize-nse",
@@ -118,6 +120,8 @@ def build_normalizer_steps(
     only: List[str],
     contracts_push_only: bool = False,
     plugin: bool = False,
+    postgres_plugin: Optional[bool] = None,
+    tokenmap: bool = False,
     csv_only: bool = False,
 ) -> List[Step]:
     """
@@ -142,7 +146,7 @@ def build_normalizer_steps(
     # to repeat an argument.
     baskets_enabled = config.load_baskets().enabled
     from .normalize import fields, databento_norm, nse_norm, nse_contract
-    from .plugin import build as plugin_build, postgres as plugin_postgres
+    from .plugin import build as plugin_build, tokenmap as plugin_tokenmap, postgres as plugin_postgres
 
     all_steps = [
         Step("normalize-fyers", fields.run),
@@ -156,12 +160,24 @@ def build_normalizer_steps(
         all_steps.append(Step("baskets", baskets.run))
     all_steps.append(Step("csv-export", export.run))
 
+    # Plugin-family output, in the order the `plugin` command runs it: build the
+    # Parquet, push it, then generate the token map. Each is independently
+    # selectable so `plugin --postgres-push-only` can push without rebuilding.
+    #
+    # postgres_plugin defaults to "whenever the Parquet is being built", which is
+    # what --plugin used to mean; pass it explicitly to decouple the two.
+    if postgres_plugin is None:
+        postgres_plugin = plugin
     if plugin:
         all_steps.append(Step("plugin", plugin_build.run))
-        # Building plugin CSVs otherwise pushes them too -- --csv-only is the
-        # opt-out.
-        if not csv_only:
-            all_steps.append(Step("postgres-plugin", plugin_postgres.run))
+    if postgres_plugin and not csv_only:
+        # --csv-only is the opt-out: building the Parquet otherwise pushes it too.
+        all_steps.append(Step("postgres-plugin", plugin_postgres.run))
+    # The token map is plugin-family output -- someone else's binary format, like
+    # the pg schema -- but it pushes nowhere: a C++ lane loads the file directly,
+    # on its own delivery cadence.
+    if tokenmap:
+        all_steps.append(Step("tokenmap", plugin_tokenmap.run))
 
     # The contracts push is ClickHouse now (see clickhouse_export). postgres-plugin
     # above is unaffected and still writes to Postgres.
@@ -188,22 +204,15 @@ def build_normalizer_steps(
 
 
 def build_download_steps(
-    venue: str,  # "fyers-india", "nse-original-india", "xcme", "xcbo", "xnas"
+    venue: str,  # "india", "xcme", "xcbo", "xnas"
     mode: Optional[str] = None,  # "live" or "hist" or None for both
 ) -> List[Step]:
     """Build download steps for a given venue."""
-    from .sources import fyers_src, databento_src, nse_original
+    from .sources import fyers_src, databento_src
 
-    if venue == "fyers-india":
-        # Every segment Fyers serves: XNSE (cash, F&O, currency), XBOM, XIMC.
+    if venue == "india":
         return [
-            Step("download-fyers-india", lambda opts: fyers_src.download(opts)),
-        ]
-    elif venue == "nse-original-india":
-        # Not a download: NSE's own masters arrive as a broker drop, so this
-        # confirms today's drop is complete (sources/nse_original.py).
-        return [
-            Step("check-nse-original", nse_original.run),
+            Step("download-india", lambda opts: fyers_src.download(opts)),
         ]
     elif venue == "xcme":
         steps = []

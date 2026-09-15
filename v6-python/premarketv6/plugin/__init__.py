@@ -7,7 +7,7 @@ fixed by docs/plugin/pg_data_types.txt and whose table DDL lives outside this
 repo. Keeping them apart means a change to our schema cannot silently reshape
 what the plugin pushes, and the reverse.
 
-  build.py     normalized parquet -> plugin parquet in data/YYYYMMDD/v6/plugin/
+  build.py     normalized parquet -> plugin parquet in data/YYYYMMDD/TRANSFORM/plugin/
   postgres.py  that plugin parquet -> the external Postgres table, upserted on
                (token, trade_date)
 

@@ -1,5 +1,5 @@
-# check-lineage [ALL]  2026-09-02 10:26:40Z
-# 364 check(s): 363 pass, 0 fail, 1 warn
+# check-lineage [ALL]  2026-09-07 05:17:48Z
+# 425 check(s): 421 pass, 0 fail, 4 warn
 [ALL] PASS 20260824              XCBO  raw is this day    1 file(s); every window starts inside the day
 [ALL] PASS 20260824              XCBO  raw is this venue  OPRA.PILLAR/definition
 [ALL] PASS 20260824              XCBO  one session        opra-pillar-20260824.definition.dbn.zst (2,006,525)
@@ -343,6 +343,19 @@
 [ALL] PASS 20260901              XNSE  recorded unchanged 4 file(s) still hash to what was recorded
 [ALL] PASS 20260901              XNSE  recorded rows      96,997 row(s) recorded and counted
 [v2] PASS 20260901              *     pg key unique      3,057,161 row(s) across 6 venue file(s), 3,057,161 distinct token(s) -- (token, trade_date) is the primary key the push upserts on
+[ALL] PASS 20260902              XCBO  raw is this day    1 file(s); every window starts inside the day
+[ALL] PASS 20260902              XCBO  raw is this venue  OPRA.PILLAR/definition
+[ALL] PASS 20260902              XCBO  one session        opra-pillar-20260902.definition.dbn.zst (2,002,195)
+[ALL] WARN 20260902              XCBO  full day           opra-pillar-20260902.definition.dbn.zst ends 11:00Z (download clamped to what had published)
+[ALL] PASS 20260902              XCBO  row accounting     2,002,195 raw record(s) - 0 duplicate id(s) - 0 with no symbol = 2,002,195, file has 2,002,195
+[ALL] PASS 20260902              XCBO  no invented rows   2,002,195 distinct scriptToken(s), 0 with no matching instrument_id in the raw file
+[ALL] PASS 20260902              XCBO  symbol carried     0 row(s) whose script differs from the raw_symbol on the same instrument_id
+[ALL] PASS 20260902              XCBO  strip accounting   2,002,195 normalized - 0 expired before 20260902 00:00Z = 2,002,195, plugin has 2,002,195
+[v2] PASS 20260902              XCBO  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
+[ALL] PASS 20260902              XCBO  no empty column    17 column(s), none empty on 2,002,195 rows
+[ALL] PASS 20260902              XCBO  recorded on disk   2 file(s) named by the manifest are present
+[ALL] PASS 20260902              XCBO  recorded unchanged 2 file(s) still hash to what was recorded
+[ALL] PASS 20260902              XCBO  recorded rows      2,002,195 row(s) recorded and counted
 [ALL] PASS 20260902              XCME  raw is this day    1 file(s); every window starts inside the day
 [ALL] PASS 20260902              XCME  raw is this venue  GLBX.MDP3/definition
 [ALL] PASS 20260902              XCME  one session        glbx-mdp3-20260902.definition.dbn.zst (1,251,010)
@@ -356,6 +369,19 @@
 [ALL] PASS 20260902              XCME  recorded on disk   2 file(s) named by the manifest are present
 [ALL] PASS 20260902              XCME  recorded unchanged 2 file(s) still hash to what was recorded
 [ALL] PASS 20260902              XCME  recorded rows      1,005,802 row(s) recorded and counted
+[ALL] PASS 20260902              XNAS  raw is this day    1 file(s); every window starts inside the day
+[ALL] PASS 20260902              XNAS  raw is this venue  EQUS.MINI/definition
+[ALL] PASS 20260902              XNAS  one session        equs-mini-20260902.definition.dbn.zst (13,211)
+[ALL] WARN 20260902              XNAS  full day           equs-mini-20260902.definition.dbn.zst ends 11:10Z (download clamped to what had published)
+[ALL] PASS 20260902              XNAS  row accounting     13,211 raw record(s) - 0 duplicate id(s) - 0 with no symbol = 13,211, file has 13,211
+[ALL] PASS 20260902              XNAS  no invented rows   13,211 distinct scriptToken(s), 0 with no matching instrument_id in the raw file
+[ALL] PASS 20260902              XNAS  symbol carried     0 row(s) whose script differs from the raw_symbol on the same instrument_id
+[ALL] PASS 20260902              XNAS  strip accounting   13,211 normalized - 0 expired before 20260902 00:00Z = 13,211, plugin has 13,211
+[v2] PASS 20260902              XNAS  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
+[ALL] PASS 20260902              XNAS  no empty column    17 column(s), none empty on 13,211 rows
+[ALL] PASS 20260902              XNAS  recorded on disk   2 file(s) named by the manifest are present
+[ALL] PASS 20260902              XNAS  recorded unchanged 2 file(s) still hash to what was recorded
+[ALL] PASS 20260902              XNAS  recorded rows      13,211 row(s) recorded and counted
 [ALL] PASS 20260902              XNSE  raw present        no DBN drop -- normalized from a streamed source, lineage starts here
 [ALL] PASS 20260902              XNSE  strip accounting   127,779 normalized - 0 expired before 20260902 00:00Z = 127,779, plugin has 127,779
 [v2] PASS 20260902              XNSE  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
@@ -363,4 +389,39 @@
 [ALL] PASS 20260902              XNSE  recorded on disk   4 file(s) named by the manifest are present
 [ALL] PASS 20260902              XNSE  recorded unchanged 4 file(s) still hash to what was recorded
 [ALL] PASS 20260902              XNSE  recorded rows      127,779 row(s) recorded and counted
-[v2] PASS 20260902              *     pg key unique      990,961 row(s) across 2 venue file(s), 990,961 distinct token(s) -- (token, trade_date) is the primary key the push upserts on
+[v2] PASS 20260902              *     pg key unique      3,006,367 row(s) across 4 venue file(s), 3,006,367 distinct token(s) -- (token, trade_date) is the primary key the push upserts on
+[ALL] PASS 20260907              XBOM  raw present        no DBN drop -- normalized from a streamed source, lineage starts here
+[ALL] PASS 20260907              XBOM  strip accounting   20,051 normalized - 0 expired before 20260907 00:00Z = 20,051, plugin has 20,051
+[v2] PASS 20260907              XBOM  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
+[ALL] PASS 20260907              XBOM  no empty column    17 column(s), none empty on 20,051 rows
+[ALL] PASS 20260907              XBOM  recorded on disk   3 file(s) named by the manifest are present
+[ALL] PASS 20260907              XBOM  recorded unchanged 3 file(s) still hash to what was recorded
+[ALL] PASS 20260907              XBOM  recorded rows      20,051 row(s) recorded and counted
+[ALL] PASS 20260907              XCME  raw is this day    1 file(s); every window starts inside the day
+[ALL] PASS 20260907              XCME  raw is this venue  GLBX.MDP3/definition
+[ALL] PASS 20260907              XCME  one session        glbx-mdp3-20260907.definition.dbn.zst (1,011,667)
+[ALL] WARN 20260907              XCME  full day           glbx-mdp3-20260907.definition.dbn.zst ends 03:00Z (download clamped to what had published)
+[ALL] PASS 20260907              XCME  row accounting     1,011,667 raw record(s) - 147,695 duplicate id(s) - 0 with no symbol = 863,972, file has 863,972
+[ALL] PASS 20260907              XCME  no invented rows   863,972 distinct scriptToken(s), 0 with no matching instrument_id in the raw file
+[ALL] PASS 20260907              XCME  symbol carried     0 row(s) whose script differs from the raw_symbol on the same instrument_id
+[ALL] PASS 20260907              XCME  strip accounting   863,972 normalized - 31,123 expired before 20260907 00:00Z = 832,849, plugin has 832,849
+[v2] PASS 20260907              XCME  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
+[ALL] PASS 20260907              XCME  no empty column    17 column(s), none empty on 832,849 rows
+[ALL] PASS 20260907              XCME  recorded on disk   2 file(s) named by the manifest are present
+[ALL] PASS 20260907              XCME  recorded unchanged 2 file(s) still hash to what was recorded
+[ALL] PASS 20260907              XCME  recorded rows      863,972 row(s) recorded and counted
+[ALL] PASS 20260907              XIMC  raw present        no DBN drop -- normalized from a streamed source, lineage starts here
+[ALL] PASS 20260907              XIMC  strip accounting   15,586 normalized - 0 expired before 20260907 00:00Z = 15,586, plugin has 15,586
+[v2] PASS 20260907              XIMC  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
+[ALL] PASS 20260907              XIMC  no empty column    17 column(s), none empty on 15,586 rows
+[ALL] PASS 20260907              XIMC  recorded on disk   2 file(s) named by the manifest are present
+[ALL] PASS 20260907              XIMC  recorded unchanged 2 file(s) still hash to what was recorded
+[ALL] PASS 20260907              XIMC  recorded rows      15,586 row(s) recorded and counted
+[ALL] PASS 20260907              XNSE  raw present        no DBN drop -- normalized from a streamed source, lineage starts here
+[ALL] PASS 20260907              XNSE  strip accounting   98,456 normalized - 0 expired before 20260907 00:00Z = 98,456, plugin has 98,456
+[v2] PASS 20260907              XNSE  token carried      0 plugin row(s) whose token is not the counterTokenV2 of the normalized row with the same script
+[ALL] PASS 20260907              XNSE  no empty column    17 column(s), none empty on 98,456 rows
+[ALL] PASS 20260907              XNSE  recorded on disk   4 file(s) named by the manifest are present
+[ALL] PASS 20260907              XNSE  recorded unchanged 4 file(s) still hash to what was recorded
+[ALL] PASS 20260907              XNSE  recorded rows      98,456 row(s) recorded and counted
+[v2] PASS 20260907              *     pg key unique      966,942 row(s) across 4 venue file(s), 966,942 distinct token(s) -- (token, trade_date) is the primary key the push upserts on

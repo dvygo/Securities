@@ -159,6 +159,33 @@ def load_exchanges() -> dict[str, ExchangeCfg]:
     return out
 
 
+DEFAULT_FEEDS = {"XNSE": "fyers", "XBOM": "fyers", "XIMC": "fyers"}
+
+
+def feed_for(mic: str) -> str:
+    """Which feed owns a MIC today: [EXCHANGE:<MIC>] feed = in conf/config.ini.
+
+    This is the ONE switch for a venue's source. A normalize step runs a MIC
+    only when it owns it, so flipping this value moves a venue between feeds
+    without anything being written twice and without a file being renamed out
+    from under baskets -- see paths.FEED_OUTPUTS.
+
+    Falls back to DEFAULT_FEEDS (then "databento") when the section omits it,
+    matching load_exchanges' own default, so a config that predates this key
+    keeps working.
+    """
+    code = (mic or "").upper()
+    cfg = load_exchanges().get(code.lower())
+    if cfg is not None and cfg.feed:
+        return cfg.feed.strip().lower()
+    return DEFAULT_FEEDS.get(code, "databento")
+
+
+def owns(mic: str, feed: str) -> bool:
+    """True when `feed` is the feed configured to serve `mic` today."""
+    return feed_for(mic) == feed.strip().lower()
+
+
 @dataclass
 class FyersCfg:
     """Fyers configuration."""

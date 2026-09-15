@@ -1,10 +1,7 @@
 """NSE official contract masters -> the canonical schema, for XNSE.
 
-The authoritative XNSE source, read from the exchange's own files, which the
-broker drops in as a folder each day (`nse-original-india` checks the drop is
-complete). Fyers' XNSE/XNFO/XNCD CSVs are still normalized alongside it as
-XNSE-FYERS.parquet, but this step owns manifests/XNSE.json -- see
-paths.VENUE_TOKEN_OWNER:
+Replaces the three Fyers CSVs (XNSE/XNFO/XNCD) with the exchange's own files,
+which the broker drops in as a folder each day:
 
     data/YYYYMMDD/XNSE/NEW FILE FORMAT/
         NSE_CM_security.csv     cash market      -> equities, ETFs, debt, G-secs
@@ -32,9 +29,9 @@ the strike encoded in the contract name (EURINR26O09116.25CE carries StrkPric
 currency file and does NOT give the scale; do not trust it.
 
 EXPIRY TIME IS NOT IN THE FILE. XpryDt lands at 20:00 IST. The pipeline's
-convention, inherited from the Fyers feed, is the session close:
+convention, inherited from the Fyers feed this replaces, is the session close:
 10:10 UTC for F&O and 07:00 UTC for currency. Converting the date and applying
-the segment's close reproduces the Fyers feed's timestamps exactly.
+the segment's close reproduces the previous feed's timestamps exactly.
 """
 import csv
 import datetime as dt
@@ -42,7 +39,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from .. import paths, parquet_export, runner, config
-from . import broker_script, counter_token, fields as fyers_fields
+from . import broker_script, counter_token, flags, fields as fyers_fields
 
 # The drop folder, named by the broker and kept verbatim so an operator sees the
 # same string in the pipeline as on disk.
@@ -236,6 +233,7 @@ def map_cash_row(row: Dict[str, str],
     }
     out["brokerScript1"] = broker_script.from_equity(script)
     broker_script.fill_unspecified(out)
+    flags.fill(out)
     return out
 
 
@@ -287,6 +285,7 @@ def map_derivative_row(row: Dict[str, str], segment: str) -> Optional[Dict[str, 
     }
     out["brokerScript1"] = broker_script.from_equity(script)
     broker_script.fill_unspecified(out)
+    flags.fill(out)
     return out
 
 
@@ -368,6 +367,9 @@ def run(opts: runner.Opts) -> None:
     """
     if opts.dry_run:
         print("DRY RUN: Would normalize NSE contract masters")
+        return
+    if not config.owns("XNSE", "nse"):
+        print(f"  Skipping XNSE contract masters: feed = {config.feed_for('XNSE')}")
         return
     if not runner.venue_selected(opts, "XNSE"):
         return

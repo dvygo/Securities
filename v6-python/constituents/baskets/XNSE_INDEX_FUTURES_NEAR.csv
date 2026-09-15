@@ -1,6 +1,10 @@
-# generated from /root/mohan-dev/Foundry/v21/fyers/20260526 at 2026-05-26T16:26:39Z
-NSE:BANKNIFTY26MAYFUT
-NSE:FINNIFTY26MAYFUT
-NSE:MIDCPNIFTY26MAYFUT
-NSE:NIFTY26MAYFUT
-NSE:NIFTYNXT5026MAYFUT
+# futures basket -- roots from its own definition file
+# near: one contract per root (front month)
+# expiries are re-picked from today's data, so the contracts below go stale but the basket does not
+# refreshed from constituents/contracts/20260907/XNSE_INDEX_FUTURES_NEAR.parquet at 2026-09-07T04:00:13Z
+# 5 contract(s), expiries 26SEP
+NSE:BANKNIFTY26SEPFUT
+NSE:FINNIFTY26SEPFUT
+NSE:MIDCPNIFTY26SEPFUT
+NSE:NIFTY26SEPFUT
+NSE:NIFTYNXT5026SEPFUT

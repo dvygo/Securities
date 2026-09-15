@@ -10,7 +10,7 @@ import pandas as pd
 
 from .. import config, parquet_export, paths, runner
 from ..sources import databento_src as ds
-from . import broker_script, counter_token, price, session
+from . import broker_script, counter_token, flags, price, session
 
 
 # CME month character to month number mapping (for weekly expiries)
@@ -462,6 +462,7 @@ def map_xcme_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
     # trade rolls into the next one. 0BZ0 expires 2031-01-01 and is still 0B/Z30.
     result["brokerScript1"] = broker_script.from_glbx(symbol, contract_ns)
     broker_script.fill_unspecified(result)
+    flags.fill(result)
 
     return _fill_missing(result)
 
@@ -548,6 +549,7 @@ def map_xcbo_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         result["scriptInstrumentType"] = "OPTIDX" if is_index else "OPTSTK"
 
     broker_script.fill_unspecified(result)
+    flags.fill(result)
 
     result["tradingSessionUTC"] = (
         session.trading_session_for_xcbo_index(ref_date) if is_index else session.trading_session_for_xcbo_equity(ref_date)
@@ -588,6 +590,7 @@ def map_xnas_row(row: Dict[str, Any], ref_date=None) -> Dict[str, Any]:
         "brokerScript1": broker_script.from_equity(symbol),
     }
     broker_script.fill_unspecified(result)
+    flags.fill(result)
 
     return _fill_missing(result)
 

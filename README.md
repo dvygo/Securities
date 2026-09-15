@@ -12,7 +12,7 @@ comes from NSE's own contract masters for `XNSE` and from Fyers for `XBOM` and
 
 | Path | Status | What it is |
 |------|--------|------------|
-| [`v6-python/`](v6-python/) | **active** | Current pipeline. CLI: `python -m premarketv6 {fyers-india,nse-original-india,xcme,xcbo,xnas,normalize,check-tokens,check-lineage}`. See [`v6-python/README.md`](v6-python/README.md). |
+| [`v6-python/`](v6-python/) | **active** | Current pipeline. CLI: `python -m premarketv6 {india,xcme,xcbo,xnas,normalize,check-tokens,check-lineage}`. See [`v6-python/README.md`](v6-python/README.md). |
 | [`v5-python/`](v5-python/) | superseded | Previous pipeline. CLI: `python -m premarket {india,xcme,xcbo,xnas,normalize}`. |
 | [`v4-golang/`](v4-golang/) | legacy | Earlier Go rewrite. See [`v4-golang/README.md`](v4-golang/README.md) for its own build/run/schema docs. |
 | `__________v3_EquityAlgoV20260519-0/` | legacy | Old equity-algo scratch scripts, kept for reference only. |
@@ -31,8 +31,7 @@ cp conf/config.ini.example conf/config.ini
 # edit conf/config.ini: [databento] api_key, [EXCHANGE:*] venue ids
 
 python -m premarketv6 xcme --all-symbols --today
-python -m premarketv6 fyers-india
-python -m premarketv6 nse-original-india
+python -m premarketv6 india
 python -m premarketv6 normalize --plugin --csv-only
 ```
 
