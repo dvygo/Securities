@@ -1,7 +1,0 @@
-# futures basket -- roots from its own definition file
-# near: one contract per root (front month)
-# expiries are re-picked from today's data, so the contracts below go stale but the basket does not
-# refreshed from constituents/contracts/20260907/XBOM_INDEX_FUTURES_NEAR.parquet at 2026-09-07T04:00:13Z
-# 2 contract(s), expiries 26SEP
-BSE:BANKEX26SEPFUT
-BSE:SENSEX26SEPFUT
