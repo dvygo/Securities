@@ -1,83 +1,60 @@
 # Contributing
 
-Thanks for looking at Securities. This repo hosts two parallel
-implementations of the same symbology/basket pipeline — `v5-python/`
-(active) and `v4-golang/` (maintained). Pick whichever matches the change
-you're making; don't port a fix across both in the same PR unless it's the
-same root cause in both, and say so explicitly if you do.
+This branch is the 5.0.0 release. It holds one pipeline, `v5-python/`.
 
 ## Before you start
 
-- Open an issue first for anything beyond a small fix — new data sources,
-  schema changes, or pipeline-stage restructuring should be discussed before
-  you write code.
-- Check existing issues/PRs so we don't duplicate work.
+- For anything bigger than a small fix, open an issue first. That includes new data sources, schema changes, or reshuffling pipeline steps.
+- Check existing issues and PRs so work isn't duplicated.
 
 ## Setup
 
-### v5-python
-
 ```bash
 cd v5-python
-python -m venv .venv
-.venv/Scripts/pip install -e .[dev]   # Linux/macOS: source .venv/bin/activate first
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
 cp conf/config.ini.example conf/config.ini
+cp conf/keys.ini.example conf/keys.ini
 ```
 
-Run tests:
-
-```bash
-pytest
-```
-
-### v4-golang
-
-```powershell
-cd v4-golang
-copy conf\config.example.ini conf\config.ini
-go build ./...
-go test ./...
-```
-
-### Shared Postgres
+Contract DB, if you need to test the push:
 
 ```bash
 docker compose -f docker/contract-postgres/docker-compose.yml up -d
 ```
 
+Full operator setup is in `v5-python/docs/deploy/setup.markdown`.
+
+## Tests
+
+```bash
+cd v5-python
+pytest
+```
+
 ## Making a change
 
-1. Fork, branch off `main`.
-2. Keep the diff scoped to one thing — a bug fix, one new feature, one
-   refactor. Don't bundle unrelated cleanup into the same PR.
-3. Match the existing style in whichever pipeline you're touching (Python:
-   follow `v5-python/premarket/`'s existing module shape; Go: follow
-   `v4-golang/internal/`'s package layout).
-4. Add/update tests for the code you touch. A behavior change with no test
-   covering it will get asked for one.
-5. Run the pipeline's test suite (see above) and make sure it's green.
+1. Branch off `main`. Release fixes go on `releases/5.0.0`.
+2. One thing per PR: a bug fix, a feature or a refactor. Don't mix in unrelated cleanup.
+3. Follow the existing module shape in `v5-python/premarket/`.
+4. Add or update tests for what you touch. A behavior change needs a test.
+5. Run `pytest` before you push.
+6. If you change a command, a flag or the config, update the setup doc and the runbook in `v5-python/docs/` in the same PR.
 
 ## Secrets
 
-Never commit real API keys, database URLs with credentials, or `.ini` files
-that aren't the `.example` templates. Both pipelines gitignore `config.ini`/
-`config.example.ini` copies — if you're not sure whether something's safe to
-commit, ask in the PR rather than pushing it.
+Never commit real API keys, database URLs with passwords, `config.ini` or `keys.ini`. Only the `.example` files belong in git. If you're not sure, ask in the PR before pushing.
 
 ## Commit messages
 
-Conventional Commits style: `type(scope): summary` — `feat`, `fix`, `refactor`,
-`docs`, `test`, `chore`. Explain *why* in the body if the diff alone doesn't
-make it obvious; skip the body if it's self-explanatory.
+Use `type(scope): summary`, where type is `feat`, `fix`, `refactor`, `docs`, `test` or `chore`. Say *why* in the body when the diff doesn't make it obvious.
 
 ## Pull requests
 
-- Describe what changed and why, not just what the diff shows.
-- Link the issue it addresses, if any.
-- Note if it touches `v5-python`, `v4-golang`, or both — and if both, confirm
-  they were tested independently.
+- Say what changed and why.
+- Link the issue, if there is one.
 
 ## Code of conduct
 
-Be respectful, assume good faith, keep feedback focused on the code. Nothing
-formal beyond that for now.
+Be respectful, assume good faith, and keep feedback on the code.
