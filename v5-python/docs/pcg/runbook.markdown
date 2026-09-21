@@ -71,7 +71,13 @@ This builds the plugin CSVs in `data/YYYYMMDD/plugin/` and appends them to the `
 
 ## Check it landed
 
-In psql against the contract DB:
+Open psql on the contract DB. If it's the Docker one from setup, use:
+
+```
+docker exec -it contractdb-contract-contract psql -U contract -d contractdb
+```
+
+Then run:
 
 ```
 select exchange, count(*) from v4_YYYYMMDD.contracts group by exchange;
@@ -95,4 +101,4 @@ Each venue you downloaded should show a non-zero count.
 - Every run writes a log to `bin/LOGS/`. The path is printed at the top of the run as `Log: ...`.
 - `ModuleNotFoundError`: the venv isn't active. Run `source .venv/bin/activate`.
 - `Could not find v5-python repo root`: you're not in the `v5-python` folder. `cd` there.
-- Postgres connection errors: run the connection test from `docs/deploy/setup.markdown` step 8.
+- Postgres connection errors: run the connection test from `docs/deploy/setup.markdown` step 9.
