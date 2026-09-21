@@ -69,4 +69,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-[Apache License 2.0](LICENSE).
+[BSD 3-Clause](LICENSE). Copyright (c) 2026 Deshik Narasimha (dvygo), narasimhadeshik@gmail.com.
