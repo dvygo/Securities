@@ -33,6 +33,10 @@ class Opts:
     # --tokenmap-dir: where the MDF .bin maps are written. None puts them in the
     # day's own tree; point it at MDF's config/cpp-vendor/ to deliver directly.
     tokenmap_dir: Optional[str] = None
+    # The numbering session this run's normalizers assign counterTokenV2 through
+    # (normalize/numbering_session.Session). The CLI opens it around the steps;
+    # a normalizer refuses to number without one.
+    numbering: Optional[object] = None
 
 
 def venue_selected(opts: "Opts", mic: str) -> bool:

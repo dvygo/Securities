@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from .. import paths, parquet_export, runner, config
-from . import broker_script, counter_token, flags, fields as fyers_fields
+from . import broker_script, counter_token, flags, numbering_session, fields as fyers_fields
 
 # The drop folder, named by the broker and kept verbatim so an operator sees the
 # same string in the pipeline as on disk.
@@ -360,12 +360,14 @@ OUTPUT = "XNSE-NSE.parquet"
 def run(opts: runner.Opts) -> None:
     """Normalize step: the XNSE venue, from the exchange's own contract masters.
 
-    Numbering is the same contract every other venue keeps -- open the shared
-    sequence, carry the allocation forward, write the parquet, then the sequence,
-    then the manifest -- so XNSE's tokens stay stable across the source switch
-    and the venue's completion record means what it means everywhere else.
+    Numbering is the same contract every other venue keeps -- the numbering
+    session plans the day, reserves its numbers, the parquet is written, then the
+    session commits the manifest -- so XNSE's tokens stay stable across the
+    source switch and the venue's completion record means what it means
+    everywhere else.
     """
-    if opts.dry_run:
+    numbering = numbering_session.of(opts)
+    if opts.dry_run and not numbering.plans_preview:
         print("DRY RUN: Would normalize NSE contract masters")
         return
     if not config.owns("XNSE", "nse"):
@@ -375,16 +377,20 @@ def run(opts: runner.Opts) -> None:
         return
     if not present(opts.date_dir):
         print(f"  No NSE contract drop for XNSE ({drop_dir(opts.date_dir)})")
+        numbering.no_input(opts.date_dir, "XNSE", f"no contract drop in {drop_dir(opts.date_dir)}")
         return
 
     exchange_cfg = counter_token.exchange_for("XNSE")
     if exchange_cfg is None or not exchange_cfg.venue_id:
         print("  CRITICAL: skipping XNSE -- no venue_id in conf/config.ini")
+        numbering.record(opts.date_dir, "XNSE", "refused", "no venue_id in conf/config.ini")
         return
     token_errors = counter_token.validate(config.load_exchanges())
     if "XNSE" in token_errors:
         for msg in token_errors["XNSE"]:
             print(f"  CRITICAL [XNSE] counterToken config: {msg}")
+        numbering.record(opts.date_dir, "XNSE", "refused",
+                         "counterToken config: " + "; ".join(token_errors["XNSE"]))
         return
 
     print("  Normalizing NSE contract masters...")
@@ -402,42 +408,28 @@ def run(opts: runner.Opts) -> None:
         row["counterToken"] = str(n)
 
     try:
-        previous, prev_day = counter_token.opening_tokens(
-            opts.date_dir, "XNSE", exchange_cfg.venue_id)
+        venue_numbering = numbering.venue(opts.date_dir, "XNSE", exchange_cfg.venue_id)
+        venue_plan = venue_numbering.plan([r.get("script", "") for r in rows])
     except ValueError as exc:
         print(f"  CRITICAL: skipping XNSE -- {exc}")
+        numbering.record(opts.date_dir, "XNSE", "refused", str(exc))
+        return
+    for row in rows:
+        row["counterTokenV2"] = venue_plan.rendered(row.get("script", ""))
+    print(f"    XNSE counterTokenV2: {venue_numbering.describe()}; "
+          f"{venue_numbering.summary(venue_plan)}")
+    if venue_numbering.preview:
+        venue_numbering.commit(venue_plan)              # the preview overlay only
         return
 
-    scripts = [r.get("script", "") for r in rows]
-    sequence, seq_from = counter_token.open_sequence(opts.date_dir)
-    counter_token.check_capacity("XNSE", sequence.issued, len(scripts))
-    tokens = counter_token.carry_forward(
-        previous, scripts, exchange_cfg.venue_id, sequence)
-    for row in rows:
-        row["counterTokenV2"] = tokens.token(row.get("script", ""))
-
-    new_count = len(tokens.assigned) - (
-        0 if previous is None
-        else len(set(tokens.assigned) & set(previous.assigned)))
-    print(f"    XNSE counterTokenV2: {len(tokens.assigned):,} symbol(s), "
-          f"{new_count:,} new, {sequence.drawn:,} drawn from the shared "
-          f"sequence (now {sequence.issued:,})"
-          + (", continuing today's earlier run" if prev_day == opts.date_dir
-             else f", carried from {prev_day}" if previous else ", first day")
-          + (f", sequence from {seq_from}" if seq_from else ", sequence from 1"))
-
+    # Reserved before the file is written, committed after: a published token
+    # is always covered by the counter, and the header is written last.
+    venue_numbering.reserve(venue_plan)
     output_path = paths.normalized_dir(opts.date_dir) / OUTPUT
     parquet_export.write_rows(output_path, paths.NORMALIZED_COLUMNS, rows)
-
-    # Only after the file exists, and sequence before manifest: a crash between
-    # the two leaks numbers rather than letting a re-run reissue live ones.
-    counter_token.write_sequence(opts.date_dir, sequence)
     directory = drop_dir(opts.date_dir)
-    counter_token.write_venue_manifest(
-        opts.date_dir, "XNSE", tokens, started_at=started_at,
-        run=counter_token.run_stats(
-            opts.date_dir, "XNSE", exchange_cfg.venue_id, tokens, sequence,
-            prev_day, seq_from),
+    venue_numbering.commit(
+        venue_plan, started_at,
         inputs=[counter_token.artifact(directory / name, opts.date_dir)
                 for name in (CM_FILE, FO_FILE, CD_FILE)],
         outputs=[counter_token.artifact(output_path, opts.date_dir, len(rows))])

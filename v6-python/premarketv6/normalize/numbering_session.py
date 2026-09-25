@@ -60,6 +60,17 @@ def _within_window(earlier: str, later: str) -> bool:
     return (b - a).days <= counter_token.MANIFEST_LOOKBACK_DAYS
 
 
+def of(opts) -> "Session":
+    """The run's numbering session. Normalizing outside one is a programming error:
+    counterTokenV2 is only ever assigned under the lock, against the state."""
+    session = getattr(opts, "numbering", None)
+    if session is None:
+        raise RuntimeError("counterTokenV2 is only assigned inside a numbering session "
+                           "(`premarketv6 normalize` / `plugin` open one); refusing to "
+                           "number outside it")
+    return session
+
+
 class Session:
     """One numbering command. Use as a context manager around the whole run."""
 
@@ -119,6 +130,13 @@ class Session:
         finally:
             self._lock.__exit__(None, None, None)
         return False
+
+    @property
+    def plans_preview(self) -> bool:
+        """A --dates --dry-run: normalizers read inputs and plan, write nothing.
+
+        A plain live --dry-run keeps its old meaning (return before reading)."""
+        return self.preview and self.mode == FILL
 
     def fail(self, error: str) -> None:
         """Close the run as FAIL without an exception (strict --dates, a gate)."""

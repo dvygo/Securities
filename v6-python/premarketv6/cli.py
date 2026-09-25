@@ -246,6 +246,21 @@ def create_parser() -> argparse.ArgumentParser:
         help="Restrict to this MIC; repeatable.",
     )
 
+    # init-state subcommand
+    init_parser = subparsers.add_parser(
+        "init-state",
+        help="Create the numbering state (data/_state/) from the newest manifest per "
+             "venue. Once per host, before the first normalize under this version.",
+    )
+    init_parser.add_argument(
+        "--reason", required=True,
+        help="Why the state is being initialised; recorded in the run log.",
+    )
+    init_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be built -- venues, newest days, counter -- and write nothing.",
+    )
+
     # migrate-manifests subcommand
     migrate_parser = subparsers.add_parser(
         "migrate-manifests",
@@ -381,9 +396,23 @@ def run_normalize(args: argparse.Namespace) -> int:
             csv_only=getattr(args, "csv_only", False),
         )
 
-        return runner.run(steps, opts)
+        return _numbered_run("normalize", steps, opts, dry_run=args.dry_run)
     finally:
         cleanup()
+
+
+def _numbered_run(command: str, steps, opts, dry_run: bool = False) -> int:
+    """Run the steps inside a live numbering session: the state lock is held for
+    the whole run, recovery runs first, and every normalizer numbers through it."""
+    from .normalize import numbering_session
+    from .normalize.numbering import LIVE
+    with numbering_session.Session(command, LIVE, preview=dry_run,
+                                   label=opts.date_dir) as session:
+        opts.numbering = session
+        rc = runner.run(steps, opts)
+        if rc != 0:
+            session.fail(f"a step failed (exit {rc})")
+        return rc
 
 
 def _date_list(raw: str) -> tuple:
@@ -483,7 +512,7 @@ def run_plugin(args) -> int:
             postgres_plugin=everything or push_only,
             tokenmap=everything or tokenmap_only,
         )
-        return runner.run(steps, opts)
+        return _numbered_run("plugin", steps, opts, dry_run=args.dry_run)
     finally:
         cleanup()
 
@@ -517,6 +546,11 @@ def main() -> int:
         elif args.command == "check-lineage":
             from .qa import lineage
             return lineage.run(_date_list(args.dates), _venue_selection(args.venue))
+        elif args.command == "init-state":
+            from .normalize import state
+            with state.lock("init-state"):
+                state.init_state(args.reason, dry_run=args.dry_run)
+            return 0
         elif args.command == "migrate-manifests":
             from .normalize import migrate_manifest
             return migrate_manifest.run(dry_run=args.dry_run)

@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 from .. import config, parquet_export, paths, runner
 from ..sources import fyers_src
-from . import broker_script, counter_token, flags, price, session
+from . import broker_script, counter_token, flags, numbering_session, price, session
 
 
 # Broad category for scriptInstrumentType2.
@@ -145,7 +145,8 @@ def map_fyers_row(row: Dict[str, str]) -> Dict[str, Any]:
 
 def run(opts: runner.Opts) -> None:
     """Normalize Fyers data: read raw CSVs, map to canonical schema, write normalized CSVs."""
-    if opts.dry_run:
+    numbering = numbering_session.of(opts)
+    if opts.dry_run and not numbering.plans_preview:
         print("DRY RUN: Would normalize Fyers data")
         return
 
@@ -175,10 +176,13 @@ def run(opts: runner.Opts) -> None:
             for msg in token_errors[mic]:
                 print(f"  CRITICAL [{mic}] counterToken config: {msg}")
             print(f"  CRITICAL: skipping Fyers {mic} -- fix conf/config.ini [EXCHANGE:{mic}]")
+            numbering.record(opts.date_dir, mic, "refused",
+                             "counterToken config: " + "; ".join(token_errors[mic]))
             continue
         bundle_dir = paths.venue_dir(opts.date_dir, mic)
         if not bundle_dir.is_dir():
             print(f"  No raw directory for Fyers {mic} ({bundle_dir})")
+            numbering.no_input(opts.date_dir, mic, f"no raw directory {bundle_dir.name}/")
             continue
         print(f"  Normalizing Fyers {mic}...")
 
@@ -204,57 +208,49 @@ def run(opts: runner.Opts) -> None:
         # gaps. One counter per output file -- XNSE and XBOM each merge several
         # source feeds into a single file. NOT joinable across dates or venues.
         started_at = counter_token.utc_now()
-        tokens = sequence = None
+        venue_numbering = venue_plan = None
         exchange_cfg = counter_token.exchange_for(mic)
         if exchange_cfg is not None and exchange_cfg.venue_id:
             for n, row in enumerate(all_rows, 1):
                 row["counterToken"] = str(n)
 
             # counterTokenV2: stable across days. Every row is already in
-            # memory here, so the whole symbol set is known and the carry-
-            # forward needs no extra pass.
+            # memory here, so the whole symbol set is known and the plan needs
+            # no extra pass. The numbering session decides where it comes from
+            # and refuses a day that must not be numbered this way.
             try:
-                previous, prev_day = counter_token.opening_tokens(
-                    opts.date_dir, mic, exchange_cfg.venue_id)
+                venue_numbering = numbering.venue(opts.date_dir, mic, exchange_cfg.venue_id)
+                venue_plan = venue_numbering.plan([r.get("script", "") for r in all_rows])
             except ValueError as exc:
                 print(f"  CRITICAL: skipping Fyers {mic} -- {exc}")
+                numbering.record(opts.date_dir, mic, "refused", str(exc))
                 continue
-            scripts = [r.get("script", "") for r in all_rows]
-            sequence, seq_from = counter_token.open_sequence(opts.date_dir)
-            counter_token.check_capacity(mic, sequence.issued, len(scripts))
-            tokens = counter_token.carry_forward(
-                previous, scripts, exchange_cfg.venue_id, sequence)
             for row in all_rows:
-                row["counterTokenV2"] = tokens.token(row.get("script", ""))
-
-            reused = len(tokens.assigned) - (
-                0 if previous is None
-                else len(set(tokens.assigned) & set(previous.assigned)))
-            print(f"    {mic} counterTokenV2: {len(tokens.assigned):,} symbol(s), "
-                  f"{reused:,} new, {sequence.drawn:,} drawn from the shared "
-                  f"sequence (now {sequence.issued:,})"
-                  + (", continuing today's earlier run" if prev_day == opts.date_dir
-                  else f", carried from {prev_day}" if previous else ", first day")
-                  + (f", sequence from {seq_from}" if seq_from else ", sequence from 1"))
+                row["counterTokenV2"] = venue_plan.rendered(row.get("script", ""))
+            print(f"    {mic} counterTokenV2: {venue_numbering.describe()}; "
+                  f"{venue_numbering.summary(venue_plan)}")
+            if venue_numbering.preview:
+                venue_numbering.commit(venue_plan)          # the preview overlay only
+                continue
 
         # Write normalized Parquet
         output_path = normalized_dir / output_csv
+        if all_rows and venue_plan is not None:
+            # Reserved before the file is written: a published token is always
+            # covered by the counter, even if the run dies right after.
+            venue_numbering.reserve(venue_plan)
         if all_rows:
             # RowWriter fills a missing key with "" and orders by the column list,
             # so the frame-shaping the CSV path needed is gone.
             parquet_export.write_rows(output_path, paths.NORMALIZED_COLUMNS, all_rows)
             # Only after the file exists. The manifest IS the completion record
             # for this venue-day, so writing it beside a file that failed to
-            # appear would report a venue done that produced nothing. Sequence
-            # first, so a crash between the two leaks numbers rather than
-            # letting a re-run reissue live ones.
-            if tokens is not None:
-                counter_token.write_sequence(opts.date_dir, sequence)
-                counter_token.write_venue_manifest(
-                    opts.date_dir, mic, tokens, started_at=started_at,
-                    run=counter_token.run_stats(
-                        opts.date_dir, mic, exchange_cfg.venue_id, tokens,
-                        sequence, prev_day, seq_from),
+            # appear would report a venue done that produced nothing. The
+            # numbers were reserved before the file was written; commit stages
+            # the allocation, commits the state head, then writes the header.
+            if venue_plan is not None:
+                venue_numbering.commit(
+                    venue_plan, started_at,
                     inputs=[counter_token.artifact(src, opts.date_dir)
                             for src in used_sources],
                     outputs=[counter_token.artifact(
