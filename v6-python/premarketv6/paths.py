@@ -341,19 +341,18 @@ NORMALIZED_COLUMNS = [
     "brokerScript2",
     "brokerScript3",
     "brokerScript4",
-    # Per-venue positional counter carrying the venue's two-digit prefix in its
-    # leading digits, numbered by normalize/counter_token.assign. scriptToken
-    # stays each source's own instrument id, which is only unique within that
-    # source; this is the collision-free key the plugin/pg schema pushes as its
-    # token. Populated for EVERY venue -- the Databento path assigns it in
-    # normalize/databento_norm.py and the Fyers path in normalize/fields.py --
-    # so it is never blank. Appended, like the broker columns, so positional
-    # readers keep working.
+    # Positional: the row's number within this venue-day, 1..N, after the
+    # normalizer's filters. scriptToken stays each source's own instrument id.
+    # Populated for EVERY venue, so it is never blank. NOT joinable across dates
+    # or venues -- counterTokenV2 is that key. Appended, like the broker columns,
+    # so positional readers keep working.
     "counterToken",
     # Stable across days, unlike counterToken above: a script keeps its number
     # for as long as it keeps appearing, and a number is only reused once its
-    # script stops appearing. Carried in manifest.json per day. This is the one
-    # to join on across dates -- counterToken is positional and must not be.
+    # script stops appearing -- never on the same trade date. Recorded in each
+    # day's manifests/<MIC>.alloc.parquet and in the numbering state
+    # (data/_state/). This is the one to join on across dates -- counterToken is
+    # positional and must not be.
     "counterTokenV2",
 ] + ENABLE_COLUMNS + DEFINITION_PASSTHROUGH_COLUMNS
 

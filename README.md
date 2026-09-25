@@ -12,7 +12,7 @@ comes from NSE's own contract masters for `XNSE` and from Fyers for `XBOM` and
 
 | Path | Status | What it is |
 |------|--------|------------|
-| [`v6-python/`](v6-python/) | **active** | The pipeline. CLI: `python -m premarketv6 {india,xcme,xcbo,xnas,normalize,plugin,check-tokens,check-lineage}`. See [`v6-python/README.md`](v6-python/README.md). |
+| [`v6-python/`](v6-python/) | **active** | The pipeline. CLI: `python -m premarketv6 {india,xcme,xcbo,xnas,normalize,load,init-state,check-tokens,check-lineage,check-state}`. See [`v6-python/README.md`](v6-python/README.md). |
 | `docker/contract-postgres/` | shared | Postgres 16 container the pipeline pushes into (`docker compose -f docker/contract-postgres/docker-compose.yml up -d`). |
 
 `v6-python/` is the only pipeline. The earlier implementations (`v5-python/`,
@@ -25,19 +25,23 @@ remain in git history.
 cd v6-python
 python -m venv .venv && .venv/bin/pip install -e .[dev]
 
-cp conf/config.ini.example conf/config.ini
-# edit conf/config.ini: [databento] api_key, [EXCHANGE:*] venue ids
+cp conf/config.ini.example conf/config.ini          # [EXCHANGE:*] venue ids; keys in conf/keys.ini
+for f in conf/sinks/*.ini.example; do cp "$f" "${f%.example}"; done   # load targets
+python -m premarketv6 init-state --reason "first run on this host"   # once per host
 
-python -m premarketv6 xcme --all-symbols --today
+python -m premarketv6 xcme --all-symbols --today      # 1. download
 python -m premarketv6 india
-python -m premarketv6 normalize --plugin --csv-only
+python -m premarketv6 normalize                       # 2. normalize (files only)
+python -m premarketv6 load --sink clickhouse-normal --sink mdf-tokenmap   # 3. load
 ```
 
-`--csv-only` writes files and never touches a database. The venues publish at
-different times of day — a full day is not available before roughly 16:30 IST,
-because OPRA lands last — so normalize is designed to be run repeatedly and to
-leave already-numbered instruments untouched. Details, including the token
-design and the validation commands, are in [`v6-python/README.md`](v6-python/README.md).
+The pipeline is download -> normalize -> load: normalize never touches a
+database, and every push is a named sink in `conf/sinks/`. The venues publish at
+different times of day -- a full day is not available before roughly 16:30 IST,
+because OPRA lands last -- so normalize is designed to be run repeatedly and to
+leave already-numbered instruments untouched. Older days are filled with
+`normalize --dates`. Details, including the token design, the numbering state
+and the validation commands, are in [`v6-python/README.md`](v6-python/README.md).
 
 Config lives in `conf/config.ini` (gitignored — never commit real API keys).
 Basket templates live in `constituents/baskets/`.
