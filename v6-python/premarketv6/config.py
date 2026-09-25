@@ -273,7 +273,7 @@ def load_fyers() -> FyersCfg:
 
 @dataclass
 class ClickHouseCfg:
-    """[clickhouse] config: the contracts push target.
+    """A clickhouse-normal sink's config (conf/sinks/<name>.ini, see load.py).
 
     `port` is the HTTP port, because clickhouse-connect speaks the HTTP
     interface. tcp_port is carried through unused so the one config section
@@ -288,49 +288,11 @@ class ClickHouseCfg:
     secure: bool = False
 
 
-def load_clickhouse() -> ClickHouseCfg:
-    """Load [clickhouse] config from config.ini; CLICKHOUSE_* env vars win.
-
-    Env override exists for the same reason DATABASE_URL does on the Postgres
-    side: a scheduled run should be able to point at another server without
-    editing a file that is shared with the interactive one.
-    """
-    defaults = ClickHouseCfg()
-    section = {}
-    config_file = paths.config_ini()
-    if config_file.exists():
-        cfg = configparser.ConfigParser()
-        cfg.read(config_file)
-        if "clickhouse" in cfg:
-            section = cfg["clickhouse"]
-
-    def pick(key: str, fallback):
-        env = os.getenv(f"CLICKHOUSE_{key.upper()}")
-        if env:
-            return env
-        return section.get(key, fallback) if section else fallback
-
-    def as_bool(value) -> bool:
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().lower() in ("1", "true", "yes", "on")
-
-    return ClickHouseCfg(
-        host=str(pick("host", defaults.host)),
-        port=int(pick("port", defaults.port)),
-        tcp_port=int(pick("tcp_port", defaults.tcp_port)),
-        database=str(pick("database", defaults.database)),
-        username=str(pick("username", defaults.username)),
-        password=str(pick("password", defaults.password)),
-        secure=as_bool(pick("secure", defaults.secure)),
-    )
-
-
 @dataclass
 class PostgresPluginCfg:
-    """[postgres-plugin] config: the appender's own DSN/schema/table, plus an
-    exchange (MIC prefix) allow-list -- empty allow-list means push every
-    plugin CSV, not none."""
+    """A postgres-plugin sink's config (conf/sinks/<name>.ini, see load.py): the
+    appender's own DSN/schema/table, plus the market it pushes. A sink is
+    single-market, so `exchanges` holds exactly one MIC."""
     database_url: str = ""
     schema: str = ""
     table: str = ""
@@ -344,31 +306,6 @@ class PostgresPluginCfg:
     # on whatever database the DSN points at, which is production for at least
     # one deployment. Turn it on for a fresh database, leave it off elsewhere.
     create_table: bool = False
-
-
-def load_postgres_plugin() -> PostgresPluginCfg:
-    """Load [postgres-plugin] config from config.ini, DATABASE_URL_PLUGIN env for the DSN."""
-    database_url = os.getenv("DATABASE_URL_PLUGIN", "")
-    schema = ""
-    table = ""
-    exchanges: List[str] = []
-    create_table = False
-
-    config_file = paths.config_ini()
-    if config_file.exists():
-        cfg = configparser.ConfigParser()
-        cfg.read(config_file)
-        if "postgres-plugin" in cfg:
-            section = cfg["postgres-plugin"]
-            if not database_url:
-                database_url = section.get("database_url", "")
-            schema = section.get("schema", "")
-            table = section.get("table", "")
-            exchanges = [x.strip().upper() for x in section.get("exchanges", "").split(",") if x.strip()]
-            create_table = _flag_01(section, "postgres-plugin", "create_table", "0")
-
-    return PostgresPluginCfg(database_url=database_url, schema=schema, table=table,
-                             exchanges=exchanges, create_table=create_table)
 
 
 def database_url(override: Optional[str] = None) -> str:

@@ -12,6 +12,8 @@ secrets/
 !**/config.example.ini
 **/keys.ini
 !**/keys.ini.example
+# Load sinks (6.3.0): one conf/sinks/<name>.ini per destination, with credentials.
+**/conf/sinks/*.ini
 
 # Legacy v3 scratch paths
 __________v3/20*/

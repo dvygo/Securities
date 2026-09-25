@@ -25,6 +25,13 @@ def config_ini() -> Path:
     return repo_root() / "conf" / "config.ini"
 
 
+def sinks_dir() -> Path:
+    """conf/sinks/: one <name>.ini per load destination, honoring PREMARKET_SINKS."""
+    if env := os.getenv("PREMARKET_SINKS"):
+        return Path(env)
+    return repo_root() / "conf" / "sinks"
+
+
 def keys_ini() -> Path:
     """Path to conf/keys.ini (Databento per-exchange keys), honoring PREMARKET_KEYS env var."""
     if env := os.getenv("PREMARKET_KEYS"):

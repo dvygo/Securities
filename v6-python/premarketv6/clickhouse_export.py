@@ -23,11 +23,11 @@ EXCHANGE TABLES requires the database to use the Atomic engine, which is the
 default from ClickHouse 20.10 onward. On an Ordinary database it fails, and
 _swap_into_place says so rather than leaving the load in the staging table.
 """
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Sequence
 
 import clickhouse_connect
 
-from . import config, export, paths, runner
+from . import config, export, paths
 
 # Rows per INSERT. Deliberately NOT export.CONTRACT_BATCH_ROWS (50,000): that
 # number is about how much the exporter holds in memory here, and this one is
@@ -249,12 +249,16 @@ def _load_batches(
     return total
 
 
-def push_contracts(client, database: str, date_dir: str) -> int:
+def push_contracts(client, database: str, date_dir: str, update_current: bool = True) -> int:
     """Load the day's contracts into the dated table and the current mirror.
 
     The rows are read from disk once and inserted into the dated staging table,
     then the mirror is filled from that table server-side rather than by
     re-reading ~1.09M rows over HTTP a second time.
+
+    `update_current` False loads the dated table only. The load stage passes it
+    for a day older than the newest live day: `contracts` is what every reader
+    takes as "now", and an old day must never become it.
     """
     dated = contracts_table(date_dir)
     dated_staging = _staging_name(dated)
@@ -275,6 +279,10 @@ def push_contracts(client, database: str, date_dir: str) -> int:
 
     _swap_into_place(client, database, dated_staging, dated)
     print(f"    Pushed {total} rows -> {database}.{dated}")
+    if not update_current:
+        print(f"    Not touching {database}.{CURRENT_CONTRACTS_TABLE}: {date_dir} is older "
+              f"than the newest live day")
+        return total
 
     # Current mirror, filled from the dated table that was just swapped in.
     current_staging = _staging_name(CURRENT_CONTRACTS_TABLE)
@@ -304,7 +312,7 @@ def push_contracts(client, database: str, date_dir: str) -> int:
     return total
 
 
-def push_baskets(client, database: str, date_dir: str) -> int:
+def push_baskets(client, database: str, date_dir: str, update_current: bool = True) -> int:
     """Load the day's baskets into the dated table and the current mirror."""
     grouped: Dict[str, List[str]] = {}
     for row in export.aggregate_basket_rows(date_dir):
@@ -321,7 +329,8 @@ def push_baskets(client, database: str, date_dir: str) -> int:
     order_by = '"basket"'
     dated = baskets_table(date_dir)
 
-    for target in (dated, CURRENT_BASKETS_TABLE):
+    targets = (dated, CURRENT_BASKETS_TABLE) if update_current else (dated,)
+    for target in targets:
         staging = _staging_name(target)
         _ensure_target(client, database, target, BASKET_COLUMN_DDL, order_by)
         _drop_create(client, database, staging, BASKET_COLUMN_DDL, order_by)
@@ -344,9 +353,8 @@ def push_baskets(client, database: str, date_dir: str) -> int:
     return len(rows)
 
 
-def connect(cfg: Optional[config.ClickHouseCfg] = None):
-    """Open a client against the configured server, creating the database if needed."""
-    cfg = cfg or config.load_clickhouse()
+def connect(cfg: config.ClickHouseCfg):
+    """Open a client against a sink's server, creating the database if needed."""
     client = clickhouse_connect.get_client(
         host=cfg.host,
         port=cfg.port,
@@ -370,25 +378,23 @@ def connect(cfg: Optional[config.ClickHouseCfg] = None):
     return client
 
 
-def run(opts: runner.Opts) -> None:
-    """Push normalized data to ClickHouse: dated tables + always-current mirrors."""
-    if opts.dry_run:
-        print("DRY RUN: Would push to ClickHouse")
-        return
+def push(cfg: config.ClickHouseCfg, date_dir: str, update_current: bool = True) -> dict:
+    """Push a normalized day to ClickHouse: dated tables, and the always-current
+    mirrors unless `update_current` is False. Returns what was written.
 
-    cfg = config.load_clickhouse()
+    Called by the load stage's clickhouse-normal sink, which supplies the config
+    and decides `update_current` (see premarketv6/load.py).
+    """
     print(f"  Pushing to ClickHouse {cfg.host}:{cfg.port}/{cfg.database}...")
-
+    client = connect(cfg)
     try:
-        client = connect(cfg)
-    except Exception as e:
-        print(f"  Error: cannot reach ClickHouse at {cfg.host}:{cfg.port}: {e}")
-        return
-
-    try:
-        push_contracts(client, cfg.database, opts.date_dir)
-        push_baskets(client, cfg.database, opts.date_dir)
+        contracts = push_contracts(client, cfg.database, date_dir, update_current)
+        baskets = push_baskets(client, cfg.database, date_dir, update_current)
     finally:
         client.close()
-
+    tables = [contracts_table(date_dir), baskets_table(date_dir)]
+    if update_current:
+        tables += [CURRENT_CONTRACTS_TABLE, CURRENT_BASKETS_TABLE]
     print(f"  Successfully pushed to {cfg.database}")
+    return {"contracts": contracts, "baskets": baskets,
+            "tables": [f"{cfg.database}.{t}" for t in tables]}

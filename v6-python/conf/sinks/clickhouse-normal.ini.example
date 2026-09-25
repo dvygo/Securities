@@ -1,0 +1,16 @@
+# Copy to clickhouse-normal.ini (gitignored) and fill in.
+# `premarketv6 load --sink clickhouse-normal` pushes the day's canonical
+# contracts (every venue, every column) and baskets: the dated tables
+# contracts_YYYYMMDD / baskets_YYYYMMDD, and the always-current `contracts` /
+# `baskets` mirrors -- which a day older than the newest live day never touches.
+[sink]
+type = clickhouse-normal
+host = 127.0.0.1
+# clickhouse-connect speaks the HTTP interface, so `port` is the HTTP one.
+# tcp_port is recorded for the native clients that read this file, not used here.
+port = 8744
+tcp_port = 7744
+database = xdb
+username = xuser
+password = changeme
+secure = false

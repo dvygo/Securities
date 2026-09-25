@@ -27,7 +27,7 @@ from typing import List
 
 import psycopg
 
-from .. import config, parquet_export, paths, runner
+from .. import config, parquet_export
 from . import build
 
 # Column types for the plugin table, from docs/plugin/pg_data_types.txt.
@@ -201,57 +201,30 @@ def _copy_upsert(conn: psycopg.connection.Connection, schema: str, table: str,
     return read, affected
 
 
-def run(opts: runner.Opts) -> None:
-    """Append every allow-listed plugin CSV for the day to the configured Postgres table."""
-    if opts.dry_run:
-        print("DRY RUN: Would append plugin CSVs to Postgres")
-        return
+def push(cfg: config.PostgresPluginCfg, plugin_files) -> List[dict]:
+    """Upsert plugin Parquet files into a sink's table; returns one result per file.
 
-    cfg = config.load_postgres_plugin()
+    Called by the load stage's postgres-plugin sink, which builds the files for
+    its one market first and supplies the config (see premarketv6/load.py).
+    Every problem raises: a load that could not push must not report success.
+    """
     if not cfg.database_url:
-        print("  Error: [postgres-plugin].database_url not configured (config.ini or DATABASE_URL_PLUGIN)")
-        return
+        raise ValueError("postgres-plugin sink: database_url is not set")
     if not cfg.schema or not cfg.table:
-        print("  Error: [postgres-plugin] schema/table not configured")
-        return
-
-    plugin_dir = paths.plugin_dir(opts.date_dir)
-    if not plugin_dir.exists():
-        print(f"  No plugin dir for {opts.date_dir} -- run normalize --plugin first")
-        return
-
-    plugin_files = sorted(plugin_dir.glob(f"*{parquet_export.SUFFIX}"))
-
-    # A disabled venue never reaches the table, even if a plugin file for it is
-    # still on disk from the last run it was enabled for. The allow-list below
-    # is a separate, narrower filter: enabled says whether the pipeline runs the
-    # venue at all, [postgres-plugin].exchanges says which of the venues it does
-    # run get pushed to this particular table.
-    exchanges = config.load_exchanges()
-    disabled = {c.venue_name for c in exchanges.values() if not c.enabled}
-    if disabled:
-        skipped = [p for p in plugin_files if p.name.split("-", 1)[0] in disabled]
-        for path in skipped:
-            print(f"  Skipping {path.name}: {path.name.split('-', 1)[0]} enabled = 0")
-        plugin_files = [p for p in plugin_files if p.name.split("-", 1)[0] not in disabled]
-
-    if cfg.exchanges:
-        plugin_files = [p for p in plugin_files if p.name.split("-", 1)[0] in cfg.exchanges]
-
+        raise ValueError("postgres-plugin sink: schema and table must both be set")
+    plugin_files = list(plugin_files)
     if not plugin_files:
-        print("  No plugin files matched the configured exchange allow-list")
-        return
-
+        print(f"  No plugin rows to push to {cfg.schema}.{cfg.table}")
+        return []
+    results = []
     print(f"  Appending to {cfg.schema}.{cfg.table}...")
-    try:
-        with psycopg.connect(cfg.database_url) as conn:
-            _ensure_table(conn, cfg.schema, cfg.table, cfg.create_table)
-            for path in plugin_files:
-                read, affected = _copy_upsert(
-                    conn, cfg.schema, cfg.table, build.PLUGIN_COLUMNS,
-                    parquet_export.iter_rows(path))
-                note = "" if read == affected else f" ({read - affected} duplicate key(s) collapsed)"
-                print(f"    Upserted {affected} rows from {path.name}{note}")
-    except Exception as e:
-        print(f"  Error appending to Postgres: {e}")
-        raise
+    with psycopg.connect(cfg.database_url) as conn:
+        _ensure_table(conn, cfg.schema, cfg.table, cfg.create_table)
+        for path in plugin_files:
+            read, affected = _copy_upsert(
+                conn, cfg.schema, cfg.table, build.PLUGIN_COLUMNS,
+                parquet_export.iter_rows(path))
+            note = "" if read == affected else f" ({read - affected} duplicate key(s) collapsed)"
+            print(f"    Upserted {affected} rows from {path.name}{note}")
+            results.append({"file": path, "read": read, "upserted": affected})
+    return results

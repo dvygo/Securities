@@ -2,9 +2,11 @@
 symbol-master schema (docs/plugin/pg_data_types.txt), one output file per
 input file, written to data/YYYYMMDD/TRANSFORM/plugin/ (sibling of normalized/)."""
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import List
 
 
-from .. import config, export, parquet_export, paths, runner
+from .. import config, export, parquet_export, paths
 from ..normalize import session
 
 # Column order matches docs/plugin/pg_data_types.txt exactly.
@@ -270,23 +272,26 @@ def map_row(row: dict, trade_date: str, exchange: str) -> dict:
     })
 
 
-def run(opts: runner.Opts) -> None:
-    """Build plugin CSVs: mirror each normalized CSV into data/YYYYMMDD/TRANSFORM/plugin/ under the legacy pg schema."""
-    if opts.dry_run:
-        print("DRY RUN: Would build plugin CSVs")
-        return
+def build_day(date_dir: str, markets) -> List[Path]:
+    """Mirror each of `markets`' normalized files into data/YYYYMMDD/TRANSFORM/plugin/
+    under the legacy pg schema; returns the plugin files written.
 
+    Called by the load stage's postgres-plugin sink for its one market, so the
+    files it pushes are always the ones just built from today's masters.
+    """
     print("  Building plugin files...")
-    normalized = export.normalized_files(opts.date_dir)
+    normalized = export.normalized_files(date_dir)
     if not normalized:
         print("    No normalized files found")
-        return
+        return []
 
-    trade_date = f"{opts.date_dir[0:4]}-{opts.date_dir[4:6]}-{opts.date_dir[6:8]}"
-    cutoff_ns = _cutoff_ns(opts.date_dir)
+    wanted = {m.upper() for m in markets}
+    trade_date = f"{date_dir[0:4]}-{date_dir[4:6]}-{date_dir[6:8]}"
+    cutoff_ns = _cutoff_ns(date_dir)
     exchanges = config.load_exchanges()
-    plugin_dir = paths.plugin_dir(opts.date_dir)
+    plugin_dir = paths.plugin_dir(date_dir)
     plugin_dir.mkdir(parents=True, exist_ok=True)
+    written: List[Path] = []
 
     for src_path in normalized:
         exchange = src_path.name.split("-", 1)[0]
@@ -294,7 +299,7 @@ def run(opts: runner.Opts) -> None:
         # there: the file is yesterday's, left behind by the stage that stopped
         # writing it, and building a plugin file from it would push stale rows
         # under today's trade_date.
-        if not runner.venue_selected(opts, exchange):
+        if exchange.upper() not in wanted:
             continue
         venue_cfg = exchanges.get(exchange.lower())
         if venue_cfg is not None and not venue_cfg.enabled:
@@ -341,6 +346,8 @@ def run(opts: runner.Opts) -> None:
         # readable, so nothing is written and the push simply finds no file.
         dropped = f" ({expired:,} expired dropped)" if expired else ""
         if writer.close():
+            written.append(output_path)
             print(f"    Wrote {total} rows to {output_path}{dropped}")
         else:
             print(f"    No plugin rows for {exchange}{dropped}")
+    return written

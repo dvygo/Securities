@@ -3180,69 +3180,48 @@ class TestEnableFlags:
             assert col not in plugin_build.PLUGIN_COLUMNS
 
 
-class TestPluginCommandWiring:
-    """`premarketv6 plugin` is a sibling of normalize, not a flag on it."""
+class TestNormalizeWritesFilesOnly:
+    """6.3.0: download -> normalize -> load. normalize never pushes; every push
+    is a named sink run by `premarketv6 load` (tests/test_load.py)."""
 
     @staticmethod
-    def _names(**kw):
+    def _names(only=()):
         from premarketv6 import runner
-        return [s.name for s in runner.build_normalizer_steps([], **kw)]
+        return [s.name for s in runner.build_normalizer_steps(list(only))]
 
-    def test_plugin_stages_run_in_order(self):
-        """Parquet, then the Postgres push, then the token map. The push reads
-        what the build just wrote, so the order is load-bearing, not cosmetic."""
-        names = self._names(plugin=True, postgres_plugin=True, tokenmap=True)
-        assert names[-3:] == ["plugin", "postgres-plugin", "tokenmap"]
+    def test_normalize_has_no_push_steps(self):
+        names = self._names()
+        assert not {"plugin", "postgres-plugin", "tokenmap", "clickhouse"} & set(names)
+        assert names[:4] == ["normalize-fyers", "normalize-nse", "normalize-nse-contract",
+                             "normalize-databento"]
+        assert names[-1] == "csv-export"
 
-    def test_normalize_runs_before_any_plugin_stage(self):
-        """The reason plugin is a command and not a flag: the files must come
-        from the masters this run wrote, not yesterday's left on disk."""
-        names = self._names(plugin=True, postgres_plugin=True, tokenmap=True)
-        assert names.index("normalize-databento") < names.index("plugin")
-        assert names.index("csv-export") < names.index("plugin")
-
-    def test_each_stage_is_independently_selectable(self):
-        assert self._names(plugin=True, postgres_plugin=False)[-1] == "plugin"
-        assert self._names(plugin=False, postgres_plugin=True)[-1] == "postgres-plugin"
-        assert self._names(tokenmap=True, postgres_plugin=False)[-1] == "tokenmap"
-
-    def test_push_without_rebuild_is_possible(self):
-        """--postgres-push-only pushes the Parquet already on disk."""
-        names = self._names(plugin=False, postgres_plugin=True, tokenmap=False)
-        assert "plugin" not in names and "postgres-plugin" in names
-
-    def test_postgres_defaults_to_following_the_build(self):
-        """Left unset it means what --plugin used to: building the Parquet
-        pushes it too."""
-        assert "postgres-plugin" in self._names(plugin=True)
-        assert "postgres-plugin" not in self._names(plugin=False)
-
-    def test_csv_only_still_vetoes_the_push(self):
-        names = self._names(plugin=True, postgres_plugin=True, tokenmap=True, csv_only=True)
-        assert "postgres-plugin" not in names
-        assert "plugin" in names and "tokenmap" in names
-
-    def test_the_output_flags_are_mutually_exclusive(self):
+    @staticmethod
+    def _run(argv):
         from premarketv6 import cli
-        parser = cli.create_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["plugin", "--parquet-only", "--tokenmap-only"])
-        with pytest.raises(SystemExit):
-            parser.parse_args(["plugin", "--parquet-only", "--postgres-push-only"])
+        return cli.run_normalize(cli.create_parser().parse_args(argv))
 
-    def test_normalize_no_longer_takes_plugin_flags(self):
-        """They moved to the plugin command; leaving them would give two ways to
-        do it, one of which skips the normalize that makes the output consistent."""
-        from premarketv6 import cli
-        parser = cli.create_parser()
-        for flag in ("--plugin", "--tokenmap"):
-            with pytest.raises(SystemExit):
-                parser.parse_args(["normalize", flag])
+    @pytest.mark.parametrize("flag", ["--clickhouse-push-only", "--csv-only"])
+    def test_removed_normalize_flags_point_at_load(self, flag):
+        with pytest.raises(SystemExit, match="6.3.0"):
+            self._run(["normalize", flag])
 
-    def test_bare_plugin_selects_every_stage(self):
+    @pytest.mark.parametrize("step", ["plugin", "postgres-plugin", "tokenmap", "clickhouse"])
+    def test_removed_steps_in_only_point_at_load(self, step):
+        with pytest.raises(SystemExit, match="premarketv6 load"):
+            self._run(["normalize", "--only", step])
+
+    def test_the_plugin_command_points_at_load(self, monkeypatch):
         from premarketv6 import cli
-        args = cli.create_parser().parse_args(["plugin"])
-        assert not (args.parquet_only or args.postgres_push_only or args.tokenmap_only)
+        monkeypatch.setattr("sys.argv", ["premarketv6", "plugin", "--parquet-only"])
+        with pytest.raises(SystemExit, match="premarketv6 load --sink"):
+            cli.main()
+
+    def test_load_takes_repeated_sinks(self):
+        from premarketv6 import cli
+        args = cli.create_parser().parse_args(
+            ["load", "--date-dir", "20260925", "--sink", "a", "--sink", "b"])
+        assert args.sink == ["a", "b"] and args.date_dir == "20260925"
 
 
 class TestTokenMap:

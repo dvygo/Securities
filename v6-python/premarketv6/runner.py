@@ -30,9 +30,6 @@ class Opts:
     # means every venue config.ini enables. Narrows a run; it cannot widen one,
     # so a venue with enabled = 0 stays off even when named here.
     venues: tuple = ()
-    # --tokenmap-dir: where the MDF .bin maps are written. None puts them in the
-    # day's own tree; point it at MDF's config/cpp-vendor/ to deliver directly.
-    tokenmap_dir: Optional[str] = None
     # The numbering session this run's normalizers assign counterTokenV2 through
     # (normalize/numbering_session.Session). The CLI opens it around the steps;
     # a normalizer refuses to number without one.
@@ -120,29 +117,15 @@ def run(steps: List[Step], opts: Opts) -> int:
     return 0
 
 
-def build_normalizer_steps(
-    only: List[str],
-    contracts_push_only: bool = False,
-    plugin: bool = False,
-    postgres_plugin: Optional[bool] = None,
-    tokenmap: bool = False,
-    csv_only: bool = False,
-) -> List[Step]:
+def build_normalizer_steps(only: List[str]) -> List[Step]:
     """
-    Build the normalizer pipeline steps.
-    Returns Step list filtered by --only.
+    The normalize pipeline, filtered by --only.
 
-    contracts_push_only adds the ClickHouse contracts push to an otherwise normal
-    run -- the CSVs are still normalized and written first. It does not narrow the
-    pipeline to the writers.
-
-    csv_only is its opposite and wins over it: it drops every step that writes to
-    a database, so a run can produce the CSVs for inspection without touching
-    ClickHouse or Postgres. That is a veto rather than a preference, and it also
-    beats naming a db step in --only, because the failure it prevents (an unwanted
-    write to a live table) cannot be undone by re-running.
+    normalize writes files and nothing else. Pushing to ClickHouse or Postgres
+    and delivering MDF's token map moved to the `load` stage, which runs them
+    through named sinks (premarketv6/load.py).
     """
-    from . import clickhouse_export, config, baskets, export
+    from . import config, baskets, export
 
     # [baskets].enabled, and only there -- there is no flag for it. Whether a
     # deployment builds baskets is a property of the deployment, not of whoever
@@ -150,7 +133,6 @@ def build_normalizer_steps(
     # to repeat an argument.
     baskets_enabled = config.load_baskets().enabled
     from .normalize import fields, databento_norm, nse_norm, nse_contract
-    from .plugin import build as plugin_build, tokenmap as plugin_tokenmap, postgres as plugin_postgres
 
     all_steps = [
         Step("normalize-fyers", fields.run),
@@ -164,43 +146,11 @@ def build_normalizer_steps(
         all_steps.append(Step("baskets", baskets.run))
     all_steps.append(Step("csv-export", export.run))
 
-    # Plugin-family output, in the order the `plugin` command runs it: build the
-    # Parquet, push it, then generate the token map. Each is independently
-    # selectable so `plugin --postgres-push-only` can push without rebuilding.
-    #
-    # postgres_plugin defaults to "whenever the Parquet is being built", which is
-    # what --plugin used to mean; pass it explicitly to decouple the two.
-    if postgres_plugin is None:
-        postgres_plugin = plugin
-    if plugin:
-        all_steps.append(Step("plugin", plugin_build.run))
-    if postgres_plugin and not csv_only:
-        # --csv-only is the opt-out: building the Parquet otherwise pushes it too.
-        all_steps.append(Step("postgres-plugin", plugin_postgres.run))
-    # The token map is plugin-family output -- someone else's binary format, like
-    # the pg schema -- but it pushes nowhere: a C++ lane loads the file directly,
-    # on its own delivery cadence.
-    if tokenmap:
-        all_steps.append(Step("tokenmap", plugin_tokenmap.run))
-
-    # The contracts push is ClickHouse now (see clickhouse_export). postgres-plugin
-    # above is unaffected and still writes to Postgres.
-    if contracts_push_only and not csv_only:
-        all_steps.append(Step("clickhouse", clickhouse_export.run))
-
     steps = expand_only(only, all_steps)
 
-    if csv_only:
-        # Say what was suppressed rather than silently returning fewer steps: a
-        # user who typed "--only postgres --csv-only" needs to know the push did
-        # not merely succeed quietly.
-        asked = {s for s in only if s in ("clickhouse", "postgres-plugin")}
-        if asked:
-            print(f"--csv-only: skipping {', '.join(sorted(asked))}", file=sys.stderr)
-
-    # Same courtesy as --csv-only above: "--only baskets" against a config that
-    # disables them is an empty run, and the reason is in a file rather than on
-    # the command line, so say which.
+    # Same courtesy as the removed-step check in the CLI: "--only baskets"
+    # against a config that disables them is an empty run, and the reason is in
+    # a file rather than on the command line, so say which.
     if not baskets_enabled and "baskets" in only:
         print("[baskets] enabled = 0 in config.ini: skipping baskets", file=sys.stderr)
 

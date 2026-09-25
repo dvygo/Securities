@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .. import config, export, parquet_export, paths, runner
+from .. import config, export, parquet_export, paths
 
 MAGIC = b"MDFVTOK1"
 FORMAT_VERSION = 1
@@ -332,30 +332,31 @@ def tokenmap_dir(date_dir: str) -> Path:
     return paths.plugin_dir(date_dir) / "tokenmap"
 
 
-def run(opts: runner.Opts) -> None:
-    """Emit tokenmap.<VENUE>.bin for every Databento venue with a normalized master.
+def emit(date_dir: str, markets, out_dir: Path) -> List[Path]:
+    """Emit tokenmap.<VENUE>.bin for each of `markets` that has a normalized master.
+
+    Called by the load stage's mdf-tokenmap sink, which picks the markets and the
+    directory -- the day's own tree, or MDF's delivery directory -- and applies
+    the old-day interlock before calling this (see premarketv6/load.py).
 
     Only Databento venues: the key is the instrument id the DBN feed sends, and
     the Fyers/NSE venues have no such id -- their scriptToken is the vendor's own
     instrument number, which no MDF lane will ever look up.
     """
-    if opts.dry_run:
-        print("DRY RUN: Would build MDF token maps")
-        return
-
     print("  Building MDF token maps...")
-    normalized = export.normalized_files(opts.date_dir)
+    normalized = export.normalized_files(date_dir)
     if not normalized:
         print("    No normalized files found")
-        return
+        return []
 
     exchanges = config.load_exchanges()
-    out_dir = Path(opts.tokenmap_dir) if getattr(opts, "tokenmap_dir", None) else tokenmap_dir(opts.date_dir)
-    written = 0
+    wanted = {m.upper() for m in markets}
+    out_dir = Path(out_dir)
+    written: List[Path] = []
 
     for src_path in sorted(normalized):
         venue = src_path.name.split("-", 1)[0]
-        if not runner.venue_selected(opts, venue):
+        if venue.upper() not in wanted:
             continue
         venue_cfg = exchanges.get(venue.lower())
         if venue_cfg is None or not venue_cfg.enabled:
@@ -378,7 +379,7 @@ def run(opts: runner.Opts) -> None:
 
         path = out_dir / filename(venue)
         write(path, blob)
-        written += 1
+        written.append(path)
         print(f"    {venue}: {built.source_rows:,} source row(s) -> "
               f"{info['entries']:,} entries via {built.key}, ids "
               f"{info['min_id']:,}..{info['max_id']:,}, {info['bytes']:,} bytes")
@@ -386,6 +387,7 @@ def run(opts: runner.Opts) -> None:
         print(f"      wrote {path}")
 
     if written:
-        print(f"    {written} map(s) in {out_dir}")
+        print(f"    {len(written)} map(s) in {out_dir}")
         print(f"    deliver into MDF's {DELIVERY_DIR}/ -- the ini references the "
               f"bare filename, so it must resolve there with no path")
+    return written
