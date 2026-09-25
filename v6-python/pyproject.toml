@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "premarketv6"
-version = "6.0.0"
+version = "6.3.0"
 description = "Pre-market symbology/instrument data pipeline for financial markets"
 # numpy 2.5 requires >=3.12 and pandas 3.0 requires >=3.11, so the real floor is
 # 3.12 -- ">=3.9" let pip resolve numpy/pandas years out of date on an older
