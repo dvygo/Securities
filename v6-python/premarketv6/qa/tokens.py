@@ -87,6 +87,73 @@ def _allocation(date_dir: str, mic: str):
     }
 
 
+def _numbering(date_dir: str, mic: str) -> dict:
+    """The header's `numbering` block: how the session produced this venue-day.
+    {} for a day numbered before the numbering session existed."""
+    header = counter_token._read_json(counter_token.venue_manifest_path(date_dir, mic))
+    return header.get("numbering") or {}
+
+
+def _snapshot(mic: str, recorded: dict):
+    """The state snapshot a header names, verified by its digest; None if none named."""
+    from ..normalize import state
+    if not recorded or not recorded.get("snapshot"):
+        return None
+    return state.load_snapshot(
+        mic, state.VenueHead(0, recorded["snapshot"], recorded.get("sha256", ""), 0))
+
+
+def _recorded_moves(previous: str, current: str, mic: str):
+    """Scripts allowed to change token between the two days, and any read error.
+
+    A fill (or a live day that could not reclaim) records every break against a
+    neighbour. A record applies to the pair it names -- `wanted_from` is the
+    other day -- so one written before a later fill landed between the two days
+    is superseded, not applied.
+    """
+    allowed, problems = set(), []
+    for day, other in ((current, previous), (previous, current)):
+        try:
+            rows = counter_token.read_exceptions(day, mic)
+        except counter_token.ManifestCorrupt as exc:
+            problems.append(str(exc))
+            continue
+        allowed |= {r["script"] for r in rows if r["wanted_from"] == other}
+    return allowed, problems
+
+
+def _recycling(span: str, mic: str, before: dict, after: dict, against: str) -> List[Check]:
+    """carry_forward's three rules, held against the holdings the run started from."""
+    kept = set(before["assigned"]) & set(after["assigned"])
+    departed = set(before["assigned"]) - kept
+    arrived = set(after["assigned"]) - kept
+    released = sorted({before["assigned"][s] for s in departed})
+    available = sorted(set(before["free"]) | set(released))
+    available_set = set(available)
+    taken = sorted(after["assigned"][s] for s in arrived
+                   if after["assigned"][s] in available_set)
+    extended = [s for s in arrived if after["assigned"][s] not in available_set]
+    carried = sorted(available_set - set(taken))
+    return [
+        Check(span, mic, "offsets released",
+              set(released).isdisjoint(after["assigned"].values()) or bool(taken),
+              f"{len(departed):,} script(s) departed, {len(released):,} offset(s) "
+              f"released; pool in {len(before['free']):,} -> {len(available):,} "
+              f"available ({against})", tag=V2),
+        Check(span, mic, "pool drained first",
+              len(taken) == min(len(arrived), len(available)),
+              f"{len(arrived):,} arrival(s): {len(taken):,} reused a released "
+              f"token (available {len(available):,}), {len(extended):,} drew a "
+              f"new one from the shared sequence", tag=V2),
+        # A set, not a prefix: an arrival reclaiming its own previous token takes
+        # that one rather than the pool's lowest, so what is left is "available
+        # minus taken" and not "available after the first N".
+        Check(span, mic, "pool carried", after["free"] == carried,
+              f"{len(after['free']):,} offset(s) still free for tomorrow "
+              f"(expected {len(carried):,})", tag=V2),
+    ]
+
+
 def check_pair_recycling(previous: str, current: str, mic: str) -> List[Check]:
     """Did carry_forward's three rules actually fire between these two days?
 
@@ -107,41 +174,60 @@ def check_pair_recycling(previous: str, current: str, mic: str) -> List[Check]:
         return [Check(span, mic, "recycling", False,
                       "one of the two days has no manifest entry for this venue",
                       hard=False, tag=V2)]
+    return _recycling(span, mic, before, after, f"from {previous}")
 
-    kept = set(before["assigned"]) & set(after["assigned"])
-    departed = set(before["assigned"]) - kept
-    arrived = set(after["assigned"]) - kept
 
-    released = sorted({before["assigned"][s] for s in departed})
-    available = sorted(set(before["free"]) | set(released))
-    available_set = set(available)
-    taken = sorted(after["assigned"][s] for s in arrived
-                   if after["assigned"][s] in available_set)
-    extended = [s for s in arrived if after["assigned"][s] not in available_set]
+def check_fill(date_dir: str, mic: str, block: dict) -> List[Check]:
+    """A filled day, held against the state it started from and left.
 
-    return [
-        # Rule 2: a departed script's offset goes back in the pool.
-        Check(span, mic, "offsets released",
-              set(released).isdisjoint(after["assigned"].values()) or bool(taken),
-              f"{len(departed):,} script(s) departed, {len(released):,} offset(s) "
-              f"released; pool in {len(before['free']):,} -> {len(available):,} available",
-              tag=V2),
-        # Rule 3, and the one that actually matters: the venue's pool is drained
-        # BEFORE a fresh number is drawn from the shared sequence. Drawing early
-        # leaks numbers out of a space every venue now shares.
-        Check(span, mic, "pool drained first",
-              len(taken) == min(len(arrived), len(available)),
-              f"{len(arrived):,} arrival(s): {len(taken):,} reused a released "
-              f"token (available {len(available):,}), {len(extended):,} drew a "
-              f"new one from the shared sequence",
-              tag=V2),
-        # Leftovers have to survive the day or the numbers are lost for good.
-        Check(span, mic, "pool carried",
-              after["free"] == available[len(taken):],
-              f"{len(after['free']):,} offset(s) still free for tomorrow "
-              f"(expected {len(available) - len(taken):,})",
-              tag=V2),
-    ]
+    Two promises, both verifiable from what the fill recorded:
+
+      never releases  every holding in the state before the fill is still held,
+                      on the same token, after it -- a fill of an old day never
+                      takes a live instrument's number
+      provenance      every token on the day came from somewhere legitimate: a
+                      neighbour, the script's own state holding, the free pool
+                      the fill started from, or a fresh number above the counter
+    """
+    try:
+        before = _snapshot(mic, block.get("state_before"))
+        after = _snapshot(mic, block.get("state_after"))
+    except Exception as exc:                                  # noqa: BLE001 - reported
+        return [Check(date_dir, mic, "fill snapshots", False, str(exc), tag=V2)]
+    checks = []
+    if before is not None and after is not None:
+        moved = [s for s, t in before.assigned.items() if after.assigned.get(s) != t]
+        checks.append(Check(
+            date_dir, mic, "never releases", not moved,
+            f"{len(before.assigned):,} holding(s) before, {len(moved):,} changed or "
+            f"released" + (f" (e.g. {moved[0]})" if moved else ""), tag=V2))
+    entry, why = _entry(date_dir, mic)
+    if why or not entry:
+        return checks + [Check(date_dir, mic, "fill provenance", False,
+                               why or "no allocation for a filled day", tag=V2)]
+    neighbours = block.get("neighbours") or {}
+    legit = set()
+    for key in ("earlier", "later"):
+        day = neighbours.get(key)
+        if day:
+            other, other_why = _entry(day, mic)
+            if other_why or not other:
+                checks.append(Check(date_dir, mic, "filled from", False,
+                                    f"{key} neighbour {day} has no readable manifest "
+                                    f"-- the fill's basis is gone", tag=V2))
+                continue
+            legit |= set(other["assigned"].values())
+    if before is not None:
+        legit |= set(before.assigned.values()) | set(before.free)
+    floor = int(block.get("counter_before", 0))
+    held = {**(entry.get("retained") or {}), **entry["assigned"]}
+    stray = [s for s, t in held.items() if t not in legit and t <= floor]
+    checks.append(Check(
+        date_dir, mic, "fill provenance", not stray,
+        f"{len(held):,} token(s): every one from a neighbour, the state, its free "
+        f"pool, or above the counter ({floor:,})" if not stray else
+        f"{len(stray):,} token(s) with no legitimate source, e.g. {stray[0]}", tag=V2))
+    return checks
 
 
 def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
@@ -239,6 +325,9 @@ def check_day(date_dir: str, venues: Sequence[str] = ()) -> List[Check]:
         # on, and only v2 is what the plugin pushes.
 
         checks.extend(_check_manifest(date_dir, mic, cfg, pairs, entries.get(mic)))
+        block = _numbering(date_dir, mic)
+        if block.get("mode") == "fill":
+            checks.extend(check_fill(date_dir, mic, block))
 
     # With one shared sequence this is no longer protected by a prefix in the
     # token -- it is protected by every venue drawing from the same counter. So
@@ -368,12 +457,25 @@ def check_pair(previous: str, current: str, venues: Sequence[str] = ()) -> List[
         old, new = distinct(before[mic], "a"), distinct(after[mic], "b")
         joined = old.join(new, keys="script", join_type="inner")
         shared = joined.num_rows
-        moved = pc.sum(pc.not_equal(joined.column("token_a"),
-                                    joined.column("token_b"))).as_py() or 0
+        moving = pc.not_equal(joined.column("token_a"), joined.column("token_b"))
+        moved = set(joined.filter(moving).column("script").to_pylist())
+        allowed, unreadable = _recorded_moves(previous, current, mic)
+        for why in unreadable:
+            checks.append(Check(span, mic, "exceptions readable", False, why))
+        unrecorded = moved - allowed
+        shared_scripts = set(joined.column("script").to_pylist()) if allowed else set()
+        unmoved = (allowed & shared_scripts) - moved
         checks.append(Check(
-            span, mic, "stable", moved == 0,
-            f"{shared:,} script(s) on both days, {moved:,} moved to a different "
-            "token" + (" -- the carry-forward chain is broken" if moved else ""),
+            span, mic, "stable", not unrecorded and not unmoved,
+            f"{shared:,} script(s) on both days, {len(moved):,} moved to a different "
+            f"token"
+            + (f" -- all {len(moved & allowed):,} recorded as exceptions for this "
+               "pair" if moved and not unrecorded else "")
+            + (f" -- {len(unrecorded):,} with no recorded exception, the "
+               f"carry-forward chain is broken (e.g. {sorted(unrecorded)[0]})"
+               if unrecorded else "")
+            + (f" -- {len(unmoved):,} recorded as exceptions but did not move"
+               if unmoved else ""),
         ))
 
         by_token = old.rename_columns(["script_a", "token"]).join(
@@ -389,10 +491,49 @@ def check_pair(previous: str, current: str, venues: Sequence[str] = ()) -> List[
                if ambiguous else ""),
             hard=False,
         ))
-        checks.extend(check_pair_recycling(previous, current, mic))
 
-        # Which day v2 actually chained from. Across a gap it silently reaches
-        # further back, and the allocation it inherits is older than the data.
+        # Which rules apply depends on how each day was produced. A live day the
+        # session numbered started from a state snapshot, so its pool arithmetic
+        # is held against that snapshot rather than the previous day's table. A
+        # filled day never releases, so it has no pool arithmetic of its own --
+        # check_day holds it to "never releases" and "provenance" instead.
+        was, now = _numbering(previous, mic), _numbering(current, mic)
+        if now.get("mode") == "live" and (now.get("state_before") or {}).get("snapshot"):
+            try:
+                snapshot = _snapshot(mic, now["state_before"])
+                start_from = {"assigned": dict(snapshot.assigned),
+                              "free": sorted(snapshot.free)}
+                checks.extend(_recycling(span, mic, start_from, _allocation(current, mic),
+                                         "from the state it started from"))
+            except Exception as exc:                          # noqa: BLE001 - reported
+                checks.append(Check(span, mic, "recycling", False, str(exc)))
+        elif not was and not now:
+            checks.extend(check_pair_recycling(previous, current, mic))
+
+        # Which day each chained from. A day the session numbered records it: a
+        # live day continued the state; a fill names its neighbours. Only days
+        # numbered before the session fall back to re-deriving the lookback.
+        if was or now:
+            filled_by = [(day, block) for day, block in ((previous, was), (current, now))
+                         if block.get("mode") == "fill"]
+            if filled_by:
+                named = [set((block.get("neighbours") or {}).values()) - {""}
+                         for _, block in filled_by]
+                ok = any({previous, current} - {day} <= names
+                         for (day, _), names in zip(filled_by, named))
+                checks.append(Check(
+                    span, mic, "filled from", ok,
+                    "; ".join(f"{day} filled from {', '.join(sorted(n)) or 'nothing'}"
+                              for (day, _), n in zip(filled_by, named))
+                    + ("" if ok else " -- a day was numbered between them after the "
+                       "fill; its records for this pair are superseded"),
+                    hard=False))
+            else:
+                checks.append(Check(
+                    span, mic, "chained from", now.get("mode") == "live",
+                    f"{current} continued the venue's state"
+                    + (f" (numbered by run {now.get('run_id', '')[:32]})" if now else "")))
+            continue
         cfg = _configured().get(mic)
         if cfg is not None and cfg.venue_id:
             try:
@@ -413,12 +554,33 @@ def check_pair(previous: str, current: str, venues: Sequence[str] = ()) -> List[
     return checks
 
 
-def run(dates: Sequence[str], venues: Sequence[str] = ()) -> int:
-    """Validate each date, then each consecutive pair of them."""
-    ordered = sorted(set(dates))
+def pairs_by_venue(dates: Sequence[str], venues: Sequence[str] = ()) -> Dict[str, List[str]]:
+    """For each venue, the given dates on which it has a normalized file.
+
+    Pairs are built per venue from these, not across the union of all venues'
+    dates: a venue missing from the middle date would otherwise be compared
+    across the gap with nothing, or not at all.
+    """
+    wanted = {v.upper() for v in venues}
+    per_venue: Dict[str, List[str]] = {}
+    for day in sorted(set(dates)):
+        for mic in _venue_files(day):
+            if not wanted or mic in wanted:
+                per_venue.setdefault(mic, []).append(day)
+    return per_venue
+
+
+def collect(dates: Sequence[str], venues: Sequence[str] = ()) -> List[Check]:
+    """Every check for the dates: each day, then each venue's consecutive pairs."""
     checks: List[Check] = []
-    for day in ordered:
+    for day in sorted(set(dates)):
         checks.extend(check_day(day, venues))
-    for previous, current in zip(ordered, ordered[1:]):
-        checks.extend(check_pair(previous, current, venues))
-    return report(checks, suite="check-tokens")
+    for mic, days in sorted(pairs_by_venue(dates, venues).items()):
+        for previous, current in zip(days, days[1:]):
+            checks.extend(check_pair(previous, current, [mic]))
+    return checks
+
+
+def run(dates: Sequence[str], venues: Sequence[str] = ()) -> int:
+    """Validate each date, then each venue's consecutive pairs of them."""
+    return report(collect(dates, venues), suite="check-tokens")

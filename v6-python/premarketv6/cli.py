@@ -246,6 +246,14 @@ def create_parser() -> argparse.ArgumentParser:
         help="Restrict to this MIC; repeatable.",
     )
 
+    # check-state subcommand
+    subparsers.add_parser(
+        "check-state",
+        help="Audit the numbering state (data/_state/) against the days on disk and "
+             "the run log: snapshots verify, nothing numbered outside a session, "
+             "counter covers every number, no unfinished commit",
+    )
+
     # init-state subcommand
     init_parser = subparsers.add_parser(
         "init-state",
@@ -546,6 +554,9 @@ def main() -> int:
         elif args.command == "check-lineage":
             from .qa import lineage
             return lineage.run(_date_list(args.dates), _venue_selection(args.venue))
+        elif args.command == "check-state":
+            from .qa import state_check
+            return state_check.run()
         elif args.command == "init-state":
             from .normalize import state
             with state.lock("init-state"):

@@ -344,3 +344,128 @@ class TestPreview:
             planned = venue.plan(["C1", "C2"])
         real, _ = _number(FILL, "20260924", "XCME", 12, ["C1", "C2"])
         assert planned.day.assigned == real.day.assigned
+
+
+# -- the QA tools, held against what the session actually writes ----------------------
+
+def _write_normalized(date, mic, assigned):
+    """The normalized parquet a normalizer would have written for this plan."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    directory = paths.normalized_dir(date)
+    directory.mkdir(parents=True, exist_ok=True)
+    scripts = sorted(assigned)
+    pq.write_table(pa.table({
+        "script": scripts,
+        "counterToken": [str(n) for n in range(1, len(scripts) + 1)],
+        "counterTokenV2": [str(assigned[s]) for s in scripts],
+    }), directory / f"{mic}-DATABENTO-normalized.parquet")
+
+
+def _numbered(mode, date, mic, venue_id, scripts, **kw):
+    plan, _ = _number(mode, date, mic, venue_id, scripts, **kw)
+    _write_normalized(date, mic, plan.day.assigned)
+    return plan
+
+
+def _hard_failures(checks):
+    return [f"{c.day} {c.venue} {c.name}: {c.detail}" for c in checks if not c.ok and c.hard]
+
+
+class TestCheckTokensOnSessionDays:
+    def test_a_live_chain_passes(self, tree):
+        from premarketv6.qa import tokens as qa
+        _init()
+        _numbered(LIVE, "20260926", "XCME", 12, ["A", "B", "C"])
+        _numbered(LIVE, "20260927", "XCME", 12, ["A", "C", "D"])
+        checks = qa.collect(["20260926", "20260927"], ["XCME"])
+        assert _hard_failures(checks) == []
+        assert any(c.name == "pool drained first" for c in checks)   # against the snapshot
+
+    def test_a_fill_with_a_recorded_clash_passes(self, tree):
+        from premarketv6.qa import tokens as qa
+        _init()
+        _numbered(LIVE, "20260926", "XCME", 12, ["K", "M"])
+        _numbered(LIVE, "20260928", "XCME", 12, ["K", "X"])
+        _numbered(FILL, "20260927", "XCME", 12, ["K", "M", "X"], reason="missed day")
+        checks = qa.collect(["20260926", "20260927", "20260928"], ["XCME"])
+        assert _hard_failures(checks) == []
+        stable = [c for c in checks if c.name == "stable"]
+        assert any("recorded as exceptions" in c.detail for c in stable)
+        assert {c.name for c in checks} >= {"never releases", "fill provenance", "filled from"}
+
+    def test_an_unrecorded_move_fails_stable(self, tree):
+        from premarketv6.qa import tokens as qa
+        _init()
+        _numbered(LIVE, "20260926", "XCME", 12, ["A", "B"])
+        plan = _numbered(LIVE, "20260927", "XCME", 12, ["A", "B"])
+        moved = dict(plan.day.assigned)
+        moved["A"], moved["B"] = moved["B"], moved["A"]            # swap two tokens
+        _write_normalized("20260927", "XCME", moved)
+        failures = _hard_failures(qa.collect(["20260926", "20260927"], ["XCME"]))
+        assert any("stable" in f and "no recorded exception" in f for f in failures)
+
+    def test_a_fill_that_alters_a_holding_fails_never_releases(self, tree, monkeypatch):
+        """Mutation: a fill whose state_after changes a held token must be caught."""
+        from premarketv6.normalize import numbering
+        from premarketv6.qa import tokens as qa
+        _init()
+        _numbered(LIVE, "20260926", "XCME", 12, ["A", "B"])
+        original = numbering.allocate_fill
+
+        def altering(*a, **k):
+            plan = original(*a, **k)
+            plan.state_after.assigned["A"] += 1_000_000
+            return plan
+
+        with monkeypatch.context() as m:
+            m.setattr(numbering, "allocate_fill", altering)
+            _numbered(FILL, "20260925", "XCME", 12, ["A", "B"])
+        failures = _hard_failures(qa.check_day("20260925", ["XCME"]))
+        assert any("never releases" in f for f in failures)
+
+    def test_pairs_are_built_per_venue(self, tree):
+        """XCME missing from the middle date must pair 26->28, not be skipped."""
+        from premarketv6.qa import tokens as qa
+        for day in ("20260926", "20260928"):
+            _write_normalized(day, "XCME", {"A": 1})
+        for day in ("20260926", "20260927", "20260928"):
+            _write_normalized(day, "XNAS", {"B": 2})
+        pairs = qa.pairs_by_venue(["20260926", "20260927", "20260928"])
+        assert pairs == {"XCME": ["20260926", "20260928"],
+                         "XNAS": ["20260926", "20260927", "20260928"]}
+
+
+class TestCheckState:
+    def test_it_passes_after_normal_runs(self, tree):
+        from premarketv6.qa import state_check
+        _init()
+        _number(LIVE, "20260926", "XNSE", 16, ["N1", "N2", "N9"])
+        assert _hard_failures(state_check.collect()) == []
+
+    def test_no_state_is_a_failure(self, tree):
+        from premarketv6.qa import state_check
+        assert any("init-state" in f for f in _hard_failures(state_check.collect()))
+
+    def test_a_day_numbered_outside_a_session_is_caught(self, tree):
+        from premarketv6.qa import state_check
+        _init()
+        counter_token.write_venue_manifest(
+            "20260930", "XNSE", counter_token.VenueTokens(16, {"Q": 99}, []))
+        failures = _hard_failures(state_check.collect())
+        assert any("newest on disk" in f for f in failures)
+        assert any("counter covers" in f for f in failures)
+
+    def test_a_tampered_snapshot_is_caught(self, tree):
+        from premarketv6.qa import state_check
+        head = _init()
+        path = state.snapshot_path(head.venues["XNSE"].snapshot)
+        path.write_bytes(path.read_bytes() + b"x")
+        assert any("snapshot" in f for f in _hard_failures(state_check.collect()))
+
+    def test_an_unclosed_run_is_a_warning_not_a_failure(self, tree):
+        from premarketv6.qa import state_check
+        _init()
+        state.append_event(state.event("START", "r-open", "normalize", {}))
+        [runs] = [c for c in state_check.collect() if c.name == "runs closed"]
+        assert not runs.ok and not runs.hard
