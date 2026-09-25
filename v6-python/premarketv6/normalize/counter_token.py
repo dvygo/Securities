@@ -686,7 +686,8 @@ def run_stats(as_of: str, mic: str, venue_id: int, tokens: VenueTokens, sequence
 def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
                          started_at: str = "",
                          run: Optional[RunStats] = None,
-                         inputs=(), outputs=()) -> Path:
+                         inputs=(), outputs=(),
+                         numbering: Optional[dict] = None) -> Path:
     """Write one venue's header, and the allocation table it points at.
 
     The table goes first and the header last, so the header's presence keeps
@@ -699,17 +700,29 @@ def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
     reason every writer here does it: two runs must not share a temp path, and a
     half-written manifest read as tomorrow's carry-forward would silently
     re-issue live tokens.
+
+    The numbering session does not call this: it writes the table under a
+    staged name, commits the state head, and only then promotes the table and
+    writes the header from the same header_payload -- see state.py.
     """
     mic = mic.upper()
-    path = _venue_manifest_path(as_of, mic)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    alloc = write_alloc(alloc_path(as_of, mic), tokens)
+    payload = header_payload(as_of, mic, tokens, alloc.name, alloc.stat().st_size,
+                             sha256_of(alloc), started_at, run, inputs, outputs,
+                             numbering)
+    return write_header(as_of, mic, payload)
 
-    alloc = write_alloc(_alloc_path(as_of, mic), tokens)
+
+def header_payload(as_of: str, mic: str, tokens: VenueTokens, alloc_name: str,
+                   alloc_bytes: int, alloc_sha: str, started_at: str = "",
+                   run: Optional[RunStats] = None, inputs=(), outputs=(),
+                   numbering: Optional[dict] = None) -> dict:
+    """The header document for one venue-day, as a dict, written by nobody yet."""
     completed_at = utc_now()
     payload = {
         "version": MANIFEST_VERSION,
         "date": as_of,
-        "venue": mic,
+        "venue": mic.upper(),
         # The run record. This file existing IS the completion signal, and these
         # say when -- useful when a day was normalized in two passes because
         # GLBX landed at 01:00Z and OPRA at 10:30Z.
@@ -723,10 +736,10 @@ def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
             "free_count": len(set(tokens.free)),
             "retained_count": len(tokens.retained),
             # The table, and enough to prove it is the one this header describes.
-            "path": alloc.name,
+            "path": alloc_name,
             "rows": len(tokens.assigned) + len(tokens.retained) + len(set(tokens.free)),
-            "bytes": alloc.stat().st_size,
-            "sha256": sha256_of(alloc),
+            "bytes": alloc_bytes,
+            "sha256": alloc_sha,
         },
         "tokens": (run or RunStats()).as_dict(),
         # What this venue-day read, and what it wrote. Always present, even when
@@ -735,11 +748,73 @@ def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
         "inputs": [a.as_dict() for a in inputs],
         "outputs": [a.as_dict() for a in outputs],
     }
+    if numbering is not None:
+        # How the numbering session produced this day: live or fill, the state
+        # it started from and left, its neighbours, the counter either side,
+        # and the exceptions file. Absent on days numbered before the session.
+        payload["numbering"] = numbering
+    return payload
+
+
+def write_header(as_of: str, mic: str, payload: dict) -> Path:
+    """Write a header document atomically. Its presence means the venue is done."""
+    path = venue_manifest_path(as_of, mic)
+    path.parent.mkdir(parents=True, exist_ok=True)
     staging = path.with_name(f"{path.name}.tmp.{os.getpid()}")
     with open(staging, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=1, sort_keys=True)
     os.replace(staging, path)
     return path
+
+
+def venue_manifest_path(as_of: str, mic: str) -> Path:
+    return _venue_manifest_path(as_of, mic.upper())
+
+
+def alloc_path(as_of: str, mic: str) -> Path:
+    return _alloc_path(as_of, mic.upper())
+
+
+# A fill's recorded breaks: every script whose token differs from a numbered
+# neighbour's, one row per pair (see numbering.breaks). Beside the allocation
+# table and proved by the header the same way.
+EXCEPTIONS_SUFFIX = ".exceptions.parquet"
+
+
+def exceptions_path(as_of: str, mic: str) -> Path:
+    return manifests_dir(as_of) / f"{mic.upper()}{EXCEPTIONS_SUFFIX}"
+
+
+def write_exceptions(path: Path, rows: List[dict]) -> Path:
+    """Write the exceptions table, canonically ordered, via a staged name."""
+    ordered = sorted(rows, key=lambda r: (r["script"], r["wanted_from"]))
+    table = pa.Table.from_arrays([
+        pa.array([r["script"] for r in ordered], pa.string()),
+        pa.array([r["token"] for r in ordered], pa.int32()),
+        pa.array([r["wanted"] for r in ordered], pa.int32()),
+        pa.array([r["wanted_from"] for r in ordered], pa.string()),
+        pa.array([r["lost_to"] for r in ordered], pa.string()),
+    ], names=["script", "token", "wanted", "wanted_from", "lost_to"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    pq.write_table(table, staging, compression=_ALLOC_COMPRESSION)
+    os.replace(staging, path)
+    return path
+
+
+def read_exceptions(as_of: str, mic: str) -> List[dict]:
+    """A day's recorded exceptions, verified against its header; [] when it has none."""
+    header = _read_json(_venue_manifest_path(as_of, mic.upper()))
+    block = (header.get("numbering") or {}).get("exceptions") or {}
+    if not block.get("count"):
+        return []
+    path = manifests_dir(as_of) / block["path"]
+    if not path.exists() or sha256_of(path) != block.get("sha256"):
+        raise ManifestCorrupt(f"{mic}: {as_of}'s exceptions table is missing or does "
+                              f"not match its header")
+    table = pq.read_table(path)
+    return [dict(zip(table.column_names, row)) for row in
+            zip(*(table.column(c).to_pylist() for c in table.column_names))]
 
 
 def _sequence_path(as_of: str) -> Path:
