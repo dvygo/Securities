@@ -225,6 +225,36 @@ class TestLiveAllocation:
         assert again.day.assigned == first.day.assigned and seq.issued == issued
 
 
+class TestScale:
+    """A real XCME day is 1.09M scripts and OPRA about 2M. Anything quadratic in the
+    allocators takes hours there -- a list membership test did, on the first
+    rehearsal against real data. 300k scripts must stay in seconds."""
+
+    N = 300_000
+
+    def test_a_live_rerun_at_scale_is_linear(self):
+        import time
+        scripts = [f"S{i:07d}" for i in range(self.N)]
+        seq = Sequence()
+        first = n.allocate_live("20260925", scripts, None, None, seq, 12)
+        started = time.perf_counter()
+        again = n.allocate_live("20260925", scripts[:-1000], first.state_after, None, seq, 12)
+        assert time.perf_counter() - started < 10
+        assert len(again.day.retained) == 1000
+
+    def test_a_fill_at_scale_is_linear(self):
+        import time
+        scripts = [f"S{i:07d}" for i in range(self.N)]
+        seq = Sequence()
+        live = n.allocate_live("20260925", scripts, None, None, seq, 12)
+        older = scripts[5000:] + [f"X{i:07d}" for i in range(5000)]
+        started = time.perf_counter()
+        plan = n.allocate_fill("20260924", older, None, None, live.day,
+                               live.state_after, seq, 12)
+        assert time.perf_counter() - started < 10
+        assert plan.counts["from_later"] == self.N - 5000
+
+
 # -- property test: the simulation that found the design bugs ---------------------
 
 def _universe(rng, days):

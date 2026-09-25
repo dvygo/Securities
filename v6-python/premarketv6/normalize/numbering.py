@@ -29,7 +29,7 @@ break:
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence as Seq, Set, Tuple
 
-from .counter_token import Sequence, VenueTokens, carry_forward
+from .counter_token import Sequence, VenueTokens, assign, carry_forward
 
 LIVE = "live"
 FILL = "fill"
@@ -120,6 +120,11 @@ class Plan:
     def token(self, script: str) -> Optional[int]:
         return self.day.assigned.get(script)
 
+    def rendered(self, script: str) -> str:
+        """counterTokenV2 as the normalized parquet carries it: a string, "" if none."""
+        number = self.day.assigned.get(script)
+        return "" if number is None else assign(number)
+
 
 def _present(scripts: Iterable) -> List[str]:
     return sorted(set(s for s in scripts if s))
@@ -143,13 +148,14 @@ def allocate_live(date: str, scripts: Iterable, state: Optional[Holdings],
     """
     before = sequence.issued
     present = _present(scripts)
+    here = set(present)          # membership: `present` is a list of a million scripts
     if state is None:
         start = VenueTokens(venue_id)
         releasable = start
         retained: Dict[str, int] = {}
     else:
         retained = {s: t for s, t in state.assigned.items()
-                    if s not in present and state.last_date.get(s) == date}
+                    if s not in here and state.last_date.get(s) == date}
         releasable = VenueTokens(
             venue_id,
             {s: t for s, t in state.assigned.items() if s not in retained},
@@ -173,7 +179,7 @@ def allocate_live(date: str, scripts: Iterable, state: Optional[Holdings],
     counts = {"scripts": len(present), "kept": kept, "arrived": len(present) - kept,
               "retained": len(retained), "drawn": sequence.issued - before,
               "released": 0 if state is None else sum(
-                  1 for s in state.assigned if s not in present and s not in retained),
+                  1 for s in state.assigned if s not in here and s not in retained),
               "exceptions": len(exceptions)}
     return Plan(LIVE, date, day, after, exceptions, [], counts,
                 {"earlier": previous.date if previous is not None else ""},
