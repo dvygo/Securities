@@ -181,7 +181,7 @@ class Sequence:
 
 def carry_forward(
     previous: Optional[VenueTokens], scripts: Sequence, venue_id: int,
-    sequence: "Sequence",
+    sequence: "Sequence", prefer: Optional[Dict[str, int]] = None,
 ) -> VenueTokens:
     """Allocate today's tokens from yesterday's, per the three rules.
 
@@ -194,6 +194,15 @@ def carry_forward(
     matters and new ones are taken in sorted order, so the result depends on
     the symbol set alone and not on how the rows happened to arrive. That is
     what makes a re-run byte-identical.
+
+    `prefer` names the token each script held on the previous numbered day. An
+    arrival whose own previous token is sitting in the pool takes it back
+    before anyone is handed the pool's lowest. Without it, a script missing
+    from an earlier pass of the same day -- a truncated download -- returns
+    holding whatever number sorts first, and its token moves between two
+    consecutive days with nothing on record to say why. Every reclaim is made
+    before any other arrival draws, so the result still depends on the symbol
+    set alone.
     """
     present = sorted(set(s for s in scripts if s))
 
@@ -205,8 +214,17 @@ def carry_forward(
     pool = sorted(set(previous.free) | set(released))
 
     assigned = dict(kept)
+    arrivals = [s for s in present if s not in assigned]
+    if prefer:
+        available = set(pool)
+        for script in arrivals:
+            token = prefer.get(script)
+            if token is not None and token in available:
+                assigned[script] = token
+                available.discard(token)
+        pool = [t for t in pool if t in available]
     taken = 0
-    for script in present:
+    for script in arrivals:
         if script in assigned:
             continue
         if taken < len(pool):

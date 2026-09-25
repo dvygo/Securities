@@ -2414,6 +2414,67 @@ class TestSameDayRerun:
         assert redone.assigned["D"] != first
 
 
+class TestReturningScriptReclaims:
+    """A script absent from an earlier pass of the day takes its own token back.
+
+    The case is a truncated first download: C is missing from the 06:00 pass, the
+    day is numbered without it, and the 07:00 re-run has it again. C held 2
+    yesterday. Handed the pool's lowest instead, it would hold a different token
+    today with nothing on record -- the chain broken silently.
+    """
+
+    @staticmethod
+    def _yesterday_and_truncated_pass():
+        yesterday = counter_token.carry_forward(
+            None, ["A", "C", "E"], 12, counter_token.Sequence())
+        sequence = counter_token.Sequence(yesterday.highest)
+        truncated = counter_token.carry_forward(yesterday, ["A", "E"], 12, sequence)
+        return yesterday, truncated, sequence
+
+    def test_the_returning_script_takes_its_own_token_back(self):
+        yesterday, truncated, sequence = self._yesterday_and_truncated_pass()
+        assert yesterday.assigned == {"A": 1, "C": 2, "E": 3}
+        assert truncated.free == [2]
+
+        rerun = counter_token.carry_forward(
+            truncated, ["A", "B2", "C", "E"], 12, sequence, prefer=yesterday.assigned)
+        assert rerun.assigned["C"] == 2
+        assert rerun.assigned["B2"] == 4          # the newcomer draws instead
+        assert rerun.free == []
+
+    def test_without_prefer_the_newcomer_sorting_first_takes_it(self):
+        """The bug, reproduced. If this ever stops moving C, the test above has
+        stopped proving anything."""
+        _, truncated, sequence = self._yesterday_and_truncated_pass()
+        rerun = counter_token.carry_forward(truncated, ["A", "B2", "C", "E"], 12, sequence)
+        assert rerun.assigned["B2"] == 2 and rerun.assigned["C"] != 2
+
+    def test_a_token_already_handed_on_is_not_reclaimed(self):
+        """Reclaiming only ever takes from the pool. A token another script holds
+        is never taken from it -- that would be two scripts on one number."""
+        yesterday = counter_token.carry_forward(None, ["A", "C"], 12, counter_token.Sequence())
+        sequence = counter_token.Sequence(yesterday.highest)
+        first = counter_token.carry_forward(yesterday, ["A", "D"], 12, sequence)
+        assert first.assigned["D"] == yesterday.assigned["C"]
+
+        rerun = counter_token.carry_forward(
+            first, ["A", "C", "D"], 12, sequence, prefer=yesterday.assigned)
+        assert rerun.assigned["D"] == yesterday.assigned["C"]
+        assert rerun.assigned["C"] not in (rerun.assigned["A"], rerun.assigned["D"])
+
+    def test_an_ordinary_day_is_unchanged_by_prefer(self):
+        """Every arrival on a normal day is new, so there is nothing to reclaim and
+        the allocation is identical to the one without it."""
+        yesterday = counter_token.carry_forward(
+            None, ["A", "B", "C"], 12, counter_token.Sequence())
+        plain = counter_token.carry_forward(
+            yesterday, ["A", "C", "X", "Y"], 12, counter_token.Sequence(3))
+        preferred = counter_token.carry_forward(
+            yesterday, ["A", "C", "X", "Y"], 12, counter_token.Sequence(3),
+            prefer=yesterday.assigned)
+        assert preferred.assigned == plain.assigned and preferred.free == plain.free
+
+
 class TestRecordedArtifacts:
     """A header names the file it read and the file it wrote, with digests.
 
