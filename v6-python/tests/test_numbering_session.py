@@ -469,3 +469,123 @@ class TestCheckState:
         state.append_event(state.event("START", "r-open", "normalize", {}))
         [runs] = [c for c in state_check.collect() if c.name == "runs closed"]
         assert not runs.ok and not runs.hard
+
+
+# -- `normalize --dates`: the command end to end, with a stand-in normalizer ----------
+
+VENUE_IDS = {"XCME": 12, "XNSE": 16}
+
+
+def _stand_in_normalizer(inputs):
+    """Numbers inputs[(date, mic)] through the session the way the real
+    normalizers do -- venue, plan, reserve, write, commit -- and records a
+    missing input as no-input."""
+    from premarketv6.normalize import numbering_session
+
+    def step(opts):
+        session = numbering_session.of(opts)
+        for mic in opts.venues:
+            scripts = inputs.get((opts.date_dir, mic))
+            if scripts is None:
+                session.no_input(opts.date_dir, mic)
+                continue
+            try:
+                venue = session.venue(opts.date_dir, mic, VENUE_IDS[mic])
+                plan = venue.plan(scripts)
+            except ValueError as exc:
+                session.record(opts.date_dir, mic, "refused", str(exc))
+                continue
+            if venue.preview:
+                venue.commit(plan)
+                continue
+            venue.reserve(plan)
+            _write_normalized(opts.date_dir, mic, plan.day.assigned)
+            venue.commit(plan, counter_token.utc_now())
+    return step
+
+
+class TestFillCommand:
+    @pytest.fixture
+    def cli_tree(self, tree, monkeypatch):
+        monkeypatch.setenv("PREMARKET_QAT_DIR", str(tree / "qat"))
+        monkeypatch.setenv("PREMARKET_LOGS_DIR", str(tree / "logs"))
+        return tree
+
+    @staticmethod
+    def _fill(monkeypatch, argv, inputs):
+        from premarketv6 import cli, runner
+        monkeypatch.setattr(runner, "build_normalizer_steps",
+                            lambda only: [runner.Step("stand-in", _stand_in_normalizer(inputs))])
+        return cli.run_fill(cli.create_parser().parse_args(argv))
+
+    @staticmethod
+    def _header(date, mic):
+        return json.loads(counter_token.venue_manifest_path(date, mic).read_text())
+
+    def test_it_fills_newest_first_and_passes_the_gate(self, cli_tree, monkeypatch):
+        _init()
+        live = _numbered(LIVE, "20260926", "XCME", 12, ["A", "B", "C"])
+        inputs = {("20260925", "XCME"): ["A", "B", "Z"], ("20260924", "XCME"): ["A", "Y", "Z"]}
+        rc = self._fill(monkeypatch, ["normalize", "--dates=20260924,20260925", "--venue",
+                                      "XCME", "--reason", "history before the first day"],
+                        inputs)
+        assert rc == 0
+        assert self._header("20260925", "XCME")["numbering"]["neighbours"]["later"] == "20260926"
+        assert self._header("20260924", "XCME")["numbering"]["neighbours"]["later"] == "20260925"
+        a = {d: counter_token.venue_entry(d, "XCME")["assigned"]["A"]
+             for d in ("20260924", "20260925", "20260926")}
+        assert set(a.values()) == {live.day.assigned["A"]}
+        gate = [e for e in state.read_events() if e["job"]["name"] == "quality-gate"]
+        assert [e["eventType"] for e in gate] == ["COMPLETE"]
+        assert self._header("20260924", "XCME")["numbering"]["reason"] == \
+            "history before the first day"
+
+    def test_a_named_venue_without_input_fails_and_stops(self, cli_tree, monkeypatch):
+        _init()
+        _numbered(LIVE, "20260926", "XCME", 12, ["A"])
+        inputs = {("20260925", "XCME"): None, ("20260924", "XCME"): ["A"]}
+        rc = self._fill(monkeypatch, ["normalize", "--dates=20260924,20260925", "--venue",
+                                      "XCME", "--reason", "r"], inputs)
+        assert rc == 1
+        assert not counter_token.venue_manifest_path("20260924", "XCME").exists()
+        closing = [e for e in state.read_events()
+                   if e["job"]["name"] == "normalize" and e["eventType"] == "FAIL"]
+        assert "no-input" in closing[-1]["run"]["facets"]["premarketv6"]["error"]
+
+    def test_a_preview_writes_nothing(self, cli_tree, monkeypatch):
+        _init()
+        _numbered(LIVE, "20260926", "XCME", 12, ["A"])
+        ignore = {".lock"}
+        # The command's own run log is expected; "nothing" means no data, no state.
+        before = sorted(p.relative_to(cli_tree) for p in cli_tree.rglob("*")
+                        if p.is_file() and p.name not in ignore and "logs" not in p.parts)
+        rc = self._fill(monkeypatch, ["normalize", "--dates=20260925", "--venue", "XCME",
+                                      "--reason", "r", "--dry-run"],
+                        {("20260925", "XCME"): ["A", "Q"]})
+        after = sorted(p.relative_to(cli_tree) for p in cli_tree.rglob("*")
+                       if p.is_file() and p.name not in ignore and "logs" not in p.parts)
+        assert rc == 0 and after == before
+
+    @pytest.mark.parametrize("argv, message", [
+        (["normalize", "--dates=20260925", "--reason", "r"], "--venue"),
+        (["normalize", "--dates=20260925", "--venue", "XCME"], "--reason"),
+        (["normalize", "--dates=20260925", "--venue", "XCME", "--reason", "r",
+          "--csv-only"], "6.3.0"),
+    ])
+    def test_scope_and_reason_are_required_and_removed_flags_refused(
+            self, cli_tree, monkeypatch, argv, message):
+        _init()
+        with pytest.raises(SystemExit, match=message):
+            self._fill(monkeypatch, argv, {})
+
+    def test_a_failing_gate_fails_the_run(self, cli_tree, monkeypatch):
+        from premarketv6.qa import report, tokens as qa
+        _init()
+        _numbered(LIVE, "20260926", "XCME", 12, ["A"])
+        monkeypatch.setattr(qa, "collect", lambda dates, venues: [
+            report.Check("20260925", "XCME", "stable", False, "planted failure")])
+        rc = self._fill(monkeypatch, ["normalize", "--dates=20260925", "--venue", "XCME",
+                                      "--reason", "r"], {("20260925", "XCME"): ["A"]})
+        assert rc == 1
+        gate = [e for e in state.read_events() if e["job"]["name"] == "quality-gate"]
+        assert [e["eventType"] for e in gate] == ["FAIL"]

@@ -100,10 +100,25 @@ def create_parser() -> argparse.ArgumentParser:
 
     # Normalize subcommand
     normalize_parser = subparsers.add_parser("normalize", help="Normalize downloaded data")
-    normalize_parser.add_argument(
+    which_days = normalize_parser.add_mutually_exclusive_group()
+    which_days.add_argument(
         "--date-dir",
         default=datetime.now().strftime("%Y%m%d"),
-        help="Date directory (YYYYMMDD, default: today)",
+        help="Date directory (YYYYMMDD, default: today). The live day.",
+    )
+    which_days.add_argument(
+        "--dates",
+        help="Fill OLDER days: comma-separated YYYYMMDD, processed newest first. Each "
+             "is numbered from the numbered days either side of it; the live chain is "
+             "never touched. Requires --venue and --reason. Files only. A backup is "
+             "taken first and check-tokens + check-state gate the result. With "
+             "--dry-run: a real preview that reads the inputs and writes nothing.",
+    )
+    normalize_parser.add_argument(
+        "--reason",
+        default="",
+        help="Why this run is happening; recorded in the run log and the manifests. "
+             "Required with --dates.",
     )
     normalize_parser.add_argument(
         "--dry-run",
@@ -347,14 +362,20 @@ _REMOVED = {
 _PUSH_STEPS = {"plugin", "postgres-plugin", "tokenmap", "clickhouse"}
 
 
-def run_normalize(args: argparse.Namespace) -> int:
-    """Run normalize command."""
+def _refuse_removed(args: argparse.Namespace) -> None:
+    """Exit with a pointer to `load` for any push flag or step removed in 6.3.0."""
     for flag in ("clickhouse_push_only", "csv_only"):
         if getattr(args, f"{flag}_removed", False):
             raise SystemExit(_REMOVED[flag])
     only = getattr(args, "only", []) or []
     if _PUSH_STEPS & set(only):
         raise SystemExit(f"--only {', '.join(sorted(_PUSH_STEPS & set(only)))}: " + _REMOVED["steps"])
+
+
+def run_normalize(args: argparse.Namespace) -> int:
+    """Run normalize command: the live day."""
+    _refuse_removed(args)
+    only = getattr(args, "only", []) or []
 
     cleanup, log_path = runlog.setup("normalizer", args.date_dir)
     try:
@@ -368,9 +389,97 @@ def run_normalize(args: argparse.Namespace) -> int:
             venues=_venue_selection(getattr(args, "venue", []) or []),
         )
         steps = runner.build_normalizer_steps(only)
-        return _numbered_run("normalize", steps, opts, dry_run=args.dry_run)
+        return _numbered_run("normalize", steps, opts, dry_run=args.dry_run,
+                             reason=getattr(args, "reason", ""))
     finally:
         cleanup()
+
+
+def run_fill(args: argparse.Namespace) -> int:
+    """`normalize --dates`: fill older days, newest first, then gate the result.
+
+    Strict on purpose. Each older date is filled from the day after it, so a
+    date that did not complete -- a venue refused, or a named venue with no
+    input -- stops the run instead of letting the dates behind it fill from the
+    wrong neighbour.
+    """
+    from .normalize import numbering_session
+    from .normalize.numbering import FILL
+
+    _refuse_removed(args)
+    dates = _date_list(args.dates)
+    venues = _venue_selection(getattr(args, "venue", []) or [])
+    if not venues:
+        raise SystemExit("--dates needs --venue: name every venue you are filling "
+                         "(e.g. --venue XCME --venue XNAS). The scope of a manual "
+                         "backfill is explicit and recorded.")
+    reason = (getattr(args, "reason", "") or "").strip()
+    if not reason:
+        raise SystemExit("--dates needs --reason \"...\": a backfill changes the "
+                         "record, and the run log keeps why.")
+    steps = runner.build_normalizer_steps(getattr(args, "only", []) or [])
+
+    cleanup, log_path = runlog.setup("normalizer-fill", dates[0])
+    try:
+        print(f"Log: {log_path}", file=sys.stderr)
+        print(f"Filling {', '.join(dates)} for {', '.join(venues)} (newest first)"
+              + (" -- PREVIEW, nothing is written" if args.dry_run else ""), file=sys.stderr)
+        with numbering_session.Session("normalize", FILL, reason=reason,
+                                       preview=args.dry_run,
+                                       label=f"{dates[-1]}-{dates[0]}") as session:
+            for date in dates:
+                opts = runner.Opts(as_of=date, date_dir=date, dry_run=args.dry_run,
+                                   venues=venues, numbering=session)
+                rc = runner.run(steps, opts)
+                done = {o.mic for o in session.outcomes
+                        if o.date == date and o.status in ("done", "previewed")}
+                problems = [f"{o.mic}: {o.status} -- {o.detail}" for o in session.outcomes
+                            if o.date == date and o.mic in venues
+                            and o.status in ("refused", "no-input")]
+                problems += [f"{mic}: nothing was numbered" for mic in venues
+                             if mic not in done and not any(p.startswith(f"{mic}:")
+                                                            for p in problems)]
+                if rc != 0 or problems:
+                    why = "; ".join(problems) or f"a step failed (exit {rc})"
+                    print(f"error: {date} did not complete ({why}). Stopping: older "
+                          f"dates are filled from this one.", file=sys.stderr)
+                    session.fail(f"{date}: {why}")
+                    return 1
+        if args.dry_run:
+            print("Preview complete; nothing was written.", file=sys.stderr)
+            return 0
+        return _gate(dates, venues, session.run_id)
+    finally:
+        cleanup()
+
+
+def _gate(dates, venues, parent_run: str) -> int:
+    """The quality gate after a fill: check-tokens over the filled dates and their
+    numbered neighbours, then check-state. Recorded in the run log."""
+    from .normalize import state
+    from .qa import report, state_check, tokens
+
+    days = set(dates)
+    for mic in venues:
+        known = state.venue_days(mic)
+        for date in dates:
+            before = [d for d in known if d < date]
+            after = [d for d in known if d > date]
+            days.update(before[-1:] + after[:1])
+    print(f"Quality gate: check-tokens over {', '.join(sorted(days))}, then check-state",
+          file=sys.stderr)
+    token_rc = report.report(tokens.collect(sorted(days), venues), suite="check-tokens")
+    state_rc = report.report(state_check.collect(), suite="check-state")
+    ok = token_rc == 0 and state_rc == 0
+    state.append_event(state.event(
+        "COMPLETE" if ok else "FAIL", state.new_run_id(dates[0], "gate"), "quality-gate",
+        {"dates": sorted(days), "venues": list(venues), "check_tokens": token_rc,
+         "check_state": state_rc}, parent=parent_run))
+    if not ok:
+        print("error: the quality gate failed -- see the FAIL lines above. The filled "
+              "days are on disk but must not be used until this is resolved.",
+              file=sys.stderr)
+    return 0 if ok else 1
 
 
 def run_load(args: argparse.Namespace) -> int:
@@ -384,12 +493,12 @@ def run_load(args: argparse.Namespace) -> int:
         cleanup()
 
 
-def _numbered_run(command: str, steps, opts, dry_run: bool = False) -> int:
+def _numbered_run(command: str, steps, opts, dry_run: bool = False, reason: str = "") -> int:
     """Run the steps inside a live numbering session: the state lock is held for
     the whole run, recovery runs first, and every normalizer numbers through it."""
     from .normalize import numbering_session
     from .normalize.numbering import LIVE
-    with numbering_session.Session(command, LIVE, preview=dry_run,
+    with numbering_session.Session(command, LIVE, reason=reason, preview=dry_run,
                                    label=opts.date_dir) as session:
         opts.numbering = session
         rc = runner.run(steps, opts)
@@ -478,6 +587,8 @@ def main() -> int:
                 return run_backfill(args.command, args, _date_list(raw_dates))
             return run_download(args.command, args)
         elif args.command == "normalize":
+            if getattr(args, "dates", None):
+                return run_fill(args)
             return run_normalize(args)
         elif args.command == "plugin":
             raise SystemExit(_REMOVED["plugin"])
