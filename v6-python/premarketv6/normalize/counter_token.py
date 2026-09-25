@@ -741,19 +741,64 @@ def previous_sequence(as_of: str) -> tuple[Optional[int], str]:
     return None, ""
 
 
+def numbered_day_dirs() -> List[str]:
+    """Every YYYYMMDD under data_root() that has a manifests directory, oldest first."""
+    root = paths.data_root()
+    if not root.is_dir():
+        return []
+    return sorted(child.name for child in root.iterdir()
+                  if len(child.name) == 8 and child.name.isdigit()
+                  and manifests_dir(child.name).is_dir())
+
+
+def highest_issued() -> tuple[int, str]:
+    """The highest number any run has issued, as recorded on disk, and where.
+
+    Every day's _sequence.json, and every venue header's `highest` -- with no
+    lookback window and regardless of date order. A day backfilled after later
+    days were numbered, or numbered after a long gap, still draws above every
+    number already in anyone's hands; that is what makes the counter one
+    sequence for the whole estate rather than one per chain of days. Reading
+    headers as well covers a run that published a header but crashed before
+    its sequence file caught up.
+    """
+    best, where = FIRST_TOKEN - 1, ""
+    for day in numbered_day_dirs():
+        issued = load_sequence(day)
+        if issued is not None and issued > best:
+            best, where = issued, day
+        for header in manifests_dir(day).glob("*.json"):
+            if header.name.startswith("_"):
+                continue
+            highest = int((_read_json(header).get("allocation") or {}).get("highest", 0) or 0)
+            if highest > best:
+                best, where = highest, day
+    return best, where
+
+
 def open_sequence(as_of: str) -> tuple["Sequence", str]:
     """The sequence to allocate from today, and the day it was carried from.
 
     Today's own file first, so a second step in the same day (Fyers after
     Databento) continues where the first left off instead of reissuing its
     numbers. Then yesterday's. Then FIRST_TOKEN.
+
+    And never below highest_issued(). The day-by-day chain alone restarts at 1
+    for a date with no earlier day on disk, which is exactly what backfilling an
+    older date does -- and those numbers are already live on later days. When
+    the floor is higher than the chain, the day that holds it is what is
+    returned as the source.
     """
     today = load_sequence(as_of)
     if today is not None:
-        return Sequence(today), as_of
-    issued, stamp = previous_sequence(as_of)
-    if issued is None:
-        return Sequence(), ""
+        issued, stamp = today, as_of
+    else:
+        previous, previous_stamp = previous_sequence(as_of)
+        issued, stamp = ((previous, previous_stamp) if previous is not None
+                         else (FIRST_TOKEN - 1, ""))
+    highest, where = highest_issued()
+    if highest > issued:
+        return Sequence(highest), where
     return Sequence(issued), stamp
 
 

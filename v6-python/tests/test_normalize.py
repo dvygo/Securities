@@ -1813,10 +1813,36 @@ class TestSharedSequence:
         later = counter_token.carry_forward(None, ["X", "Y"], 10, second)
         assert set(later.assigned.values()) == {4, 5}
 
-    def test_the_lookback_stops_rather_than_reaching_a_stale_month(self, tree):
+    def test_a_stale_month_is_still_the_floor(self, tree):
+        """The counter never restarts. Numbers issued months ago may still be in
+        someone's hands -- a delivered tokenmap, a Postgres row -- so a day with
+        no recent history draws above them rather than from 1. Only the
+        allocation lookback stops at 30 days; the counter has no window.
+        (This test used to assert the opposite: a restart at 1.)"""
         counter_token.write_sequence("20260101", counter_token.Sequence(999))
         seq, carried = counter_token.open_sequence("20260824")
-        assert carried == "" and seq.issued == counter_token.FIRST_TOKEN - 1
+        assert carried == "20260101" and seq.take() == 1000
+
+    def test_an_older_day_numbered_later_draws_above_the_newer_day(self, tree):
+        """The hazard on the box that motivated this: 20260925 numbered first
+        (Fyers, 1..138,744), then 20260924 backfilled. The chain alone finds
+        nothing before the 24th and would start at 1 -- numbers XNSE holds."""
+        counter_token.write_sequence("20260925", counter_token.Sequence(138_744))
+        seq, carried = counter_token.open_sequence("20260924")
+        assert carried == "20260925" and seq.take() == 138_745
+
+    def test_a_header_ahead_of_its_sequence_file_still_counts(self, tree):
+        """A run that published a header and died before its sequence file caught
+        up must not have its numbers handed out again."""
+        counter_token.write_venue_manifest(
+            "20260824", "XCBO", counter_token.VenueTokens(10, {"A": 500}, []))
+        seq, carried = counter_token.open_sequence("20260901")
+        assert carried == "20260824" and seq.take() == 501
+
+    def test_the_floor_ignores_directories_that_are_not_days(self, tree):
+        (tree / "_state").mkdir()
+        (tree / "notes").mkdir()
+        assert counter_token.numbered_day_dirs() == []
 
     def test_the_sequence_file_is_not_mistaken_for_a_venue(self, tree):
         counter_token.write_sequence("20260824", counter_token.Sequence(3))
