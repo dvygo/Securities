@@ -1760,7 +1760,7 @@ class TestPerVenueManifest:
         counter_token.write_venue_manifest(
             "20260824", "XCBO", counter_token.carry_forward(None, ["A"], 10, counter_token.Sequence()))
         doc = json.loads((counter_token.manifests_dir("20260824") / "XCBO.json").read_text())
-        assert doc["version"] == counter_token.MANIFEST_VERSION == 4
+        assert doc["version"] == counter_token.MANIFEST_VERSION == 5
         assert doc["venue"] == "XCBO" and doc["date"] == "20260824"
 
 
@@ -1974,10 +1974,12 @@ class TestManifestHeaderAndAllocation:
         assert entry["venue_id"] == 10
 
     def test_venue_entry_keeps_the_shape_its_callers_expect(self, tree):
-        """qa/tokens.py and _tokens_from read these five keys and nothing else."""
+        """qa/tokens.py, _tokens_from and state.day_alloc read these six keys and
+        nothing else. `retained` is manifest 5's; a version-4 table reads as {}."""
         self._write(assigned={"A": 1}, free=[9])
         entry = counter_token.venue_entry("20260824", "XCBO")
-        assert set(entry) == {"venue_id", "highest", "count", "assigned", "free"}
+        assert set(entry) == {"venue_id", "highest", "count", "assigned", "free", "retained"}
+        assert entry["retained"] == {}
 
     def test_a_rerun_of_the_same_day_is_byte_identical(self, tree):
         """A digest over a nondeterministic file would prove nothing."""
@@ -2166,6 +2168,79 @@ class TestManifestHeaderAndAllocation:
         assert day2.assigned["A"] == day1.assigned["A"]
         assert day2.assigned["C"] == day1.assigned["C"]
         assert day2.assigned["D"] == day1.assigned["B"]   # recycled
+
+
+class TestRetainedAllocation:
+    """Manifest 5: a token handed out earlier on the date and absent from this
+    run's output is `retained` -- held for the rest of the date, never free."""
+
+    @pytest.fixture
+    def tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def _tokens():
+        return counter_token.VenueTokens(10, {"A": 1, "B": 2}, [9], retained={"C": 3})
+
+    def test_it_round_trips_through_the_table(self, tree):
+        counter_token.write_venue_manifest("20260925", "XNSE", self._tokens())
+        entry = counter_token.venue_entry("20260925", "XNSE")
+        assert entry["assigned"] == {"A": 1, "B": 2}
+        assert entry["retained"] == {"C": 3} and entry["free"] == [9]
+
+    def test_the_header_counts_it_and_highest_includes_it(self, tree):
+        tokens = counter_token.VenueTokens(10, {"A": 1}, [], retained={"C": 30})
+        counter_token.write_venue_manifest("20260925", "XNSE", tokens)
+        block = json.loads((counter_token.manifests_dir("20260925") / "XNSE.json")
+                           .read_text())["allocation"]
+        assert block["retained_count"] == 1 and block["highest"] == 30
+        assert block["rows"] == 2
+
+    def test_a_retained_token_is_never_offered_by_the_counter_floor(self, tree):
+        """highest_issued reads header `highest`, which counts retained tokens."""
+        tokens = counter_token.VenueTokens(10, {"A": 1}, [], retained={"C": 30})
+        counter_token.write_venue_manifest("20260925", "XNSE", tokens)
+        assert counter_token.highest_issued() == (30, "20260925")
+
+    def test_the_version_4_reader_refuses_rather_than_dropping_it(self, tree):
+        path = counter_token.write_alloc(tree / "t.alloc.parquet", self._tokens())
+        with pytest.raises(counter_token.ManifestCorrupt, match="retained"):
+            counter_token.read_alloc(path)
+        assert counter_token.read_allocation(path)[2] == {"C": 3}
+
+    def test_check_tokens_does_not_count_retained_as_orphans(self, tree):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        directory = paths.normalized_dir("20260925")
+        directory.mkdir(parents=True)
+        pq.write_table(pa.table({"script": ["A", "B"], "counterToken": ["1", "2"],
+                                 "counterTokenV2": ["1", "2"]}),
+                       directory / "XCBO-DATABENTO-normalized.parquet")
+        counter_token.write_venue_manifest("20260925", "XCBO", self._tokens())
+        checks = {c.name: c for c in counter_token_qa.check_day("20260925", ["XCBO"])}
+        assert checks["manifest agrees"].ok and "retained" in checks["manifest agrees"].detail
+        assert checks["manifest internal"].ok
+
+    def test_check_tokens_fails_a_retained_token_that_is_also_free(self, tree):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        directory = paths.normalized_dir("20260925")
+        directory.mkdir(parents=True)
+        pq.write_table(pa.table({"script": ["A"], "counterToken": ["1"],
+                                 "counterTokenV2": ["1"]}),
+                       directory / "XCBO-DATABENTO-normalized.parquet")
+        counter_token.write_venue_manifest("20260925", "XCBO", counter_token.VenueTokens(
+            10, {"A": 1}, [3], retained={"C": 3}))
+        checks = {c.name: c for c in counter_token_qa.check_day("20260925", ["XCBO"])}
+        assert not checks["manifest internal"].ok
+        assert "retained" in checks["manifest internal"].detail
+
+    def test_a_version_4_table_still_reads(self, tree):
+        path = counter_token.write_alloc(
+            tree / "t.alloc.parquet", counter_token.VenueTokens(10, {"A": 1}, [4]))
+        assert counter_token.read_allocation(path) == ({"A": 1}, [4], {})
+        assert counter_token.read_alloc(path) == ({"A": 1}, [4])
 
 
 class TestManifestMigration:

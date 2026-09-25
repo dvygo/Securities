@@ -119,7 +119,10 @@ MANIFEST_LOOKBACK_DAYS = 30
 
 # 4 moved the allocation out of the header and into a Parquet table beside
 # it. There is no reader for 3 -- see venue_entry on why no fallback.
-MANIFEST_VERSION = 4
+# 5 adds the `retained` row state (see ALLOC_RETAINED). A 4 table simply has no
+# such rows, so it reads unchanged; a build that only knows 4 refuses a 5 table
+# rather than misreading it, which is the direction that is safe.
+MANIFEST_VERSION = 5
 
 # Matches the rest of the pipeline's Parquet. The table is mostly a sorted
 # string column and a near-dense integer one, which zstd takes to very little.
@@ -138,6 +141,9 @@ class VenueTokens:
     venue_id: int
     assigned: Dict[str, int] = field(default_factory=dict)   # script -> token
     free: List[int] = field(default_factory=list)            # released, ascending
+    # Handed out on this date by an earlier run, absent from this run's output.
+    # Held for the rest of the date -- never free, never another script's.
+    retained: Dict[str, int] = field(default_factory=dict)
 
     def token(self, script: str) -> str:
         """Full counterTokenV2 for a script, or "" if it has none."""
@@ -146,8 +152,8 @@ class VenueTokens:
 
     @property
     def highest(self) -> int:
-        """Highest token this venue holds. 0 when it holds none."""
-        return max(self.assigned.values(), default=0)
+        """Highest token this venue holds, retained included. 0 when it holds none."""
+        return max(list(self.assigned.values()) + list(self.retained.values()), default=0)
 
 
 class Sequence:
@@ -242,6 +248,14 @@ ALLOC_SUFFIX = ".alloc.parquet"
 # exactly one of them.
 ALLOC_ASSIGNED = "assigned"
 ALLOC_FREE = "free"
+# Manifest 5. A script handed a token earlier on the same date that this run's
+# output no longer carries: a same-day re-run with fewer symbols, or a second
+# vendor for the same market with different coverage. Numbering is append-only
+# within a date -- the Postgres push upserts on (token, trade_date) and MDF's
+# token map is replaced mid-day -- so the token stays with its script until the
+# date moves on. Freeing it would let a later arrival take a number that already
+# names a different instrument for that trade date.
+ALLOC_RETAINED = "retained"
 
 
 class ManifestCorrupt(ValueError):
@@ -344,18 +358,21 @@ def write_alloc(path: Path, tokens: VenueTokens) -> Path:
     "nothing to recycle" and draws fresh numbers for arrivals that had perfectly
     good ones waiting. One file cannot tear that way.
 
-    Row order is canonical (assigned by script, then free ascending) so that
-    re-running a day is byte-identical. That is what makes the header's sha256
-    worth recording: a digest over a nondeterministic file proves nothing.
+    Row order is canonical (assigned by script, then retained by script, then
+    free ascending) so that re-running a day is byte-identical. That is what
+    makes the header's sha256 worth recording: a digest over a nondeterministic
+    file proves nothing.
     """
     scripts = sorted(tokens.assigned)
+    kept_back = sorted(tokens.retained)
     free = sorted(set(tokens.free))
     table = pa.Table.from_arrays(
         [
-            pa.array(scripts + [None] * len(free), pa.string()),
-            pa.array([tokens.assigned[s] for s in scripts] + free, pa.int32()),
-            pa.array([ALLOC_ASSIGNED] * len(scripts) + [ALLOC_FREE] * len(free),
-                     pa.string()),
+            pa.array(scripts + kept_back + [None] * len(free), pa.string()),
+            pa.array([tokens.assigned[s] for s in scripts]
+                     + [tokens.retained[s] for s in kept_back] + free, pa.int32()),
+            pa.array([ALLOC_ASSIGNED] * len(scripts) + [ALLOC_RETAINED] * len(kept_back)
+                     + [ALLOC_FREE] * len(free), pa.string()),
         ],
         schema=_alloc_schema(),
     )
@@ -366,8 +383,8 @@ def write_alloc(path: Path, tokens: VenueTokens) -> Path:
     return path
 
 
-def read_alloc(path: Path) -> tuple:
-    """(assigned, free) from an allocation table.
+def read_allocation(path: Path) -> tuple:
+    """(assigned, free, retained) from an allocation table.
 
     `state` is redundant with "script is null" on purpose, and this is where the
     redundancy pays: the two are checked against each other, so a table that was
@@ -375,8 +392,7 @@ def read_alloc(path: Path) -> tuple:
     rather than silently losing a venue's free pool.
     """
     table = pq.read_table(path, columns=["script", "token", "state"])
-    assigned = {}
-    free = []
+    assigned, free, retained = {}, [], {}
     for script, token, state in zip(table.column("script").to_pylist(),
                                     table.column("token").to_pylist(),
                                     table.column("state").to_pylist()):
@@ -385,14 +401,29 @@ def read_alloc(path: Path) -> tuple:
                 raise ManifestCorrupt(
                     f"{path.name}: token {token} is free but names script {script!r}")
             free.append(int(token))
-        elif state == ALLOC_ASSIGNED:
+        elif state in (ALLOC_ASSIGNED, ALLOC_RETAINED):
             if not script:
                 raise ManifestCorrupt(
-                    f"{path.name}: token {token} is assigned but names no script")
-            assigned[str(script)] = int(token)
+                    f"{path.name}: token {token} is {state} but names no script")
+            (assigned if state == ALLOC_ASSIGNED else retained)[str(script)] = int(token)
         else:
             raise ManifestCorrupt(
                 f"{path.name}: token {token} has unknown state {state!r}")
+    return assigned, free, retained
+
+
+def read_alloc(path: Path) -> tuple:
+    """(assigned, free) from a table with no retained rows -- the version-4 view.
+
+    Refuses a table that does carry retained rows instead of dropping them: a
+    caller that ignored them would treat those tokens as unowned, which is the
+    one thing append-only numbering exists to prevent. Use read_allocation.
+    """
+    assigned, free, retained = read_allocation(path)
+    if retained:
+        raise ManifestCorrupt(
+            f"{path.name}: {len(retained):,} retained token(s); read it with "
+            f"read_allocation, which keeps them")
     return assigned, free
 
 
@@ -431,13 +462,14 @@ def venue_entry(as_of: str, mic: str) -> dict:
             f"{mic}: {as_of}'s allocation table does not match its header -- "
             f"sha256 is {actual} on disk but the header records {recorded}. The "
             f"table changed after the manifest was written.")
-    assigned, free = read_alloc(path)
+    assigned, free, retained = read_allocation(path)
     return {
         "venue_id": int(block.get("venue_id", 0)),
         "highest": int(block.get("highest", 0)),
         "count": int(block.get("count", len(assigned))),
         "assigned": assigned,
         "free": free,
+        "retained": retained,
     }
 
 
@@ -498,6 +530,7 @@ def _tokens_from(entry: dict) -> VenueTokens:
         venue_id=int(entry.get("venue_id", 0)),
         assigned={str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
         free=[int(x) for x in (entry.get("free") or [])],
+        retained={str(k): int(v) for k, v in (entry.get("retained") or {}).items()},
     )
 
 
@@ -688,9 +721,10 @@ def write_venue_manifest(as_of: str, mic: str, tokens: VenueTokens,
             "highest": tokens.highest,
             "count": len(tokens.assigned),
             "free_count": len(set(tokens.free)),
+            "retained_count": len(tokens.retained),
             # The table, and enough to prove it is the one this header describes.
             "path": alloc.name,
-            "rows": len(tokens.assigned) + len(set(tokens.free)),
+            "rows": len(tokens.assigned) + len(tokens.retained) + len(set(tokens.free)),
             "bytes": alloc.stat().st_size,
             "sha256": sha256_of(alloc),
         },

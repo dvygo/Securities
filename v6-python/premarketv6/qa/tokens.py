@@ -76,8 +76,13 @@ def _allocation(date_dir: str, mic: str):
     entry, _ = _entry(date_dir, mic)
     if not entry:
         return None
+    # A retained script held its token on this date just as an assigned one did;
+    # the next day releases or keeps it exactly the same way, so for the pair
+    # arithmetic it is one of the day's holdings.
+    held = {str(k): int(v) for k, v in (entry.get("retained") or {}).items()}
+    held.update({str(k): int(v) for k, v in (entry.get("assigned") or {}).items()})
     return {
-        "assigned": {str(k): int(v) for k, v in (entry.get("assigned") or {}).items()},
+        "assigned": held,
         "free": sorted(int(x) for x in (entry.get("free") or [])),
     }
 
@@ -279,6 +284,7 @@ def _check_manifest(date_dir, mic, cfg, pairs, entry) -> List[Check]:
 
     assigned = {str(k): int(v) for k, v in (entry.get("assigned") or {}).items()}
     free = [int(x) for x in (entry.get("free") or [])]
+    retained = {str(k): int(v) for k, v in (entry.get("retained") or {}).items()}
     checks = []
 
     problems = []
@@ -293,11 +299,17 @@ def _check_manifest(date_dir, mic, cfg, pairs, entry) -> List[Check]:
     if reissued:
         problems.append(f"{len(reissued):,} offset(s) in both free and assigned -- "
                         "the pool would hand out a live number")
+    doubled = set(retained.values()) & (set(assigned.values()) | set(free))
+    if doubled:
+        problems.append(f"{len(doubled):,} retained token(s) also assigned or free -- "
+                        "a number already handed out on this date would be "
+                        "handed out again")
     checks.append(Check(date_dir, mic, "manifest internal", not problems,
                         "; ".join(problems) or
                         f"highest {max(assigned.values(), default=0):,}, "
                         f"{len(assigned):,} assigned, "
-                        f"{len(free):,} free"))
+                        + (f"{len(retained):,} retained, " if retained else "")
+                        + f"{len(free):,} free"))
 
     # Every token in the file re-derived from the manifest offset. This is the
     # check that ties the two artefacts together; the rest only inspect one.
@@ -322,7 +334,9 @@ def _check_manifest(date_dir, mic, cfg, pairs, entry) -> List[Check]:
         date_dir, mic, "manifest agrees", missing == wrong == 0 and orphans == 0,
         f"{missing:,} script(s) in the file but not the manifest, "
         f"{wrong:,} token(s) that do not re-derive, "
-        f"{orphans:,} allocated to script(s) the file does not carry",
+        f"{orphans:,} allocated to script(s) the file does not carry"
+        + (f"; {len(retained):,} retained from an earlier run of the date, "
+           "correctly absent" if retained else ""),
     ))
     return checks
 
