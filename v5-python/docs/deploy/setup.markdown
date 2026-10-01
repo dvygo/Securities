@@ -63,10 +63,10 @@ These two files are gitignored. They hold passwords and keys, so don't commit th
 
 ## 5. Spin up the contract DB
 
-Do this on the machine that will host the database. That can be this machine or a separate DB server. The compose file ships in `v5-python/docker/`.
+Do this on the machine that will host the database. That can be this machine or a separate DB server. The compose file is in `docker/` at the repo root.
 
 ```
-docker compose -f docker/contract-postgres/docker-compose.yml up -d
+docker compose -f ../docker/contract-postgres/docker-compose.yml up -d
 ```
 
 This starts Postgres 16 in a container named `contractdb-contract-contract`:
@@ -79,7 +79,7 @@ This starts Postgres 16 in a container named `contractdb-contract-contract`:
 Check it's up and healthy:
 
 ```
-docker compose -f docker/contract-postgres/docker-compose.yml ps
+docker compose -f ../docker/contract-postgres/docker-compose.yml ps
 ```
 
 The status should say `healthy`. It takes up to 30 seconds after first start.
@@ -94,10 +94,10 @@ Other commands you might need:
 
 | What | Command |
 |---|---|
-| Stop it (data kept) | `docker compose -f docker/contract-postgres/docker-compose.yml stop` |
-| Start it again | `docker compose -f docker/contract-postgres/docker-compose.yml up -d` |
+| Stop it (data kept) | `docker compose -f ../docker/contract-postgres/docker-compose.yml stop` |
+| Start it again | `docker compose -f ../docker/contract-postgres/docker-compose.yml up -d` |
 | Logs | `docker logs contractdb-contract-contract` |
-| **Wipe everything and start fresh** | `docker compose -f docker/contract-postgres/docker-compose.yml down -v` then `up -d` |
+| **Wipe everything and start fresh** | `docker compose -f ../docker/contract-postgres/docker-compose.yml down -v` then `up -d` |
 
 `down -v` deletes every pushed day. Only use it when you mean to.
 

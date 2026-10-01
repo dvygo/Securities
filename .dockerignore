@@ -1,4 +1,4 @@
-# Build context for packaging/Dockerfile. Only v5-python/ and the release pins are used.
+# Build context for docker/Dockerfile. Only v5-python/, LICENSE and packaging/'s build files are used.
 
 .git
 .github

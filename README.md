@@ -16,12 +16,28 @@ This release ships only `v5-python/`.
 | `v5-python/premarket/` | The pipeline. CLI: `python -m premarket {india,xcme,xcbo,xnas,normalize}` |
 | `v5-python/conf/` | `config.ini` and `keys.ini`. Copy them from the `.example` files. |
 | `v5-python/constituents/baskets/` | Basket templates |
-| `v5-python/docker/contract-postgres/` | Postgres 16 container the pipeline pushes into |
-| `v5-python/docs/deploy/setup.markdown` | One-time setup: venv, libs, config, contract DB |
-| `v5-python/docs/pcg/runbook.markdown` | Daily run: download, normalize, push |
+| `dockerup.sh` | Builds the image, starts the contract DB, runs the pipeline in Docker |
+| `docker/Dockerfile` | The image: Ubuntu 24.04, Python 3.12, pinned libraries, `premarket` and `strategies` compiled by Nuitka |
+| `docker/contract-postgres/` | Postgres 16 container the pipeline pushes into |
+| `deploy/SETUP.md`, `deploy/RUNBOOK.md` | One-time setup and daily run, with Docker |
+| `v5-python/docs/deploy/setup.markdown` | One-time setup without Docker: venv, libs, config, contract DB |
+| `v5-python/docs/pcg/runbook.markdown` | Daily run without Docker |
 | `data/YYYYMMDD/` | Daily output (`raw/`, `normalized/`, `plugin/`). Not in git. |
 
-## Quick start
+## Quick start (Docker)
+
+Full steps are in [`deploy/SETUP.md`](deploy/SETUP.md) and [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
+
+```bash
+./dockerup.sh up          # build securities:latest, create v5-python/conf/*.ini, start the contract DB
+./dockerup.sh check       # config, keys, DB connection
+
+./dockerup.sh india       # premarket india
+./dockerup.sh normalize   # premarket normalize
+./dockerup.sh push        # premarket normalize --only postgres
+```
+
+## Quick start (venv)
 
 Full steps are in [`v5-python/docs/deploy/setup.markdown`](v5-python/docs/deploy/setup.markdown).
 Short version:
@@ -35,7 +51,7 @@ pip install -r requirements.txt
 cp conf/config.ini.example conf/config.ini
 cp conf/keys.ini.example conf/keys.ini     # Databento keys, US venues only
 
-docker compose -f docker/contract-postgres/docker-compose.yml up -d
+docker compose -f ../docker/contract-postgres/docker-compose.yml up -d
 ```
 
 ## Daily run

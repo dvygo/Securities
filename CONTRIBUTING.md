@@ -18,13 +18,14 @@ cp conf/config.ini.example conf/config.ini
 cp conf/keys.ini.example conf/keys.ini
 ```
 
-Contract DB, if you need to test the push:
+Contract DB, if you need to test the push (from the repo root):
 
 ```bash
-docker compose -f docker/contract-postgres/docker-compose.yml up -d
+./dockerup.sh db up
 ```
 
-Full operator setup is in `v5-python/docs/deploy/setup.markdown`.
+Full operator setup is in `deploy/SETUP.md` (Docker) and `v5-python/docs/deploy/setup.markdown` (venv).
+`./dockerup.sh up` builds the release image from your checkout and runs the tests in it.
 
 ## Tests
 

@@ -4,9 +4,10 @@
 # of packaging/requirements.lock, and premarket and strategies compiled to native binaries
 # with Nuitka. The image carries no .py or .pyc of this repository.
 #
-# Built by packaging/release.sh, from the repository root:
+# Built from the repository root by ./dockerup.sh (as securities:latest) and by
+# packaging/release.sh (as securities:<version>):
 #
-#   docker build -f packaging/Dockerfile -t securities:<version> .
+#   docker build -f docker/Dockerfile -t securities:<version> .
 #
 # The build stage runs the unit tests against the pinned libraries before it compiles.
 #

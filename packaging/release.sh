@@ -10,7 +10,7 @@
 #   securities-images_<v>_linux_amd64.tar.gz  the securities:<v> image, for `docker load`
 #   SHA256SUMS
 #
-# Everything comes out of packaging/Dockerfile, whose build stage runs the unit tests against
+# Everything comes out of docker/Dockerfile, whose build stage runs the unit tests against
 # the pinned libraries before it compiles. Neither artifact carries .py or .pyc of this repo.
 #
 #   packaging/release.sh [VERSION]
@@ -26,9 +26,9 @@ version=${version#v}
     { echo "premarket/__init__.py says $pkgver but pyproject.toml says $pyver" >&2; exit 1; }
 # Every module in premarket/ and strategies/ is compiled in, tracked or not, and the release
 # notes name the commit. So build only what is committed.
-if [ -n "$(git status --porcelain -- v5-python packaging .dockerignore)" ]; then
-    echo "uncommitted or untracked files under v5-python/ or packaging/; commit or remove them:" >&2
-    git status --short -- v5-python packaging .dockerignore >&2
+if [ -n "$(git status --porcelain -- v5-python packaging docker .dockerignore)" ]; then
+    echo "uncommitted or untracked files under v5-python/, packaging/ or docker/; commit or remove them:" >&2
+    git status --short -- v5-python packaging docker .dockerignore >&2
     exit 1
 fi
 
@@ -37,7 +37,7 @@ stage=$out/stage
 commit=$(git rev-parse --short=12 HEAD)
 image=securities:$version
 
-docker build -f packaging/Dockerfile -t "$image" \
+docker build -f docker/Dockerfile -t "$image" \
     --label org.opencontainers.image.title=securities \
     --label org.opencontainers.image.version="$version" \
     --label org.opencontainers.image.revision="$commit" \
