@@ -26,6 +26,7 @@
 # india, normalize, push and daily pass extra arguments on, e.g. ./dockerup.sh push --date-dir 20260918
 set -eu
 cd "$(dirname "$0")"
+self=$(basename "$0")
 
 IMAGE=${SECURITIES_IMAGE:-securities:latest}
 DB="docker compose -f docker/contract-postgres/docker-compose.yml"
@@ -140,5 +141,5 @@ case "${1:-}" in
     db) shift; db "$@" ;;
     down) $DB stop ;;
     status) status ;;
-    *) sed -n '2,26p' "$0"; exit 2 ;;
+    *) sed -n '2,/^set -eu$/{/^set -eu$/!p}' "$self"; exit 2 ;;
 esac
