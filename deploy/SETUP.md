@@ -24,7 +24,7 @@ docker compose version
 ```sh
 git clone git@github.com:dvygo/Securities.git
 cd Securities
-git checkout release-pipeline
+git checkout releases/5.0.0
 ```
 
 ## 3. Build and start
