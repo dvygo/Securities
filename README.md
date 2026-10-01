@@ -63,6 +63,23 @@ Each push writes `v4_YYYYMMDD.contracts`, `v4_YYYYMMDD.baskets`,
 `v4_YYYYMMDD_baskets.baskets`, and an always-current copy in `public`.
 It drops and recreates the tables every time, so reruns are safe.
 
+## Releases
+
+Releases are published to the private release repo
+[`deshik-ux/securities`](https://github.com/deshik-ux/securities), which holds only built
+artifacts and their deploy files, never source. A release is the `securities:<version>` image
+(Ubuntu 24.04 with Python 3.12 and the pinned libraries of `packaging/requirements.lock`) with
+`premarket` and `strategies` compiled to native binaries by Nuitka. They are built and published
+from the maintainer's machine:
+
+```bash
+packaging/release.sh 5.0.0     # build in Docker, run the tests, package into dist/5.0.0/
+packaging/publish.sh 5.0.0     # publish dist/5.0.0/ as release v5.0.0 of deshik-ux/securities
+```
+
+The version is `v5-python/pyproject.toml`'s. Write the version's section of the release repo's
+`CHANGELOG.md` first: `publish.sh` takes the release notes from it.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).

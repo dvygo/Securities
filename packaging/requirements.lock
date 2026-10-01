@@ -1,0 +1,42 @@
+# Runtime dependency closure of the release image, Python 3.12 (Ubuntu 24.04).
+#
+# Pinned to the set the pipeline is run and tested with (v6-python's
+# requirements.lock of 2026-09-07), plus what Python 3.12 needs on top of it
+# (typing_extensions). v5-python/requirements.txt floats on >= and is what a
+# source checkout installs; this file is what packaging/release.sh builds with,
+# so every build of a version gets the same libraries.
+#
+# Regenerate after an intentional upgrade, in a clean ubuntu:24.04 container:
+#     python3 -m venv /v && /v/bin/pip install -r <requirements.txt without pytest>
+#     /v/bin/pip freeze      (then re-add this header)
+
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+attrs==26.1.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+databento==0.84.0
+databento-dbn==0.67.0
+exchange_calendars==4.13.2
+frozenlist==1.8.0
+idna==3.19
+korean_lunar_calendar==0.4.0
+multidict==6.7.1
+numpy==2.5.2
+pandas==3.0.5
+propcache==0.5.2
+psycopg==3.3.4
+psycopg-binary==3.3.4
+pyarrow==25.0.1
+pyluach==2.3.0
+python-dateutil==2.9.0.post0
+pytz==2026.3.post1
+requests==2.34.2
+six==1.17.0
+toolz==1.1.0
+typing_extensions==4.16.0
+tzdata==2026.3
+urllib3==2.7.0
+yarl==1.24.5
+zstandard==0.25.0

@@ -1,0 +1,25 @@
+# Build context for packaging/Dockerfile. Only v5-python/ and the release pins are used.
+
+.git
+.github
+dist/
+packaging/
+!packaging/requirements.lock
+!packaging/launcher.sh
+!packaging/notices.py
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+
+# Real keys and config must never reach an image.
+**/conf/config.ini
+**/conf/keys.ini
+**/secrets/
+
+# Output of local runs.
+data/
+v5-python/bin/
+v5-python/tmp/
+v5-python/constituents/contracts/
+v5-python/strategies/*/data/
