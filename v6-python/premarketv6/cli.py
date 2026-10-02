@@ -31,12 +31,12 @@ def create_parser() -> argparse.ArgumentParser:
         subparser.add_argument(
             "--hist",
             action="store_true",
-            help="Download historical symbology data",
+            help="Basket CSV route: resolve via historical symbology (definitions are always a live replay)",
         )
         subparser.add_argument(
             "--live",
             action="store_true",
-            help="Download live streaming data",
+            help="Basket CSV route: live symbol mappings (definitions are always a live replay)",
         )
         subparser.add_argument(
             "--range",
@@ -85,17 +85,11 @@ def create_parser() -> argparse.ArgumentParser:
             help="Path to symbols file",
         )
         venue_parser.add_argument(
-            "--dates",
-            help="Comma-separated YYYYMMDD list to backfill, e.g. "
-                 "--dates=20260827,20260825,20260101. One batch job per date, all "
-                 "submitted before any is waited on. Each date lands in its own "
-                 "venue directory. Mutually exclusive with --today/--date-dir.",
-        )
-        venue_parser.add_argument(
             "--today",
             action="store_true",
-            help="Today's date. The default already, so this only states it "
-                 "explicitly -- useful next to --dates in a script.",
+            help="Today's date. The default already, and the only date a "
+                 "definition download can take: it is a live replay of the "
+                 "current session.",
         )
 
     # Normalize subcommand
@@ -260,51 +254,6 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     return parser
-
-
-def run_backfill(venue: str, args: argparse.Namespace, dates: tuple) -> int:
-    """--dates: one definition batch job per date, all submitted before any is awaited."""
-    import databento as db
-    from .sources import databento_src
-
-    cleanup, log_path = runlog.setup(f"premarketv6-{venue}", dates[0])
-    try:
-        print(f"Log: {log_path}", file=sys.stderr)
-        venue_cfg = databento_src.VENUE_CONFIGS[venue]
-        if not venue_cfg.enabled:
-            raise SystemExit(
-                f"{venue} ({venue_cfg.venue_name}) is disabled: set enabled = 1 in "
-                f"config.ini [EXCHANGE:{venue_cfg.venue_name}] to download it")
-
-        # --dates is the ALL_SYMBOLS definition path and nothing else. The basket
-        # route resolves symbols per day against a different API and has no batch
-        # job to track, so accepting --dates there would silently mean something
-        # entirely different.
-        if not getattr(args, "all_symbols", venue_cfg.all_symbols_default):
-            raise SystemExit("--dates requires --all-symbols (it drives the definition batch path)")
-
-        print(f"Backfilling {venue_cfg.venue_name} for {len(dates)} date(s): {', '.join(dates)}")
-        if args.dry_run:
-            for d in dates:
-                print(f"DRY RUN: would submit a {venue_cfg.dataset} definition job for {d} "
-                      f"-> {paths.manual_venue_dir(d, venue_cfg.venue_name)}")
-            return 0
-
-        cfg = config.load_databento()
-        api_key = cfg.keys.get(venue_cfg.venue_name, "")
-        if not api_key:
-            raise SystemExit(
-                f"No Databento API key for {venue} ({venue_cfg.venue_name}); "
-                f"set key_{venue_cfg.venue_name} in conf/keys.ini")
-
-        client = db.Historical(key=api_key)
-        written = databento_src.download_definitions_for_dates(
-            client, venue_cfg, "raw_symbol", dates)
-        total = sum(written.values())
-        print(f"Backfill complete: {len(written)} date(s), {total:,} byte(s)")
-        return 0
-    finally:
-        cleanup()
 
 
 def run_download(venue: str, args: argparse.Namespace) -> int:
@@ -510,10 +459,7 @@ def _numbered_run(command: str, steps, opts, dry_run: bool = False, reason: str 
 def _date_list(raw: str) -> tuple:
     """Parse --dates into a tuple of YYYYMMDD, newest first, rejecting junk.
 
-    Newest first because a backfill is usually wanted most-recent-first, and
-    because the definition_ready_ratio check in _prepare_batch_window compares
-    against the prior session -- hitting the newest date first surfaces an
-    unpublished today before the older jobs are submitted.
+    Newest first because a backfill is usually wanted most-recent-first.
     """
     seen, out = set(), []
     for part in str(raw).split(","):
@@ -580,11 +526,6 @@ def main() -> int:
         if args.command == "india":
             return run_download("india", args)
         elif args.command in databento_src.VENUE_CONFIGS:
-            raw_dates = getattr(args, "dates", None)
-            if raw_dates and getattr(args, "today", False):
-                raise SystemExit("--dates and --today are mutually exclusive")
-            if raw_dates:
-                return run_backfill(args.command, args, _date_list(raw_dates))
             return run_download(args.command, args)
         elif args.command == "normalize":
             if getattr(args, "dates", None):

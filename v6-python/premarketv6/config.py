@@ -56,7 +56,6 @@ class ExchangeCfg:
     stype_in: str = "raw_symbol"
     stype_in_all_symbols: str = ""        # blank -> same as stype_in
     all_symbols_default: bool = False
-    definition_ready_ratio: float = 0.5
     hist_pin_latest_session: bool = False
     hist_lookback_days: int = 7
 
@@ -152,7 +151,6 @@ def load_exchanges() -> dict[str, ExchangeCfg]:
             stype_in=sec.get("stype_in", "raw_symbol").strip(),
             stype_in_all_symbols=sec.get("stype_in_all_symbols", "").strip(),
             all_symbols_default=sec.getboolean("all_symbols_default", False),
-            definition_ready_ratio=sec.getfloat("definition_ready_ratio", 0.5),
             hist_pin_latest_session=sec.getboolean("hist_pin_latest_session", False),
             hist_lookback_days=sec.getint("hist_lookback_days", 7),
         )

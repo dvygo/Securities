@@ -126,17 +126,18 @@ def venue_dir(as_of: str, venue_name: str) -> Path:
 
 def manual_venue_dir(as_of: str, venue_name: str) -> Path:
     """
-    A venue's Databento batch definition payload for one day:
+    A venue's Databento definition file for one day:
     data/YYYYMMDD/{VENUE}/ (e.g. data/20260824/XCBO/) -- a sibling of the v6/
     pipeline tree at the same date, not nested under it.
 
     Two things land here, indistinguishably to normalize:
-      - premarketv6's own --all-symbols download for GLBX.MDP3/OPRA.PILLAR,
-        which submits a batch job and downloads the resulting *.dbn.zst here
-        directly (sources/databento_src.py's _download_definitions_via_batch)
-      - an operator's own manual extraction of a batch job's zip (condition.json/
-        metadata.json/manifest.json are ignored; only the *.dbn/*.dbn.zst
-        definition file is read), dropped here by hand as an override
+      - premarketv6's own definition download, a LIVE replay of the current
+        session written as one *.dbn.zst (sources/databento_src.py's
+        _download_definitions_live)
+      - an operator's own *.dbn/*.dbn.zst definition file dropped here by hand
+        as an override. It must carry LIVE instrument ids: the MDF token map is
+        built from these files and the lanes run on live ids, which Databento
+        assigns independently of Historical
 
     If a file already exists for a venue/day when the automated download would
     run, that's a manual override and normalize/databento_norm.py reads it in

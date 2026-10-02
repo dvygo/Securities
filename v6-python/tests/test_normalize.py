@@ -897,22 +897,20 @@ class TestPluginColumnFills:
             assert col in row, col
 
 
-class TestBackfillDates:
-    """--dates: one batch job per date, submitted up front."""
+class TestDateList:
+    """_date_list: the --dates parser of normalize, check-tokens and lineage."""
 
     def test_parses_a_comma_separated_list(self):
         assert cli._date_list("20260827,20260825,20260101") == ("20260827", "20260825", "20260101")
 
     def test_orders_newest_first(self):
-        """The readiness check compares against the prior session, so an
-        unpublished newest date should fail before older jobs are submitted."""
         assert cli._date_list("20260101,20260827,20260825")[0] == "20260827"
 
     def test_tolerates_whitespace_and_dedupes(self):
         assert cli._date_list(" 20260827 , 20260827 ") == ("20260827",)
 
     def test_rejects_a_non_yyyymmdd_date(self):
-        """Silently dropping it would submit fewer jobs than the user listed."""
+        """Silently dropping it would run fewer dates than the user listed."""
         with pytest.raises(SystemExit, match="not a YYYYMMDD date"):
             cli._date_list("2026-08-27")
 
@@ -924,37 +922,16 @@ class TestBackfillDates:
         with pytest.raises(SystemExit, match="contained no dates"):
             cli._date_list(" , , ")
 
-    def test_dates_flag_exists_on_a_venue_parser(self):
-        args = cli.create_parser().parse_args(["xcbo", "--all-symbols", "--dates=20260827"])
-        assert args.dates == "20260827"
-        assert args.all_symbols is True
+    def test_a_venue_download_takes_no_dates(self):
+        """Definitions are a live replay of the current session: there is no
+        past date to ask for, so the batch-era --dates option is gone."""
+        with pytest.raises(SystemExit):
+            cli.create_parser().parse_args(["xcbo", "--dates=20260827"])
 
     def test_today_flag_exists_and_defaults_off(self):
         args = cli.create_parser().parse_args(["xcbo", "--all-symbols"])
         assert args.today is False
         assert cli.create_parser().parse_args(["xcbo", "--today"]).today is True
-
-    def test_a_date_that_already_has_a_file_submits_nothing(self, tmp_path, monkeypatch):
-        """A present file is an operator drop or a prior success -- refetching is waste."""
-        monkeypatch.setenv("PREMARKET_DATA_ROOT", str(tmp_path))
-        venue_cfg = config.load_exchanges()["xcbo"]
-        have = paths.manual_venue_dir("20260825", "XCBO")
-        have.mkdir(parents=True)
-        (have / "opra.definition.dbn.zst").write_bytes(b"x")
-
-        submitted = []
-
-        class FakeClient:
-            class batch:
-                @staticmethod
-                def submit_job(**kw):
-                    submitted.append(kw)
-                    return {"id": "J", "state": "received"}
-
-        written = databento_src.download_definitions_for_dates(
-            FakeClient(), venue_cfg, "raw_symbol", ("20260825",))
-        assert submitted == []
-        assert written == {}
 
 
 class TestCounterTokenV2Numbering:
@@ -3491,85 +3468,133 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# Databento publish-window timing hints
+# Definitions from the live replay
 # ---------------------------------------------------------------------------
 
-def test_timing_hint_reports_current_utc():
-    """The clock is the point -- every hint leads with it."""
-    now = datetime(2026, 9, 8, 3, 10, 0, tzinfo=timezone.utc)
-    hint = databento_src._timing_hint("EQUS.MINI", date(2026, 9, 8), now)
-    assert hint.startswith("Now 03:10:00Z.")
+import databento_dbn as _dbn
+from premarketv6.sources.databento_src import (
+    _download_definitions_live, encode_definition_file, select_live_definitions)
+
+_DAY = "20261002"
+_DAY_NS = 1790899200 * 10**9                    # 2026-10-02 00:00 UTC
+_NOW = datetime(2026, 10, 2, 12, 30, tzinfo=timezone.utc)
+_HOUR = 3600 * 10**9
 
 
-def test_timing_hint_counts_forward_to_an_unopened_window():
-    now = datetime(2026, 9, 8, 3, 10, 0, tzinfo=timezone.utc)
-    hint = databento_src._timing_hint("EQUS.MINI", date(2026, 9, 8), now)
-    assert "~05:00-06:00Z, about 1h50m from now" in hint
+def _definition(iid, symbol, ts_recv, expiration=_DAY_NS + 30 * 24 * _HOUR):
+    return _dbn.InstrumentDefMsg(
+        publisher_id=1, instrument_id=iid, ts_event=ts_recv, ts_recv=ts_recv,
+        min_price_increment=1, display_factor=1, raw_symbol=symbol, asset="SPY",
+        security_type="OOSTK", instrument_class=_dbn.InstrumentClass.CALL,
+        security_update_action=_dbn.SecurityUpdateAction.ADD, expiration=expiration)
 
 
-def test_timing_hint_marks_a_window_that_is_open():
-    now = datetime(2026, 9, 8, 5, 30, 0, tzinfo=timezone.utc)
-    hint = databento_src._timing_hint("EQUS.MINI", date(2026, 9, 8), now)
-    assert "that window is open now" in hint
+class _FakeLive:
+    """Stands in for db.Live: replays the records it was given."""
+
+    def __init__(self, records, finish=True):
+        self.records = list(records)
+        if finish:
+            self.records.append(_dbn.SystemMsg(0, "Finished definition replay"))
+        self.subscribed = None
+        self.metadata = type("Meta", (), {"version": 3})()
+
+    def __call__(self, key):
+        return self
+
+    def subscribe(self, **kwargs):
+        self.subscribed = kwargs
+
+    def __iter__(self):
+        return iter(self.records)
+
+    def stop(self):
+        pass
 
 
-def test_timing_hint_counts_back_from_a_closed_window():
-    now = datetime(2026, 9, 8, 11, 33, 0, tzinfo=timezone.utc)
-    hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 8), now)
-    assert "today's window closed 33m ago" in hint
+def _opra():
+    return config.load_exchanges()["xcbo"]
 
 
-def test_timing_hint_says_a_closed_session_will_never_publish():
-    """2026-09-07 is Labor Day: XNYS is shut, so waiting cannot help."""
-    now = datetime(2026, 9, 7, 11, 33, 0, tzinfo=timezone.utc)
-    hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 7), now)
-    assert "not a trading day for US options markets" in hint
-    assert "re-running will not help" in hint
+class TestLiveDefinitions:
 
+    def test_the_last_copy_of_an_instrument_wins(self):
+        """The session re-sends every definition daily; only one copy may be written."""
+        old = _definition(5, "SPY   261120C00793000", _DAY_NS - 24 * _HOUR)
+        new = _definition(5, "SPY   261120C00793000", _DAY_NS + 10 * _HOUR)
+        kept, distinct = select_live_definitions([old, new], _DAY_NS)
+        assert distinct == 1 and len(kept) == 1
+        assert kept[0].ts_recv == new.ts_recv
 
-def test_timing_hint_keeps_glbx_on_its_own_calendar():
-    """CME trades Labor Day even though NYSE does not; GLBX must not be
-    told its definitions are hopeless on a day CME is open."""
-    now = datetime(2026, 9, 7, 11, 33, 0, tzinfo=timezone.utc)
-    hint = databento_src._timing_hint("GLBX.MDP3", date(2026, 9, 7), now)
-    assert "re-running will not help" not in hint
+    def test_what_expired_before_the_trade_date_is_dropped(self):
+        """The week's expired options and yesterday's user-defined spreads are
+        still in the session; today's expiries and no-expiry equities are not
+        expired."""
+        records = [
+            _definition(1, "SPY   261001C00700000", _DAY_NS - 2 * _HOUR, expiration=_DAY_NS - _HOUR),
+            _definition(2, "SPY   261002C00700000", _DAY_NS + _HOUR, expiration=_DAY_NS),
+            _definition(3, "AAPL", _DAY_NS + _HOUR, expiration=_dbn.UNDEF_TIMESTAMP),
+        ]
+        kept, _ = select_live_definitions(records, _DAY_NS)
+        assert [r.instrument_id for r in kept] == [2, 3]
 
+    def test_the_file_reads_back_as_the_venue_s_definition_file(self, tmp_path):
+        """normalize only reads files whose header says definition and the
+        venue's dataset; the live stream's own header says neither."""
+        import databento as db
+        records = [_definition(7, "SPY   261120C00793000", _DAY_NS + _HOUR),
+                   _definition(9, "SPY   261120P00793000", _DAY_NS + _HOUR)]
+        blob = encode_definition_file(records, "OPRA.PILLAR", "parent", ["SPY.OPT"],
+                                      _DAY_NS, _DAY_NS + 13 * _HOUR, 3)
+        path = tmp_path / "opra-pillar-20261002.definition.dbn.zst"
+        path.write_bytes(blob)
+        store = db.DBNStore.from_file(path)
+        assert str(store.schema) == "definition" and store.dataset == "OPRA.PILLAR"
+        assert [(r.instrument_id, r.raw_symbol) for r in store] == [
+            (7, "SPY   261120C00793000"), (9, "SPY   261120P00793000")]
+        assert list(databento_norm._manual_dbn_scripts([path], "OPRA.PILLAR")) == [
+            "SPY   261120C00793000", "SPY   261120P00793000"]
 
-def test_is_trading_session_returns_none_for_an_unknown_dataset():
-    """Unknowable must stay None -- a message may not assert a closure it
-    cannot back."""
-    assert databento_src._is_trading_session("XXXX.YYYY", date(2026, 9, 7)) is None
+    def test_a_replay_lands_as_one_file_with_today_s_instruments(self, tmp_path):
+        live = _FakeLive([
+            _definition(1, "SPY   261001C00700000", _DAY_NS - 24 * _HOUR, expiration=_DAY_NS - _HOUR),
+            _definition(2, "SPY   261120C00793000", _DAY_NS - 48 * _HOUR),
+            _definition(2, "SPY   261120C00793000", _DAY_NS + 10 * _HOUR),
+        ])
+        written = _download_definitions_live("k", _opra(), "parent", _DAY, tmp_path,
+                                             ["SPY.OPT"], live_factory=live, now=_NOW)
+        assert live.subscribed["start"] == 0
+        assert live.subscribed["schema"] == "definition"
+        assert live.subscribed["symbols"] == ["SPY.OPT"]
+        files = list(tmp_path.iterdir())
+        assert [f.name for f in files] == ["opra-pillar-20261002.definition.dbn.zst"]
+        assert written == files[0].stat().st_size
+        assert list(databento_norm._manual_dbn_scripts(files, "OPRA.PILLAR")) == [
+            "SPY   261120C00793000"]
 
+    def test_only_today_can_be_fetched(self, tmp_path):
+        with pytest.raises(ValueError, match="current session only"):
+            _download_definitions_live("k", _opra(), "parent", "20261001", tmp_path,
+                                       ["SPY.OPT"], live_factory=_FakeLive([]), now=_NOW)
 
-def test_format_duration_shapes():
-    assert databento_src._format_duration(timedelta(seconds=30)) == "30s"
-    assert databento_src._format_duration(timedelta(minutes=48)) == "48m"
-    assert databento_src._format_duration(timedelta(hours=11, minutes=5)) == "11h05m"
+    def test_opra_before_today_s_re_send_is_refused(self, tmp_path):
+        """Nothing sent on the trade date means the replay describes yesterday."""
+        live = _FakeLive([_definition(2, "SPY   261120C00793000", _DAY_NS - 14 * _HOUR)])
+        with pytest.raises(RuntimeError, match="re-send has not happened"):
+            _download_definitions_live("k", _opra(), "parent", _DAY, tmp_path,
+                                       ["SPY.OPT"], live_factory=live, now=_NOW)
+        assert list(tmp_path.iterdir()) == []
 
+    def test_glbx_has_no_daily_re_send_to_wait_for(self, tmp_path):
+        """GLBX sends its outrights once, at the weekly session start."""
+        live = _FakeLive([_definition(4, "ESZ6", _DAY_NS - 4 * 24 * _HOUR)])
+        _download_definitions_live("k", config.load_exchanges()["xcme"], "parent", _DAY,
+                                   tmp_path, ["ES.FUT"], live_factory=live, now=_NOW)
+        assert [f.name for f in tmp_path.iterdir()] == ["glbx-mdp3-20261002.definition.dbn.zst"]
 
-def test_timing_hint_never_leaks_a_calendar_id():
-    """An XCBO run has no business naming XNYS -- a different exchange. The
-    calendar is an implementation detail; the message names the market."""
-    now = datetime(2026, 9, 7, 11, 40, 0, tzinfo=timezone.utc)
-    for dataset in ("EQUS.MINI", "OPRA.PILLAR", "GLBX.MDP3"):
-        hint = databento_src._timing_hint(dataset, date(2026, 9, 7), now)
-        for calendar, _label in databento_src.SESSION_CALENDARS.values():
-            assert calendar not in hint, f"{dataset} leaked {calendar}"
-
-
-def test_options_and_equities_share_the_us_session_calendar():
-    """US options follow the US equity holiday schedule, and there is no OPRA
-    calendar to use instead."""
-    calendars = databento_src.SESSION_CALENDARS
-    assert calendars["OPRA"][0] == calendars["EQUS"][0]
-    assert calendars["GLBX"][0] != calendars["EQUS"][0]
-
-
-def test_cme_is_named_singular_and_markets_plural():
-    """'CME are not open' was the bug in the first wording."""
-    shut_cme = datetime(2026, 12, 25, 3, 0, 0, tzinfo=timezone.utc)
-    hint = databento_src._timing_hint("GLBX.MDP3", date(2026, 12, 25), shut_cme)
-    assert "is not a trading day for CME" in hint
-    now = datetime(2026, 9, 7, 11, 40, 0, tzinfo=timezone.utc)
-    hint = databento_src._timing_hint("OPRA.PILLAR", date(2026, 9, 7), now)
-    assert "is not a trading day for US options markets" in hint
+    def test_an_unfinished_replay_writes_nothing(self, tmp_path):
+        live = _FakeLive([_definition(2, "SPY   261120C00793000", _DAY_NS + _HOUR)], finish=False)
+        with pytest.raises(RuntimeError, match="Finished definition replay"):
+            _download_definitions_live("k", _opra(), "parent", _DAY, tmp_path,
+                                       ["SPY.OPT"], live_factory=live, now=_NOW)
+        assert list(tmp_path.iterdir()) == []

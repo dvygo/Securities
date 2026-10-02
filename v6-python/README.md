@@ -82,7 +82,7 @@ refused, because numbering it as a live day would fork the token chain.
 
 ```
 data/YYYYMMDD/
-  XCME/  glbx-mdp3-YYYYMMDD.definition.dbn.zst      raw vendor payload
+  XCME/  glbx-mdp3-YYYYMMDD.definition.dbn.zst      live definition replay (live ids)
   XNAS/  equs-mini-YYYYMMDD.definition.dbn.zst
   XCBO/  opra-pillar-YYYYMMDD.definition.dbn.zst
   XNSE/  XNSE-FYERS.csv XNFO-FYERS.csv XNCD-FYERS.csv   when feed = fyers

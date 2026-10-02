@@ -6,16 +6,16 @@ Venue wiring:
     dataset, stype_in, schema, --all-symbols default and the clamp/readiness
     knobs all live there (premarketv6.config.load_exchanges)
   - stype_in defaults: XCME=parent (raw_symbol if --all-symbols), XCBO=parent, XNAS=raw_symbol
-  - --all-symbols is on by default for all three, and in hist mode it always
-    means the definition schema fetched via a batch job
-    (_download_definitions_via_batch), landing as .dbn.zst -- no venue takes
-    symbology.resolve for ALL_SYMBOLS any more
-  - symbology.resolve is still the route for basket downloads (--no-all-symbols
-    or --symbols-file), which cannot carry instrument_class
+  - --all-symbols (on by default) and an explicit --symbols-file both mean the
+    definition schema from a LIVE replay (_download_definitions_live), landing
+    as .dbn.zst; the historical batch route is gone, because Historical and Live
+    assign instrument_id independently and the MDF lanes run on live ids
+  - symbology.resolve is still the route for the basket CSV (--no-all-symbols),
+    which cannot carry instrument_class
   - stype_out sent to API is always instrument_id
   - date range computed from metadata.get_dataset_range() minus a lookback window
   - output:
-      - definition schema (any venue, --all-symbols): YYYYMMDD/{VENUE}/*.dbn.zst,
+      - definition schema (any venue, live replay): YYYYMMDD/{VENUE}/*.dbn.zst,
         via paths.manual_venue_dir -- no CSV, read directly by normalize
       - basket downloads: YYYYMMDD/raw/{VENUE}-DATABENTO.csv, columns matching
         internal/databento/mapping.go's MappingColumns
@@ -23,7 +23,6 @@ Venue wiring:
 import csv
 import datetime as dt
 import os
-import re
 import threading
 import time
 from pathlib import Path
@@ -47,13 +46,12 @@ HIST_RESOLVE_RETRY_DELAY_SEC = 4
 # response is a single JSON blob and GLBX/OPRA carry ~1-2M instruments a day),
 # but EQUS at ~13k was small enough to be accepted, so XNAS took the cheap
 # resolve route. That carve-out is gone: --all-symbols now means the definition
-# schema via a batch job for every venue, so all three land as .dbn.zst.
+# schema (today: the live replay) for every venue, so all three land as .dbn.zst.
 #
 # The cost of the carve-out was instrument_class. symbology.resolve returns ids
 # and dates and nothing else, so XNAS shipped 13,195 rows with the column blank
 # and the normalizer fell back to parsing symbol strings, while XCBO and XCME
-# read it straight off the InstrumentDefMsg records. EQUS definitions are ~13k
-# records against OPRA's ~2M, so the job is quick.
+# read it straight off the InstrumentDefMsg records.
 
 MAPPING_COLUMNS = [
     "instrument_id",
@@ -117,11 +115,6 @@ def _def_value(record, name: str) -> str:
 # and there the lookback window is load-bearing -- it picks up recently expired
 # contracts the live definition stream no longer announces (59505 vs 43109
 # symbols). Hence per-venue, not global.
-#
-# definition_ready_ratio: the upper clamp in _download_definitions_via_batch
-# only stops the API rejecting the range -- it cannot tell a complete session
-# from one whose definitions have not published yet, and both produce a file.
-# The measured publish curves are in config.ini next to the values themselves.
 VENUE_CONFIGS: dict[str, config.ExchangeCfg] = {
     venue: exchange_cfg
     for venue, exchange_cfg in config.load_exchanges().items()
@@ -288,11 +281,16 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
     )
     stype_in = opts.stype_in or default_stype_in(venue, all_symbols)
 
-    # --all-symbols means the definition schema, for every venue. symbology.resolve
-    # stays the route for basket downloads, where the symbol list is explicit and
-    # instrument_class is not on offer either way.
-    use_definitions = all_symbols and mode == "hist"
-    if use_definitions:
+    # --all-symbols means the definition schema, for every venue, and so does an
+    # explicit --symbols-file: the job then carries the file's symbols. The
+    # resolve call below passes no end_date, so the API answers for the start
+    # day alone -- a --symbols-file run on 2026-09-28 came back with the
+    # contracts of 2026-09-22 (XCME, XNAS) and 2026-09-25 (XCBO). symbology.resolve
+    # stays the route for the basket CSV only.
+    # Definitions come from the live API only, whatever --hist/--live says: the
+    # historical batch route is gone (see "definitions: the live replay" below).
+    use_definitions = all_symbols or bool(opts.symbols_file)
+    if use_definitions and all_symbols:
         # The definition path writes record.raw_symbol into stype_in_symbol, so the
         # stype_in column has to say raw_symbol or the CSV mislabels its own contents
         # (xcbo would otherwise carry the "parent" default). ALL_SYMBOLS bypasses
@@ -300,16 +298,15 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
         stype_in = "raw_symbol"
 
     if opts.dry_run:
-        route = "definition schema (batch)" if use_definitions else "symbology.resolve"
+        route = "definition schema (live replay)" if use_definitions else "symbology.resolve"
         print(f"DRY RUN: Would download {venue} {mode} via {route} "
               f"stype_in={stype_in} for symbols: {symbols}")
         return
 
     if use_definitions:
-        # No CSV staging for this path at all -- the batch job's .dbn.zst lands
-        # directly in the venue's manual-drop directory. See
-        # _download_definitions_via_batch for why this is a submit+poll+download
-        # rather than the streaming approach every other branch here uses.
+        # No CSV staging for this path at all -- the live replay is written as one
+        # .dbn.zst straight into the venue's manual-drop directory, where
+        # normalize reads it.
         dest_dir = paths.manual_venue_dir(opts.date_dir, venue_cfg.venue_name)
         if dest_dir.is_dir() and any(p.name.endswith((".dbn", ".dbn.zst")) for p in dest_dir.iterdir()):
             # An existing file is either an operator's manual drop or a prior
@@ -319,8 +316,9 @@ def download(opts: runner.Opts, venue: str, mode: str) -> None:
             print(f"  {dest_dir} already has a definition file -- skipping "
                   f"(remove it first to force a re-fetch)")
             return
-        client = db.Historical(key=api_key)
-        total_bytes = _download_definitions_via_batch(client, venue_cfg, stype_in, opts.date_dir, dest_dir)
+        total_bytes = _download_definitions_live(
+            api_key, venue_cfg, stype_in, opts.date_dir, dest_dir,
+            ALL_SYMBOLS_SENTINEL if all_symbols else symbols)
         print(f"Wrote {total_bytes:,} byte(s) to {dest_dir}")
         return
 
@@ -498,65 +496,48 @@ def _resolve_batch(
     return left_rows + right_rows, left_nf + right_nf
 
 
-def _parse_metadata_ts(raw: str) -> dt.datetime:
-    """Databento metadata timestamp -> aware UTC datetime.
-
-    The API sends nanosecond precision ("2026-08-25T11:40:00.000000000Z"),
-    which fromisoformat() will not take: it accepts 3 or 6 fractional digits,
-    not 9. Truncate the fraction to microseconds and swap Z for +00:00.
-    """
-    s = raw.replace("Z", "+00:00")
-    s = re.sub(r"(\.\d{6})\d+", r"\1", s)
-    return dt.datetime.fromisoformat(s)
-
-
-def _available_end(client: db.Historical, dataset: str, schema: str) -> dt.datetime:
-    """Exclusive end of what `dataset` actually holds for `schema`.
-
-    Prefers the per-schema range over the dataset-wide one: they diverge (on
-    OPRA.PILLAR, ohlcv-1d ends at 00:00 while definition runs to the current
-    minute), and a query is validated against its own schema's range.
-    """
-    rng = client.metadata.get_dataset_range(dataset=dataset)
-    per_schema = (rng.get("schema") or {}).get(schema) or {}
-    return _parse_metadata_ts(per_schema.get("end") or rng["end"])
-
-
-# How far back _prior_session_count will walk looking for a session with data,
-# in calendar days. Covers a long weekend plus adjacent holidays; past that,
-# treat the absence as unknown rather than as a reason to block the download.
-PRIOR_SESSION_LOOKBACK_DAYS = 5
-
-# When each venue's definition files land, in UTC. Observed windows rather
-# than a Databento guarantee -- they answer "when should I look again", not
-# "when is it late".
-PUBLISH_WINDOWS_UTC = {
-    "GLBX": (0, 1),
-    "EQUS": (5, 6),
-    "OPRA": (10, 11),
-}
-
-# The session calendar that decides whether a date can have definitions at
-# all, and the market to name when it is shut. A closed session is the one
-# cause waiting cannot fix, so it is worth saying instead of advising a
-# re-run that can never succeed.
+# --- definitions: the live replay ---------------------------------------------
 #
-# The label is what the message prints. Calendar ids are an implementation
-# detail and naming one in an error is actively misleading -- an XCBO run
-# has no business mentioning XNYS, which is a different exchange entirely.
+# Every definition file comes from the LIVE API. Databento assigns instrument_id
+# independently in Historical and Live, for every dataset ("you should not assume
+# the instrument ID assignment across the Historical and Live APIs are
+# consistent", Databento support, 2026-10-02), and the token map the MDF lanes
+# run on is keyed by instrument_id -- so the ids have to be the live session's.
+# The historical batch route this replaced was wrong for OPRA in a way nothing
+# downstream could see: measured 2026-10-02 on the 8 XCBO parents, 501 of 55,052
+# live ids matched the batch file, 29,545 named a DIFFERENT contract in it, and
+# the lane sent those contracts' prices under the wrong tokens.
 #
-# OPRA is the consolidated tape for every US options exchange, not Cboe's
-# alone; exchange_calendars ships no OPRA calendar, and US options follow
-# the US equity holiday schedule, so XNYS stands in. XNAS would do equally
-# well -- the two calendars agree on every session from 2020 to 2030.
+# What a live definition subscription replays (start=0, measured 2026-09-27..
+# 2026-10-02):
 #
-# GLBX does not share that calendar: CME trades 75 days between 2020 and
-# 2030 that NYSE is shut for, Labor Day among them.
-SESSION_CALENDARS = {
-    "GLBX": ("CMES", "CME"),
-    "EQUS": ("XNYS", "US equity markets"),
-    "OPRA": ("XNYS", "US options markets"),
-}
+#   GLBX.MDP3    session starts Sun ~14:30Z with every outright; after that only
+#                new spreads, all day (mostly user-defined, which expire at the
+#                21:00Z close of the day they were made). No daily re-send.
+#   EQUS.MINI    session starts Mon ~05:00Z; every definition re-sent daily
+#                ~05:00Z with the same ids.
+#   OPRA.PILLAR  session starts Mon 10:30Z; every definition re-sent daily 10:30Z
+#                with the same ids, new listings daily ~12:00Z.
+#
+# Live ids did not change within that week for any of the three. Whether they
+# reset at the weekly gateway restart is not established; a daily fetch after
+# the session start picks up whatever the session uses either way.
+
+# Cap on waiting for "Finished definition replay". OPRA's 8-parent replay took
+# 58 s on 2026-10-02 (247,646 records for 55,052 instruments).
+LIVE_DEFINITION_REPLAY_CEILING_SEC = 15 * 60
+
+# Datasets that re-send every definition once a day. A replay with nothing from
+# the trade date on one of these was taken before that re-send, which means it
+# describes yesterday -- refused rather than written under today's date.
+LIVE_DAILY_RESEND = {"OPRA", "EQUS"}
+
+# Datasets that list new contracts at a known time of day (UTC hour, minute). A
+# fetch before it is complete for everything listed so far but misses the new
+# listings, so it warns rather than refuses.
+LIVE_NEW_LISTINGS_UTC = {"OPRA": (12, 0)}
+
+_UNDEF_TIMESTAMP = 2**64 - 1  # databento_dbn.UNDEF_TIMESTAMP: no expiration
 
 
 def _dataset_key(dataset: str) -> str:
@@ -564,378 +545,154 @@ def _dataset_key(dataset: str) -> str:
     return dataset.split(".", 1)[0].strip().upper()
 
 
-def _is_trading_session(dataset: str, day: dt.date) -> Optional[bool]:
-    """Whether day is a session for this dataset's venue, None if unknowable.
+def _day_start_ns(date_dir: str) -> int:
+    """YYYYMMDD -> that day's 00:00 UTC in Unix nanoseconds."""
+    day = dt.datetime.strptime(date_dir, "%Y%m%d").replace(tzinfo=dt.timezone.utc)
+    return int(day.timestamp()) * 1_000_000_000
 
-    None rather than a guess when the calendar package or the named calendar
-    is missing, so the caller never asserts a closure it cannot back.
+
+def select_live_definitions(records, day_start_ns: int):
+    """The trade date's instruments from a live definition replay.
+
+    The replay carries every definition the session has sent since it started,
+    re-sends included, so one instrument appears up to once a day. The last copy
+    wins (the replay is in send order). Anything that expired before the trade
+    date is dropped: the session still holds the week's expired options and
+    yesterday's user-defined spreads, which are not tradable today.
+
+    Measured against the historical batch for 2026-10-02: identical contract sets
+    for OPRA (50,244) and EQUS (8); for GLBX the batch also carried 1,171
+    user-defined spreads that had expired on earlier days, which this drops.
+
+    Returns (kept, latest_count), kept sorted by instrument_id.
     """
-    entry = SESSION_CALENDARS.get(_dataset_key(dataset))
-    if not entry:
-        return None
-    try:
-        import exchange_calendars as xcals
-        return bool(xcals.get_calendar(entry[0]).is_session(day.isoformat()))
-    except Exception:
-        return None
+    latest = {}
+    for record in records:
+        latest[record.instrument_id] = record
+    kept = [r for r in latest.values()
+            if r.expiration == _UNDEF_TIMESTAMP or r.expiration >= day_start_ns]
+    kept.sort(key=lambda r: r.instrument_id)
+    return kept, len(latest)
 
 
-def _format_duration(delta: dt.timedelta) -> str:
-    """'11h05m', '48m', '30s'."""
-    seconds = max(0, int(delta.total_seconds()))
-    if seconds < 60:
-        return f"{seconds}s"
-    hours, remainder = divmod(seconds, 3600)
-    minutes = remainder // 60
-    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
+def encode_definition_file(records, dataset: str, stype_in: str, symbols,
+                           start_ns: int, end_ns: int, version: int) -> bytes:
+    """A zstd-compressed DBN definition file holding exactly `records`.
 
-
-def _timing_hint(dataset: str, as_of: dt.date,
-                 now: Optional[dt.datetime] = None) -> str:
-    """Current UTC, plus what it implies for this dataset and date.
-
-    Appended to every "not published yet" error. Re-running is the natural
-    response to one, and it is worth knowing whether the wait is twenty
-    minutes, tomorrow morning, or futile.
+    The live stream's own metadata is not usable as a file header: a live session
+    reports schema and stype_in as None (it may mix schemas), and normalize only
+    reads files whose metadata says definition and the venue's dataset. So the
+    header is written here, at the DBN version the records were sent in, and the
+    file is indistinguishable to normalize from the batch download it replaced.
     """
-    now = now or dt.datetime.now(dt.timezone.utc)
-    parts = [f"Now {now.strftime('%H:%M:%S')}Z."]
+    import databento_dbn as dbn
+    import zstandard
 
-    window = PUBLISH_WINDOWS_UTC.get(_dataset_key(dataset))
-    if window:
-        open_hour, close_hour = window
-        opens = now.replace(hour=open_hour, minute=0, second=0, microsecond=0)
-        closes = now.replace(hour=close_hour, minute=0, second=0, microsecond=0)
-        line = f"{dataset} publishes ~{open_hour:02d}:00-{close_hour:02d}:00Z"
-        if now < opens:
-            line += f", about {_format_duration(opens - now)} from now."
-        elif now < closes:
-            line += ", and that window is open now."
-        else:
-            line += f", and today's window closed {_format_duration(now - closes)} ago."
-        parts.append(line)
-
-    if _is_trading_session(dataset, as_of) is False:
-        market = SESSION_CALENDARS[_dataset_key(dataset)][1]
-        parts.append(
-            f"{as_of.isoformat()} is not a trading day for {market}, so "
-            f"definitions are not expected for it at all -- re-running "
-            f"will not help."
-        )
-    return " ".join(parts)
-
-
-def _definition_count(
-    client: db.Historical, dataset: str, schema: str, stype_in: str,
-    start: str, end: str,
-) -> int:
-    """Records the definition query would return, without running it.
-
-    metadata.get_record_count is not billed and answers in about a second,
-    which is what makes the readiness check below affordable ahead of a job
-    that takes ~27 minutes and does bill.
-    """
-    return client.metadata.get_record_count(
+    metadata = dbn.Metadata(
         dataset=dataset,
-        symbols=ALL_SYMBOLS_SENTINEL,
-        schema=schema,
-        stype_in=stype_in,
-        start=start,
-        end=end,
+        start=start_ns,
+        stype_in=dbn.SType(stype_in),
+        stype_out=dbn.SType.INSTRUMENT_ID,
+        schema=dbn.Schema.DEFINITION,
+        symbols=list(symbols),
+        end=end_ns,
+        version=version,
     )
+    raw = bytes(metadata.encode()) + b"".join(bytes(r) for r in records)
+    return zstandard.ZstdCompressor().compress(raw)
 
 
-def _prior_session_count(
-    client: db.Historical, dataset: str, schema: str, stype_in: str,
-    before: dt.date,
-) -> tuple[Optional[dt.date], int]:
-    """Definition count for the most recent full day before `before` that has one.
-
-    Walks back a day at a time so weekends and holidays are skipped without a
-    calendar dependency -- a non-session simply counts zero. Returns
-    (None, 0) if nothing in the window has data, which the caller reads as
-    "no baseline" and lets the download through rather than blocking on it.
-    """
-    for back in range(1, PRIOR_SESSION_LOOKBACK_DAYS + 1):
-        day = before - dt.timedelta(days=back)
-        try:
-            n = _definition_count(
-                client, dataset, schema, stype_in,
-                day.isoformat(), (day + dt.timedelta(days=1)).isoformat(),
-            )
-        except Exception:
-            # A rejected range (before the dataset starts, say) is not a
-            # readiness signal; keep walking.
-            continue
-        if n > 0:
-            return day, n
-    return None, 0
-
-
-# Poll interval/ceiling for the definitions batch job below. Measured on a real
-# GLBX.MDP3 ALL_SYMBOLS single-day job (2026-08-24): ~27 minutes queued+processing
-# for 1.51M records / 47.3 MB compressed. The ceiling has headroom above that,
-# not a tight bound on the observed time -- an automated run should not hang
-# forever behind a queue, but 20 minutes false-failed on real, unstuck jobs.
-DEFINITION_BATCH_POLL_INTERVAL_SEC = 10
-DEFINITION_BATCH_POLL_CEILING_SEC = 45 * 60
-
-
-def _download_definitions_via_batch(
-    client: db.Historical,
+def _download_definitions_live(
+    api_key: str,
     venue_cfg: config.ExchangeCfg,
     stype_in: str,
     date_dir: str,
     dest_dir: Path,
+    symbols=ALL_SYMBOLS_SENTINEL,
+    live_factory=None,
+    now: Optional[dt.datetime] = None,
 ) -> int:
-    """ALL_SYMBOLS `definition` schema for one day, via the batch API.
+    """`definition` for the trade date from a live replay, as one .dbn.zst file.
 
-    Replaces the old timeseries.get_range() streaming approach: that read DBN
-    records off an HTTP stream and re-encoded them as CSV text by hand, which
-    is strictly lossier and slower than just keeping what Databento already
-    sends -- a DBN file, zstd-compressed. This submits a batch job for the
-    same query and downloads the resulting .dbn.zst straight into dest_dir
-    with no CSV in between. normalize/databento_norm.py reads a venue's
-    manual-drop directory (paths.manual_venue_dir) in preference to a streamed
-    CSV, and that is exactly what dest_dir is -- an operator's own manual
-    batch download and this automated one land in the same place and are
-    indistinguishable to normalize.
+    Subscribes with start=0, which replays every definition since the session
+    started, waits for Databento's "Finished definition replay", keeps the trade
+    date's instruments (select_live_definitions) and writes them to dest_dir
+    under the name the batch download used. Returns bytes written.
 
-    The requested window is date_dir's single UTC day, with `end` clamped to
-    the dataset's actual available end. Intraday, date_dir+1day is tomorrow
-    midnight UTC and the API rejects it with 422 data_end_after_available_end
-    ("OPRA.PILLAR has data available up to 2026-08-25 11:40"), which made
-    every same-day OPRA run fail outright.
-
-    Omitting `end` does not help and was tried: a date-only `start` with no
-    `end` is forward-filled by the server to start+1day -- the identical 422 --
-    and a datetime `start` with no `end` is refused with 422
-    data_start_too_precise_to_forward_fill. The range has to be closed, so it
-    is closed here against metadata.get_dataset_range(). Clamping also keeps a
-    backfill (--date-dir in the past) to its one day instead of letting it run
-    to now.
-
-    A day that has no data at all yet raises rather than submitting an empty
-    or inverted range: the matching engine may not have produced the session
-    when an automated run fires, and silently substituting a different day --
-    what the old streaming path did -- would hide exactly that condition.
-
-    Polling failures are the other case that must not go quiet: a job stuck
-    past DEFINITION_BATCH_POLL_CEILING_SEC raises rather than looping forever,
-    since this runs inside an automated pipeline step, not a script someone is
-    watching.
+    Only the current session can be replayed, so date_dir must be today (UTC).
     """
-    # date_dir is the day being asked for, and the dataset must actually have
-    # it. metadata.get_dataset_range() decides that up front.
-    #
-    # dataset_range["end"] is EXCLUSIVE (resolve_hist_range documents the same
-    # thing: 2026-08-03 being the last session with data was reported as
-    # end=2026-08-04T00:00:00Z), so the newest session carrying data is the day
-    # containing end minus an instant -- not end's own date.
-    #
-    # The venues publish at different hours -- GLBX in the 00:00-01:00Z hour,
-    # EQUS ~05:00-06:00Z, OPRA ~10:00-11:00Z -- so a run early enough will find
-    # a venue has not updated. That is fatal rather than quietly substituted:
-    # silently downloading the previous session under today's date_dir would
-    # put stale contracts behind a filename claiming today, and for OPRA the
-    # instrument_ids in it belong to a token space the live feed no longer
-    # uses (see hist_pin_latest_session).
-    # The window is date_dir's own UTC day, and nothing configures that.
-    #
-    #   date_dir 00:00Z -> get_dataset_range() -> refuse if date_dir is newer
-    #
-    # start is hardcoded to UTC midnight because the definition schema is a
-    # daily snapshot anchored there: Databento's own client warns that
-    # "instrument definitions effective on this date may be missing" for a later
-    # start, and a 13:30Z start on 2026-08-21 returned 90 OPRA records against
-    # 2,253,273 for the day. There is no defensible reason to configure it, so
-    # it is not configurable.
-    #
-    # end is the day's close, clamped to what the dataset actually holds.
-    # Omitting it does not work -- a date-only start with no end is
-    # forward-filled by the server to start+1day and then rejected with 422
-    # data_end_after_available_end, and a datetime start with no end is refused
-    # with data_start_too_precise_to_forward_fill. The range has to be closed.
-    #
-    # dataset_range["end"] is EXCLUSIVE, the same thing resolve_hist_range
-    # documents, so the newest session with data is the day containing end minus
-    # an instant rather than end's own date.
-    start_ts, end = _prepare_batch_window(client, venue_cfg, stype_in, date_dir)
-    job_id = _submit_batch_job(client, venue_cfg, stype_in, start_ts, end)
-    _await_batch_job(client, job_id)
-    return _download_batch_job(client, job_id, dest_dir)
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if date_dir != now.strftime("%Y%m%d"):
+        raise ValueError(
+            f"live definitions describe the current session only: --date-dir "
+            f"{date_dir} is not today ({now.strftime('%Y%m%d')} UTC)")
 
+    key = _dataset_key(venue_cfg.dataset)
+    listing = LIVE_NEW_LISTINGS_UTC.get(key)
+    if listing and (now.hour, now.minute) < listing:
+        print(f"  WARNING: {venue_cfg.dataset} lists new contracts at ~{listing[0]:02d}:"
+              f"{listing[1]:02d}Z and it is {now.strftime('%H:%M')}Z -- today's new "
+              f"listings will be missing from this file")
 
-def download_definitions_for_dates(client, venue_cfg, stype_in: str,
-                                   date_dirs) -> dict:
-    """Submit one batch job per date, then wait on them together.
-
-    Submitted up front rather than one-at-a-time-to-completion because the wait
-    dominates: a job can sit queued for a while and the poll ceiling is 45
-    minutes EACH, so three dates run serially could spend over two hours mostly
-    idle. Databento does the work server-side, so N jobs in flight cost the same
-    wall clock as the slowest one.
-
-    Every date is validated before ANY job is submitted. A date whose
-    definitions have not published yet, or that the dataset does not reach,
-    fails the whole call at that point -- better than discovering it after
-    paying for two other jobs.
-
-    A date whose venue directory already holds a definition file is skipped,
-    matching the single-day path: that file is either an operator's drop or a
-    previous successful run, and re-fetching it is only waste.
-
-    Returns {date_dir: bytes_written}, and raises on the first date that fails
-    to download after the jobs are in flight -- the others are already
-    submitted and can be collected by re-running, since the skip-if-present
-    check makes a re-run cheap.
-    """
-    pending = {}
-    for date_dir in date_dirs:
-        dest_dir = paths.manual_venue_dir(date_dir, venue_cfg.venue_name)
-        if dest_dir.is_dir() and any(p.name.endswith((".dbn", ".dbn.zst")) for p in dest_dir.iterdir()):
-            print(f"  {date_dir}: {dest_dir} already has a definition file -- skipping")
-            continue
-        start_ts, end = _prepare_batch_window(client, venue_cfg, stype_in, date_dir)
-        pending[date_dir] = (_submit_batch_job(client, venue_cfg, stype_in, start_ts, end), dest_dir)
-
-    if not pending:
-        print("  Nothing to submit -- every requested date already has a file")
-        return {}
-
-    print(f"  {len(pending)} job(s) in flight: "
-          f"{', '.join(f'{d}={j}' for d, (j, _) in sorted(pending.items()))}", flush=True)
-
-    written = {}
-    for date_dir, (job_id, dest_dir) in sorted(pending.items()):
-        print(f"  {date_dir}: waiting on job {job_id}", flush=True)
-        _await_batch_job(client, job_id)
-        written[date_dir] = _download_batch_job(client, job_id, dest_dir)
-        print(f"  {date_dir}: wrote {written[date_dir]:,} byte(s) to {dest_dir}", flush=True)
-    return written
-
-
-def _prepare_batch_window(client, venue_cfg, stype_in: str, date_dir: str):
-    """Validate one day and return the (start, end) window to request for it.
-
-    Split out of _download_definitions_via_batch so a multi-date run can
-    validate and submit every day up front, then wait on them together. Each
-    day is checked exactly as a single-day run checks it -- the availability
-    clamp and the definition_ready_ratio floor both apply per day, so one
-    unpublished date in a list is caught before any job is submitted rather
-    than producing a thin file.
-    """
-    as_of = dt.datetime.strptime(date_dir, "%Y%m%d").date()
-    start_ts = dt.datetime.combine(as_of, dt.time.min, tzinfo=dt.timezone.utc)
-    day_end = start_ts + dt.timedelta(days=1)
-
-    available_end = _available_end(client, venue_cfg.dataset, venue_cfg.schema)
-    if (available_end - dt.timedelta(microseconds=1)).date() < as_of:
-        through = (available_end - dt.timedelta(microseconds=1)).date()
-        # "Check back later" is wrong advice on a closed session -- nothing is
-        # coming. Say which situation this is before describing it.
-        lead = ("today's contract files are not updated yet, please check back later"
-                if _is_trading_session(venue_cfg.dataset, as_of) is not False
-                else f"there are no contract files for {as_of.isoformat()}")
+    sym_list = [symbols] if isinstance(symbols, str) else list(symbols)
+    print(f"  Live definition replay: {venue_cfg.dataset} stype_in={stype_in} "
+          f"symbols={sym_list}", flush=True)
+    client = (live_factory or db.Live)(key=api_key)
+    client.subscribe(dataset=venue_cfg.dataset, schema="definition",
+                     stype_in=stype_in, symbols=sym_list, start=0)
+    definitions, version, finished = [], None, False
+    deadline = time.monotonic() + LIVE_DEFINITION_REPLAY_CEILING_SEC
+    try:
+        for record in client:
+            if version is None and getattr(client, "metadata", None) is not None:
+                version = client.metadata.version
+            if isinstance(record, db.InstrumentDefMsg):
+                definitions.append(record)
+            elif isinstance(record, db.ErrorMsg):
+                raise RuntimeError(f"{venue_cfg.dataset} live replay error: {record.err}")
+            elif isinstance(record, db.SystemMsg) and "Finished definition replay" in record.msg:
+                finished = True
+                break
+            if time.monotonic() > deadline:
+                break
+    finally:
+        try:
+            client.stop()
+        except Exception:
+            pass  # a stop after a completed replay may report the session's warnings
+    if not finished:
         raise RuntimeError(
-            f"{lead} -- {venue_cfg.dataset} has data through "
-            f"{through.isoformat()}, asked for {as_of.isoformat()}. "
-            f"{_timing_hint(venue_cfg.dataset, as_of)}"
-        )
-    end = min(day_end, available_end)
+            f"{venue_cfg.dataset}: no 'Finished definition replay' within "
+            f"{LIVE_DEFINITION_REPLAY_CEILING_SEC}s ({len(definitions):,} definitions so far)")
 
-    have = _definition_count(client, venue_cfg.dataset, venue_cfg.schema,
-                             stype_in, start_ts.isoformat(), end.isoformat())
-    prior_day, prior = _prior_session_count(
-        client, venue_cfg.dataset, venue_cfg.schema, stype_in, as_of)
-    floor = int(prior * venue_cfg.definition_ready_ratio)
-    if prior and have < floor:
+    day_start = _day_start_ns(date_dir)
+    kept, distinct = select_live_definitions(definitions, day_start)
+    if not kept:
+        raise RuntimeError(f"{venue_cfg.dataset}: the live replay holds no instrument "
+                           f"for {date_dir} ({distinct:,} distinct, all expired)")
+    refreshed = sum(1 for r in kept if r.ts_recv >= day_start)
+    if key in LIVE_DAILY_RESEND and refreshed == 0:
         raise RuntimeError(
-            f"{venue_cfg.dataset} definitions for {as_of.isoformat()} are not "
-            f"published yet: {have:,} records up to {end.isoformat()} against "
-            f"{prior:,} on {prior_day.isoformat()} "
-            f"({have / prior:.1%}, floor {venue_cfg.definition_ready_ratio:.0%}). "
-            f"Downloading now would write a file holding a fraction of the "
-            f"session. Re-run once they land. "
-            f"{_timing_hint(venue_cfg.dataset, as_of)}"
-        )
+            f"{venue_cfg.dataset}: nothing in the live replay was sent on {date_dir} -- "
+            f"today's daily re-send has not happened yet (see the runbook for times)")
 
-    clamped = " (clamped to available)" if end < day_end else ""
-    baseline = (f", {have:,} records vs {prior:,} on {prior_day.isoformat()}"
-                if prior else f", {have:,} records (no baseline)")
-    print(f"  Submitting batch job: {venue_cfg.dataset} ALL_SYMBOLS definition, "
-          f"{start_ts.isoformat()}..{end.isoformat()}{clamped}{baseline}, "
-          f"encoding=dbn compression=zstd", flush=True)
-    return start_ts, end
+    newest = max(r.ts_recv for r in kept)
+    print(f"  {len(definitions):,} definition record(s), {distinct:,} instrument(s); "
+          f"kept {len(kept):,} for {date_dir}, dropped {distinct - len(kept):,} expired; "
+          f"{refreshed:,} sent today, newest "
+          f"{dt.datetime.fromtimestamp(newest / 1e9, dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}Z",
+          flush=True)
 
-
-def _submit_batch_job(client, venue_cfg, stype_in: str, start_ts, end) -> str:
-    """Submit one definition job and return its id, without waiting for it."""
-    ack = client.batch.submit_job(
-        dataset=venue_cfg.dataset,
-        symbols=ALL_SYMBOLS_SENTINEL,
-        schema=venue_cfg.schema,
-        stype_in=stype_in,
-        start=start_ts.isoformat(),
-        end=end.isoformat(),
-        encoding="dbn",
-        compression="zstd",
-        split_duration="day",
-        delivery="download",
-    )
-    job_id = ack["id"]
-    print(f"    job {job_id}: {ack.get('state', '')}", flush=True)
-    return job_id
-
-
-def _await_batch_job(client, job_id: str) -> None:
-    """Poll one job to completion. Raises if it stalls or expires."""
-    state = ""
-    elapsed = 0
-    while state not in ("done", "expired"):
-        if elapsed >= DEFINITION_BATCH_POLL_CEILING_SEC:
-            raise RuntimeError(
-                f"batch job {job_id} still {state!r} after {elapsed}s -- giving up. "
-                f"The job itself is unaffected and can be downloaded later with "
-                f"client.batch.download({job_id!r}, ...) once it finishes."
-            )
-        time.sleep(DEFINITION_BATCH_POLL_INTERVAL_SEC)
-        elapsed += DEFINITION_BATCH_POLL_INTERVAL_SEC
-        state = client.batch.get_job_details(job_id).get("state", "")
-        print(f"    job {job_id}: {state} ({elapsed}s)", flush=True)
-
-    if state == "expired":
-        raise RuntimeError(f"batch job {job_id} expired before it could be downloaded")
-
-
-def _download_batch_job(client, job_id: str, dest_dir: Path) -> int:
-    """Move a finished job's .dbn/.dbn.zst files into dest_dir. Returns bytes written."""
-    files = client.batch.list_files(job_id)
-    data_files = sorted(
-        str(f["filename"]) for f in files
-        if str(f.get("filename", "")).endswith((".dbn", ".dbn.zst"))
-    )
-    if not data_files:
-        raise RuntimeError(f"batch job {job_id} finished with no .dbn/.dbn.zst file")
-
-    # batch.download() nests under {output_dir}/{job_id}/{filename}; the date
-    # dir is passed as output_dir so that lands as {date_dir}/{job_id}/{name},
-    # then each file is moved up into dest_dir (…/{VENUE}/{name}) to match the
-    # flat layout a manual extraction produces -- normalize's manual-drop
-    # reader globs dest_dir directly, one level, no job-id subfolder.
+    blob = encode_definition_file(
+        kept, venue_cfg.dataset, stype_in, sym_list, day_start,
+        int(now.timestamp() * 1e9), version or 3)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    total_bytes = 0
-    for name in data_files:
-        written = client.batch.download(job_id=job_id, output_dir=dest_dir.parent, filename_to_download=name)
-        for src in written:
-            target = dest_dir / src.name
-            os.replace(src, target)
-            total_bytes += target.stat().st_size
-            print(f"    {target}", flush=True)
-        job_scratch = dest_dir.parent / job_id
-        if job_scratch.is_dir() and not any(job_scratch.iterdir()):
-            job_scratch.rmdir()
-    return total_bytes
+    target = dest_dir / f"{venue_cfg.dataset.lower().replace('.', '-')}-{date_dir}.definition.dbn.zst"
+    staging = target.with_name(f".{target.name}.tmp.{os.getpid()}")
+    staging.write_bytes(blob)
+    os.replace(staging, target)
+    print(f"    {target}", flush=True)
+    return len(blob)
 
 
 def _iter_live_batches(

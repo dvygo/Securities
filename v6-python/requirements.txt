@@ -11,6 +11,8 @@
 # Requires Python >= 3.12 (numpy 2.5 floor); see pyproject.toml.
 
 databento>=0.81.0,<1.0
+databento-dbn>=0.67.0
+zstandard>=0.22
 psycopg[binary]>=3.1.0
 pandas>=2.0.0
 requests>=2.31.0

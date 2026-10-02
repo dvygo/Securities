@@ -70,41 +70,30 @@ database_url = postgres://contract:contract@127.0.0.1:6006/contractdb?sslmode=di
 #                           match this value or the load is refused.
 #
 #   dataset                 Databento dataset id (databento feeds only)
-#   schema                  schema for the ALL_SYMBOLS batch path
+#   schema                  schema of the definition download (a live replay)
 #   stype_in                symbology type for basket downloads
 #   stype_in_all_symbols    symbology type when --all-symbols is in play
 #                           (blank = same as stype_in)
 #   all_symbols_default     --all-symbols on unless --no-all-symbols is passed.
 #                           true for every databento venue: the baskets were
 #                           leaving most of each universe undownloaded.
-#   definition_ready_ratio  fraction of the previous session's definition count
-#                           the window must reach before a batch job is
-#                           submitted. Guards the thin-file case: the clamp
-#                           makes the range legal, not the data complete.
 #   hist_pin_latest_session resolve against the latest complete session only
 #   hist_lookback_days      lookback window for the symbology.resolve path,
-#                           i.e. basket downloads only -- --all-symbols always
-#                           takes the definition batch path now
+#                           i.e. basket downloads only -- definitions always
+#                           come from the live replay now
 #
-# Session/publish reference. RTH is NOT the right anchor for definitions -- they
-# publish before or around session open, not during the trading session:
+# Definitions come from a LIVE replay of the current session (start=0), never
+# the historical batch: Historical and Live assign instrument_id independently,
+# and the MDF lanes run on live ids. What the live sessions sent, measured
+# 2026-09-27..2026-10-02 (US daylight time; expect +1h UTC after 2026-11-01):
 #
-#   venue  RTH (exchange_calendars)   definitions first appear (UTC)
-#   XNAS   13:30-20:00Z  09:30-16:00 ET   05:00-06:00Z, complete by 06:00Z
-#   XCME   22:00Z open   18:00 ET open    00:00-01:00Z, complete by 01:00Z
-#   XCBO   13:30-20:00Z  09:30-16:00 ET   10:00-11:00Z, tail to 15:00Z
+#   venue  dataset      session start      daily re-send   new contracts
+#   XNAS   EQUS.MINI    Mon ~05:00Z        ~05:00Z         none
+#   XCME   GLBX.MDP3    Sun ~14:30Z        none            spreads, all day
+#   XCBO   OPRA.PILLAR  Mon 10:30Z         10:30Z          ~12:00Z daily
 #
-# All three finish well before RTH close, and XCME finishes 12+ hours before
-# RTH open, so a window pinned to RTH would drop the snapshot entirely.
-#
-# Measured definition publish curves, 2026-08-25 (cumulative, UTC [ET]):
-#   GLBX.MDP3    08:00Z [04:00] 1,147,477   ~99% before premarket, then a
-#                12:10Z [08:10] 1,157,591   +0.3%/hr trickle all session
-#   OPRA.PILLAR  08:00Z [04:00]         0   nothing, then one burst
-#                09:00Z [05:00]     6,270   06:00-07:00 ET, then flat
-#                11:00Z [07:00] 1,995,154
-#   EQUS.MINI    08:00Z [04:00]    13,187   complete before premarket
-# So XCBO must not run before ~07:00 ET; XCME and XNAS are safe from 04:00 ET.
+# So: XNAS after 05:00Z, XCME any time after Sunday's start, XCBO after 12:00Z
+# (17:30 IST), all before the 13:30Z US open. Runbook: docs/PREMARKET-RUNBOOK.md.
 
 [EXCHANGE:XNAS]
 feed = databento
@@ -115,7 +104,6 @@ schema = definition
 stype_in = raw_symbol
 stype_in_all_symbols = raw_symbol
 all_symbols_default = true
-definition_ready_ratio = 0.5
 hist_pin_latest_session = false
 hist_lookback_days = 7
 
@@ -128,7 +116,6 @@ schema = definition
 stype_in = parent
 stype_in_all_symbols = parent
 all_symbols_default = true
-definition_ready_ratio = 0.5
 # OPRA reassigns instrument_id every trading day, so resolving against any date
 # other than the latest complete session returns a token space that shares
 # almost nothing with the live feed. See VenueConfig history in databento_src.
@@ -144,7 +131,6 @@ schema = definition
 stype_in = parent
 stype_in_all_symbols = raw_symbol
 all_symbols_default = true
-definition_ready_ratio = 0.5
 hist_pin_latest_session = false
 hist_lookback_days = 7
 

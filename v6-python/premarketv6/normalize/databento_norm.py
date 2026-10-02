@@ -605,9 +605,8 @@ VENUE_MAPPERS = {
 def _manual_dbn_files(directory: Path) -> List[Path]:
     """*.dbn/*.dbn.zst files in a manual drop directory, sorted by name.
 
-    condition.json/metadata.json/manifest.json (whatever else the operator
-    extracted from a batch job's zip alongside the payload) are ignored by
-    construction -- only the DBN suffix is matched.
+    Anything else an operator dropped alongside (json manifests and the like)
+    is ignored by construction -- only the DBN suffix is matched.
     """
     return sorted(p for p in directory.iterdir() if p.name.endswith((".dbn", ".dbn.zst")))
 
