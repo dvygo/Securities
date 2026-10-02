@@ -679,6 +679,117 @@ class TestPluginUpsertSQL:
             plugin_pg._upsert_sql("public", "t", list(plugin_pg.PLUGIN_PRIMARY_KEY))
 
 
+class TestPluginNotPushed:
+    """OPRA's SPOT reference legs stay in the plugin file but never reach the table."""
+
+    ROWS = [
+        {"exch": "XCBO", "insttype": "SPOT", "symbol": "AAPL"},
+        {"exch": "XCBO", "insttype": "OPTSTK", "symbol": "AAPL"},
+        {"exch": "XCBO", "insttype": "OPTIDX", "symbol": "SPX"},
+        {"exch": "XNAS", "insttype": "EQUITY", "symbol": "AAPL"},
+    ]
+
+    def test_xcbo_spot_is_dropped_and_counted(self):
+        batches = plugin_pg._Pushable([self.ROWS, self.ROWS[:1]])
+        kept = [r for rows in batches for r in rows]
+        assert ("XCBO", "SPOT") not in {(r["exch"], r["insttype"]) for r in kept}
+        assert batches.dropped == 2
+
+    def test_everything_else_is_pushed(self):
+        """Options on XCBO and the XNAS equity row are pushed, in order.
+
+        The equity row gains only its "SPOT " fullname (TestPluginSpotFullname).
+        """
+        kept = [r for rows in plugin_pg._Pushable([self.ROWS]) for r in rows]
+        assert kept[:2] == self.ROWS[1:3]
+        assert kept[2] == {**self.ROWS[3], "fullname": "SPOT AAPL"}
+        assert len(kept) == 3
+
+
+class TestPluginFeedScale:
+    """Pushed rows carry divisor, strikeprice and ticksize in the feed's units."""
+
+    ES = {"exch": "XCME", "insttype": "FUTIDX", "name": "ESZ6", "divisor": "1000000000",
+          "strikeprice": "-1", "ticksize": "250000000"}
+    ES_OPT = {"exch": "XCME", "insttype": "OPTIDX", "name": "ESZ6 C9000", "divisor": "1000000000",
+              "strikeprice": "9000000000000", "ticksize": "1"}
+    SPY_OPT = {"exch": "XCBO", "insttype": "OPTSTK", "name": "SPY C665", "divisor": "1000000000",
+               "strikeprice": "665000000000", "ticksize": "1"}
+
+    def test_xcme_future_goes_to_price_times_100(self):
+        out, inexact = plugin_pg._to_feed_scale(self.ES)
+        assert (out["divisor"], out["ticksize"], out["strikeprice"]) == ("100", "25", "-1")
+        assert not inexact
+
+    def test_strike_is_scaled_and_the_placeholder_tick_is_left_alone(self):
+        out, _ = plugin_pg._to_feed_scale(self.ES_OPT)
+        assert (out["divisor"], out["strikeprice"], out["ticksize"]) == ("100", "900000", "1")
+
+    def test_xcbo_keeps_four_decimals(self):
+        out, _ = plugin_pg._to_feed_scale(self.SPY_OPT)
+        assert (out["divisor"], out["strikeprice"]) == ("10000", "6650000")
+
+    def test_a_tick_finer_than_the_feed_unit_stays_exact(self):
+        out, _ = plugin_pg._to_feed_scale({**self.ES, "ticksize": "2500000"})
+        assert float(out["ticksize"]) == 0.25
+
+    def test_a_strike_finer_than_the_feed_unit_is_rounded_and_counted(self):
+        out, inexact = plugin_pg._to_feed_scale({**self.ES_OPT, "strikeprice": "12345678"})
+        assert out["strikeprice"] == "1" and inexact
+
+    def test_other_venues_and_rows_already_in_feed_units_are_untouched(self):
+        nse = {"exch": "XNSE", "divisor": "100", "strikeprice": "2450000", "ticksize": "5"}
+        assert plugin_pg._to_feed_scale(nse) == (nse, False)
+        done, _ = plugin_pg._to_feed_scale(self.ES)
+        assert plugin_pg._to_feed_scale(done) == (done, False)
+
+    def test_the_source_row_is_not_modified(self):
+        before = dict(self.ES)
+        plugin_pg._to_feed_scale(self.ES)
+        assert self.ES == before
+
+    def test_pushable_counts_rescaled_rows(self):
+        batches = plugin_pg._Pushable([[self.ES, self.SPY_OPT,
+                                        {"exch": "XCBO", "insttype": "SPOT", "divisor": "1000000000"}]])
+        kept = [r for rows in batches for r in rows]
+        assert [r["divisor"] for r in kept] == ["100", "10000"]
+        assert (batches.dropped, batches.rescaled, batches.inexact) == (1, 2, 0)
+
+
+class TestPluginSpotFullname:
+    """Cash equities are pushed as "SPOT <symbol>", like "FUT ..." and "OPT ..."."""
+
+    AAPL = {"exch": "XNAS", "insttype": "EQUITY", "symbol": "AAPL", "name": "AAPL",
+            "fullname": "AAPL", "divisor": "1000000000", "strikeprice": "-1", "ticksize": "1"}
+
+    def test_an_xnas_equity_gets_the_prefix_on_fullname_only(self):
+        out = plugin_pg._spot_fullname(self.AAPL)
+        assert out["fullname"] == "SPOT AAPL"
+        assert (out["symbol"], out["name"]) == ("AAPL", "AAPL")
+
+    def test_it_is_not_applied_twice_and_the_source_row_is_kept(self):
+        before = dict(self.AAPL)
+        out = plugin_pg._spot_fullname(self.AAPL)
+        assert self.AAPL == before
+        assert plugin_pg._spot_fullname(out) is out
+
+    def test_derivatives_and_other_venues_are_untouched(self):
+        for row in (TestPluginFeedScale.ES, TestPluginFeedScale.SPY_OPT,
+                    {"exch": "XNSE", "insttype": "EQ", "symbol": "IRCTC", "fullname": "IRCTC"}):
+            assert plugin_pg._spot_fullname(row) is row
+
+    def test_a_row_with_no_symbol_falls_back_to_its_fullname(self):
+        row = {"exch": "XNAS", "insttype": "EQUITY", "symbol": "", "fullname": "IWM"}
+        assert plugin_pg._spot_fullname(row)["fullname"] == "SPOT IWM"
+
+    def test_pushable_renames_and_counts(self):
+        batches = plugin_pg._Pushable([[self.AAPL, TestPluginFeedScale.ES]])
+        kept = [r for rows in batches for r in rows]
+        assert [r.get("fullname") for r in kept] == ["SPOT AAPL", None]
+        assert kept[0]["divisor"] == "100"
+        assert batches.spot_named == 1
+
+
 class TestPluginNullSafety:
     """No plugin column is ever empty: the pushed table must hold no NULL."""
 

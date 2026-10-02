@@ -20,6 +20,16 @@ Databento instrument_id, which is unique only within a dataset -- XCME token
 81352 was seen colliding with an unrelated pre-existing row. Rows pushed before
 that change sit in a different number space from rows pushed after it, so they
 do not collide with each other either.
+
+Rows matching NOT_PUSHED stay in the plugin files and are left out of the push
+only.
+
+Price columns are pushed in the market-data feed's units (FEED_PRICE_SCALE), not
+the plugin file's. That too is a push-side change: normalize, the plugin file,
+the MDF token map and the AlphaEMS master keep their own scale.
+
+Cash equities are pushed with fullname "SPOT <symbol>" (SPOT_FULLNAME), beside
+the "FUT ..." and "OPT ..." the derivatives already carry. Push-side only, too.
 """
 import csv
 import io
@@ -57,6 +67,31 @@ PLUGIN_COLUMN_TYPES = {
 # The plugin table keys on (token, trade_date) -- no exchange column, which is
 # why counterToken/counterTokenV2 exist to keep a token unique across venues.
 PLUGIN_PRIMARY_KEY = ("token", "trade_date")
+
+# (exch, insttype) rows that are built but never pushed. OPRA's underlying
+# spots (instrument_class K, see normalize/databento_norm.py) are only the
+# reference leg its options point at, and each carries the same fullname as the
+# XNAS EQUITY listing -- pushed, every optionable stock showed up twice under
+# two tokens (6,288 rows on 2026-09-28, 5,933 of them doubling an XNAS name).
+# normalize, the plugin file and the MDF token map keep them.
+NOT_PUSHED = {("XCBO", "SPOT")}
+
+# Price units on hft.marketdata.fo, per venue: what the MDF lane's
+# TOB_price_divisor leaves of Databento's 10^9 prices (cpp-vendor.ini: 10^7 for
+# XCME and XNAS, 10^5 for XCBO). A consumer divides a feed price by the row's
+# divisor, so divisor, strikeprice and ticksize are pushed in these units:
+# ESZ6 goes from divisor 1000000000 / ticksize 250000000 to 100 / 25. Change a
+# lane's divisor and this table has to follow.
+FEED_PRICE_SCALE = {"XCME": 100, "XNAS": 100, "XCBO": 10000}
+
+# (exch, insttype) rows whose fullname is pushed as "SPOT <symbol>". A cash
+# equity's fullname is otherwise the bare ticker ("AAPL"), while every future
+# and option reads "FUT ..." / "OPT ...": the operator UI's search and ranking
+# work on that leading word, so a bare ticker was not found as a spot and sat
+# among its own options. symbol and name stay the bare ticker -- they are what
+# a consumer trades and joins on.
+SPOT_FULLNAME = {("XNAS", "EQUITY")}
+_SPOT_PREFIX = "SPOT "
 
 # Staging table for the upsert. TEMP, so it is per-connection and cannot
 # collide with a concurrent push on another connection.
@@ -128,6 +163,89 @@ def _batch_csv(columns: List[str], rows: List[dict], header: bool) -> str:
     for row in rows:
         writer.writerow(["" if row.get(c) in (None, "") else row.get(c) for c in columns])
     return buf.getvalue()
+
+
+def _whole(value) -> int:
+    """A plugin numeric column as an int; blank or unparseable is 0."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _to_feed_scale(row: dict) -> tuple:
+    """Returns (row, inexact) with divisor, strikeprice and ticksize in feed units.
+
+    Rows of a venue not in FEED_PRICE_SCALE, or already at or below the feed's
+    scale, come back untouched. strikeprice <= 0 (the no-strike marker) and
+    ticksize <= 1 (the "tick depends on the price" marker) are not prices and are
+    left alone. `inexact` is True when the strike is not a whole number of feed
+    units and had to be rounded.
+    """
+    scale = FEED_PRICE_SCALE.get(row.get("exch"))
+    divisor = _whole(row.get("divisor"))
+    if not scale or divisor <= scale or divisor % scale:
+        return row, False
+    factor = divisor // scale
+    out = dict(row)
+    out["divisor"] = str(scale)
+    inexact = False
+    strike = _whole(row.get("strikeprice"))
+    if strike > 0:
+        inexact = strike % factor != 0
+        out["strikeprice"] = str((strike + factor // 2) // factor)
+    tick = _whole(row.get("ticksize"))
+    if tick > 1:
+        out["ticksize"] = str(tick // factor) if tick % factor == 0 else repr(tick / factor)
+    return out, inexact
+
+
+def _spot_fullname(row: dict) -> dict:
+    """Returns the row with fullname "SPOT <symbol>" if it is a SPOT_FULLNAME row.
+
+    Any other row, and one already carrying the prefix, comes back as the same
+    object. The ticker is the row's symbol, falling back to its fullname.
+    """
+    if (row.get("exch"), row.get("insttype")) not in SPOT_FULLNAME:
+        return row
+    ticker = str(row.get("symbol") or row.get("fullname") or "").strip()
+    if not ticker or str(row.get("fullname") or "").startswith(_SPOT_PREFIX):
+        return row
+    out = dict(row)
+    out["fullname"] = _SPOT_PREFIX + ticker
+    return out
+
+
+class _Pushable:
+    """Iterates batches of plugin rows as they are pushed.
+
+    NOT_PUSHED rows are left out and counted in `dropped`. The rest are converted
+    to the feed's price units; `rescaled` counts those rows and `inexact` the
+    strikes that needed rounding. SPOT_FULLNAME rows get their "SPOT " fullname,
+    counted in `spot_named`.
+    """
+
+    def __init__(self, batches):
+        self.batches = batches
+        self.dropped = 0
+        self.rescaled = 0
+        self.inexact = 0
+        self.spot_named = 0
+
+    def __iter__(self):
+        for rows in self.batches:
+            kept = []
+            for r in rows:
+                if (r.get("exch"), r.get("insttype")) in NOT_PUSHED:
+                    self.dropped += 1
+                    continue
+                out, inexact = _to_feed_scale(r)
+                self.rescaled += out is not r
+                self.inexact += inexact
+                named = _spot_fullname(out)
+                self.spot_named += named is not out
+                kept.append(named)
+            yield kept
 
 
 def _upsert_sql(schema: str, table: str, columns: List[str]) -> str:
@@ -221,10 +339,18 @@ def push(cfg: config.PostgresPluginCfg, plugin_files) -> List[dict]:
     with psycopg.connect(cfg.database_url) as conn:
         _ensure_table(conn, cfg.schema, cfg.table, cfg.create_table)
         for path in plugin_files:
+            batches = _Pushable(parquet_export.iter_rows(path))
             read, affected = _copy_upsert(
-                conn, cfg.schema, cfg.table, build.PLUGIN_COLUMNS,
-                parquet_export.iter_rows(path))
+                conn, cfg.schema, cfg.table, build.PLUGIN_COLUMNS, batches)
             note = "" if read == affected else f" ({read - affected} duplicate key(s) collapsed)"
+            if batches.dropped:
+                kinds = ", ".join(f"{e} {t}" for e, t in sorted(NOT_PUSHED))
+                note += f" ({batches.dropped} {kinds} row(s) not pushed)"
+            if batches.rescaled:
+                note += f" ({batches.rescaled} row(s) in feed price units"
+                note += f", {batches.inexact} strike(s) rounded)" if batches.inexact else ")"
+            if batches.spot_named:
+                note += f" ({batches.spot_named} spot fullname(s) prefixed 'SPOT ')"
             print(f"    Upserted {affected} rows from {path.name}{note}")
             results.append({"file": path, "read": read, "upserted": affected})
     return results
