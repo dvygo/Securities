@@ -1,0 +1,7 @@
+# check-state [v2]  2026-10-04 04:26:14Z
+# 5 check(s): 5 pass, 0 fail, 0 warn
+[v2] PASS state                 XBOM  snapshot           XBOM/20261004T042549875469Z-20261004-live-80933-3.alloc.parquet: 21,035 held, 0 free
+[v2] PASS state                 XIMC  snapshot           XIMC/20261004T042550674968Z-20261004-live-80933-4.alloc.parquet: 15,118 held, 0 free
+[v2] PASS state                 XNSE  snapshot           XNSE/20261004T042548566439Z-20261004-live-80933-2.alloc.parquet: 102,112 held, 0 free
+[v2] PASS state                 *     venues disjoint    0 token(s) held by more than one venue
+[v2] PASS state                 *     counter covers     head counter 138,265; highest on disk 138,265 (20261004), highest held 138,265

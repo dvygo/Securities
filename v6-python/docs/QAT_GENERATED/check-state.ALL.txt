@@ -1,0 +1,13 @@
+# check-state [ALL]  2026-10-04 04:26:14Z
+# 11 check(s): 11 pass, 0 fail, 0 warn
+[ALL] PASS state                 *     head readable      counter 138,265, 3 venue(s), last run 20261004T042550674968Z-20261004-live-80933-4
+[v2] PASS state                 XBOM  snapshot           XBOM/20261004T042549875469Z-20261004-live-80933-3.alloc.parquet: 21,035 held, 0 free
+[ALL] PASS state                 XBOM  newest on disk     state newest 20261004 (live), newest on disk 20261004
+[v2] PASS state                 XIMC  snapshot           XIMC/20261004T042550674968Z-20261004-live-80933-4.alloc.parquet: 15,118 held, 0 free
+[ALL] PASS state                 XIMC  newest on disk     state newest 20261004 (live), newest on disk 20261004
+[v2] PASS state                 XNSE  snapshot           XNSE/20261004T042548566439Z-20261004-live-80933-2.alloc.parquet: 102,112 held, 0 free
+[ALL] PASS state                 XNSE  newest on disk     state newest 20261004 (live), newest on disk 20261004
+[v2] PASS state                 *     venues disjoint    0 token(s) held by more than one venue
+[v2] PASS state                 *     counter covers     head counter 138,265; highest on disk 138,265 (20261004), highest held 138,265
+[ALL] PASS state                 *     commit finished    no staged files; last commit's header written
+[ALL] PASS state                 *     runs closed        7 event(s) in the run log
