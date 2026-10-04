@@ -441,14 +441,13 @@ NSE_SEGMENTS = {
 # near_only=True keeps one contract per root (the front month); False keeps every
 # live expiry. Every futures basket exists as a NEAR/ALL pair so a caller never
 # has to know which depth an unsuffixed name meant.
-INDEX_FUTURES_SOURCES = {
-    "XNSE_INDEX_FUTURES_NEAR": ("XNSE", True),
-    "XNSE_INDEX_FUTURES_ALL":  ("XNSE", False),
-    "XBOM_INDEX_FUTURES_NEAR": ("XBOM", True),
-    "XBOM_INDEX_FUTURES_ALL":  ("XBOM", False),
-    "XIMC_FUTURES_NEAR":       ("XIMC", True),
-    "XIMC_FUTURES_ALL":        ("XIMC", False),
-}
+# Empty by decision, not by oversight: this deployment seeds three baskets, all
+# XNSE NIFTY F&O (see EQUITY_BASKETS and EQUITY_FUTURES_SOURCES below). The
+# XNSE/XBOM index and XIMC commodity futures that used to be here, and the
+# option chains derived from them, are not built. Their definition files are
+# parked under constituents/baskets/backup/ -- restoring a line here and moving
+# its CSV back is all it takes to bring one back.
+INDEX_FUTURES_SOURCES = {}
 
 # Futures whose roots come from an equity index list.
 #   name -> (equity basket, near_only)
@@ -457,21 +456,11 @@ INDEX_FUTURES_SOURCES = {
 EQUITY_FUTURES_SOURCES = {
     "XNSE_NIFTYFNO_FUTURES_NEAR": ("XNSE_NIFTYFNO_EQUITY", True),
     "XNSE_NIFTYFNO_FUTURES_ALL":  ("XNSE_NIFTYFNO_EQUITY", False),
-    "XNSE_NIFTY50_FUTURES_NEAR":  ("XNSE_NIFTY50_EQUITY",  True),
-    "XNSE_NIFTY50_FUTURES_ALL":   ("XNSE_NIFTY50_EQUITY",  False),
-    "XNSE_NIFTY100_FUTURES_NEAR": ("XNSE_NIFTY100_EQUITY", True),
-    "XNSE_NIFTY100_FUTURES_ALL":  ("XNSE_NIFTY100_EQUITY", False),
-    "XNSE_NIFTY500_FUTURES_NEAR": ("XNSE_NIFTY500_EQUITY", True),
-    "XNSE_NIFTY500_FUTURES_ALL":  ("XNSE_NIFTY500_EQUITY", False),
 }
 
 # Equity index membership lists, resolved by exact script match.
 EQUITY_BASKETS = {
     "XNSE_NIFTYFNO_EQUITY": "XNSE",
-    "XNSE_NIFTY50_EQUITY":  "XNSE",
-    "XNSE_NIFTY100_EQUITY": "XNSE",
-    "XNSE_NIFTY200_EQUITY": "XNSE",
-    "XNSE_NIFTY500_EQUITY": "XNSE",
 }
 
 
@@ -485,27 +474,28 @@ def options_basket_name(futures: str) -> str:
 # depth: option basket -> (futures basket it takes roots from, MIC, near_only).
 # DERIVED, not typed out -- a futures basket added above cannot be left without
 # its options, which is the drift that would otherwise need remembering.
-OPTION_BASKET_SOURCES = {
-    options_basket_name(f): (f, mic, near)
-    for f, (mic, near) in INDEX_FUTURES_SOURCES.items()
-}
-OPTION_BASKET_SOURCES.update({
-    options_basket_name(f): (f, "XNSE", near)
-    for f, (_equity, near) in EQUITY_FUTURES_SOURCES.items()
-})
+# Switched off here rather than by emptying the tables above, because the
+# derivation is the thing being declined: the three seeded baskets are the two
+# futures depths and the membership list behind them, with no option chains. To
+# bring options back for every registered futures basket, restore the two
+# comprehensions below -- the mechanism is intact, just not invoked.
+#
+#   OPTION_BASKET_SOURCES = {options_basket_name(f): (f, mic, near)
+#                            for f, (mic, near) in INDEX_FUTURES_SOURCES.items()}
+#   OPTION_BASKET_SOURCES.update({options_basket_name(f): (f, "XNSE", near)
+#                                 for f, (_e, near) in EQUITY_FUTURES_SOURCES.items()})
+OPTION_BASKET_SOURCES = {}
 
 # The union basket, spelled out because its parts are deliberately asymmetric:
 # NSE and BSE contribute their front month, MCX every live expiry.
-ALL_INDEX_FUTURES_PARTS = [
-    "XNSE_INDEX_FUTURES_NEAR",
-    "XBOM_INDEX_FUTURES_NEAR",
-    "XIMC_FUTURES_ALL",
-]
+# Nothing to union while INDEX_FUTURES_SOURCES is empty, so ALL_INDEX_FUTURES is
+# unregistered in BASKET_NAMES below too.
+ALL_INDEX_FUTURES_PARTS = []
 
 # Derived so a basket can never be defined above and left unregistered here.
 BASKET_NAMES = [
     *EQUITY_BASKETS,
-    "ALL_INDEX_FUTURES",
+    *(["ALL_INDEX_FUTURES"] if ALL_INDEX_FUTURES_PARTS else []),
     *INDEX_FUTURES_SOURCES,
     *EQUITY_FUTURES_SOURCES,
     *OPTION_BASKET_SOURCES,

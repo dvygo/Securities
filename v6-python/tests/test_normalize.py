@@ -3145,17 +3145,32 @@ class TestOptionsForFutures:
             assert equity in paths.BASKET_NAMES, f"{name} sources missing {equity}"
             assert equity.endswith("_EQUITY"), f"{name} must source an equity list"
 
-    def test_index_chain_is_complete(self):
-        """Each NIFTY index list carries a NEAR and an ALL futures basket, and an
-        options basket on each, so adding an index means adding the whole chain."""
-        for idx in ("NIFTYFNO", "NIFTY50", "NIFTY100", "NIFTY500"):
-            eq = f"XNSE_{idx}_EQUITY"
-            assert eq in paths.BASKET_NAMES
-            for depth in ("NEAR", "ALL"):
-                fut = f"XNSE_{idx}_FUTURES_{depth}"
-                opt = f"XNSE_OPTIONS_{idx}_FUTURES_{depth}"
-                assert paths.EQUITY_FUTURES_SOURCES[fut][0] == eq
-                assert paths.OPTION_BASKET_SOURCES[opt][0] == fut
+    def test_only_the_nifty_fno_baskets_are_seeded(self):
+        """This deployment seeds three baskets and nothing else: the XNSE NIFTY
+        F&O membership list and its two futures depths. The NIFTY50/100/200/500
+        lists, the XNSE/XBOM index futures, the XIMC commodity futures and every
+        option chain are deliberately unregistered, their definitions parked in
+        constituents/baskets/backup/. Pinned because the cost of losing one is a
+        silently empty basket downstream, not an error."""
+        assert paths.BASKET_NAMES == [
+            "XNSE_NIFTYFNO_EQUITY",
+            "XNSE_NIFTYFNO_FUTURES_NEAR",
+            "XNSE_NIFTYFNO_FUTURES_ALL",
+        ]
+        assert paths.OPTION_BASKET_SOURCES == {}
+        assert paths.INDEX_FUTURES_SOURCES == {}
+        assert paths.ALL_INDEX_FUTURES_PARTS == []
+        assert "ALL_INDEX_FUTURES" not in paths.BASKET_NAMES
+
+    def test_the_seeded_chain_is_complete(self):
+        """The one index list that IS seeded carries both futures depths, and
+        both take their roots from it."""
+        eq = "XNSE_NIFTYFNO_EQUITY"
+        assert eq in paths.BASKET_NAMES
+        for depth in ("NEAR", "ALL"):
+            fut = f"XNSE_NIFTYFNO_FUTURES_{depth}"
+            assert paths.EQUITY_FUTURES_SOURCES[fut][0] == eq
+            assert fut in paths.BASKET_NAMES
 
     def test_every_futures_basket_is_a_near_all_pair(self):
         """An unsuffixed futures basket is ambiguous about its depth -- a caller
@@ -3174,14 +3189,24 @@ class TestOptionsForFutures:
             for name, row in table.items():
                 assert row[near_at] is name.endswith("_NEAR"), name
 
-    def test_options_are_derived_from_futures(self):
-        """Every futures basket has exactly one option chain at the same depth,
-        and no option basket exists without a futures basket behind it."""
+    def test_no_option_basket_without_its_futures(self):
+        """Options are switched off (see test_only_the_nifty_fno_baskets_are_seeded),
+        so this is vacuous today and deliberately still here: it is what catches a
+        half-restored comprehension in paths.py, where an option basket comes back
+        without the futures basket it takes roots from, or at the wrong depth."""
         futures = set(paths.INDEX_FUTURES_SOURCES) | set(paths.EQUITY_FUTURES_SOURCES)
-        assert {paths.options_basket_name(f) for f in futures} == set(paths.OPTION_BASKET_SOURCES)
         for opt, (src, _mic, near) in paths.OPTION_BASKET_SOURCES.items():
-            assert src in futures
-            assert near is opt.endswith("_NEAR")
+            assert src in futures, f"{opt} sources missing {src}"
+            assert near is opt.endswith("_NEAR"), opt
+            assert paths.options_basket_name(src) == opt
+
+    def test_the_options_name_derivation_still_works(self):
+        """The helper outlives the registry that used it, so restoring options is
+        a paths.py edit and not a rewrite."""
+        assert (paths.options_basket_name("XNSE_NIFTYFNO_FUTURES_NEAR")
+                == "XNSE_OPTIONS_NIFTYFNO_FUTURES_NEAR")
+        assert (paths.options_basket_name("XIMC_FUTURES_ALL")
+                == "XIMC_OPTIONS_FUTURES_ALL")
 
     def test_all_index_futures_parts_are_registered(self):
         for part in paths.ALL_INDEX_FUTURES_PARTS:
