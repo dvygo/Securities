@@ -160,9 +160,9 @@ cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet
 ```
 
-Parquets (AlphaEMS test gateways, 9091 `alphaems-cpp-test` and 9096
-`alphaems-cpp-test2`). They run side by side with 9090 and read the
-repository's own folder, so they need the same files:
+Parquets (AlphaEMS test gateway, 9091 `alphaems-cpp-test`). It runs side by
+side with 9090 and reads the repository's own folder, so it needs the same
+files:
 
 ```bash
 cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/normalized/XNAS-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XNAS-DATABENTO-normalized.parquet.tmp
@@ -189,11 +189,11 @@ cd /home/ubuntu/Production_Shailendra_Sir/dev-setup/infra/alphaems-client
 
 ## 7. Restart
 
-Check who is connected to the EMS first: 9090, and the test gateways on 9091
-and 9096. A restart drops them, so tell them before.
+Check who is connected to the EMS first: 9090, and the test gateway on 9091. A
+restart drops them, so tell them before.
 
 ```bash
-ss -tnp state established '( sport = :9090 or sport = :9091 or sport = :9096 )'
+ss -tnp state established '( sport = :9090 or sport = :9091 )'
 ```
 
 ```bash
@@ -201,7 +201,7 @@ systemctl --user restart mdf-vendorv9xnas mdf-vendorv9xnastrades
 systemctl --user restart mdf-vendorv9xcme mdf-vendorv9xcmetrades
 systemctl --user restart mdf-vendorv9xcbo mdf-vendorv9xcbotrades
 systemctl --user try-restart alphaems-cpp
-systemctl --user try-restart alphaems-cpp-test alphaems-cpp-test2
+systemctl --user try-restart alphaems-cpp-test
 ```
 
 `try-restart` restarts a gateway only if it is running, and leaves a stopped

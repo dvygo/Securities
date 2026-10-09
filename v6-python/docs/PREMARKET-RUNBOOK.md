@@ -75,9 +75,9 @@ $P -m premarketv6 load --date-dir $D \
 ### 4. Swap the maps and the EMS parquets (backup, then atomic move)
 
 Two EMS folders get the parquets. `$E` is 9090's bundle (`alphaems-cpp`). `$A`
-is the AlphaEMS repository's own `__PUBLIC`, which the test gateways read: 9091
-(`alphaems-cpp-test`) and 9096 (`alphaems-cpp-test2`) run side by side with
-9090, and skipping their folder leaves them on yesterday's tokens.
+is the AlphaEMS repository's own `__PUBLIC`, which the test gateway reads: 9091
+(`alphaems-cpp-test`) runs side by side with 9090, and skipping its folder
+leaves it on yesterday's tokens.
 
 ```bash
 T=premarketv6/data/$D/TRANSFORM
@@ -106,8 +106,8 @@ cp -p ${D}DB.db3 infra/.${D}DB.db3.tmp && mv infra/.${D}DB.db3.tmp infra/${D}DB.
 
 ### 6. Restart the lanes and the EMS
 
-Look first. A client connected to 9090, 9091 or 9096 is dropped by the
-restart, so tell its owner.
+Look first. A client connected to 9090 or 9091 is dropped by the restart, so
+tell its owner.
 
 Since 2026-10-05 (cpp-vendor-databento 10.1.0) each venue runs a book lane, a
 trades lane and a publisher, sharing `/dev/shm/snapshot.<MIC>.bin`. A lane on a
@@ -121,11 +121,11 @@ to 6525 (and on to Kafka) and to 6528, 878 of them on tokens that had moved to
 new contracts.
 
 ```bash
-ss -tn state established '( sport = :9090 or sport = :9091 or sport = :9096 )'
+ss -tn state established '( sport = :9090 or sport = :9091 )'
 systemctl --user restart mdf-vendorv9xnas mdf-vendorv9xnastrades
 systemctl --user restart mdf-vendorv9xcme mdf-vendorv9xcmetrades
 systemctl --user restart mdf-vendorv9xcbo mdf-vendorv9xcbotrades
-systemctl --user try-restart alphaems-cpp alphaems-cpp-test alphaems-cpp-test2
+systemctl --user try-restart alphaems-cpp alphaems-cpp-test
 ```
 
 `try-restart` restarts each gateway only if it is running and leaves a stopped
@@ -138,7 +138,7 @@ If a publisher is stopped, start it only after its lanes are up, for example
 ### 7. Check
 
 ```bash
-for u in alphaems-cpp alphaems-cpp-test alphaems-cpp-test2; do echo "== $u"; journalctl --user -u $u --since -2min -o cat | grep -E "instrument master ready|venue login|listening"; done
+for u in alphaems-cpp alphaems-cpp-test; do echo "== $u"; journalctl --user -u $u --since -2min -o cat | grep -E "instrument master ready|venue login|listening"; done
 L=../dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/LOGS
 for f in XNAS.mbp1 XNAS.trades XCME.mbp1 XCME.trades XCBO.cmbp1 XCBO.trades; do grep '"snapshot {snapshot_written}' $L/databento.$f.log | tail -1 | grep -o '"snapshot_[a-z_]*":"[0-9]*"' | paste -sd' '; done
 for v in XNAS XCME XCBO; do grep '"publish {sent}' $L/databento.$v.snapshot.log | tail -1 | grep -oE '"(sent|errors|mirror_sent|mirror_errors|overruns)":"[0-9]*"' | paste -sd' '; done
@@ -146,7 +146,7 @@ for v in XNAS XCME XCBO; do grep '"publish {sent}' $L/databento.$v.snapshot.log 
 
 | Check | Expected |
 |---|---|
-| EMS, each running gateway | `instrument master ready: <sum of the venues loaded> counterTokenV2 entries`, `venue login ok`, listening on 9090, 9091 or 9096 |
+| EMS, each running gateway | `instrument master ready: <sum of the venues loaded> counterTokenV2 entries`, `venue login ok`, listening on 9090 or 9091 |
 | `snapshot_written` | climbing on every lane (XCBO only after the 13:30 UTC open) |
 | `snapshot_untokenized`, XNAS and XCBO | 0 |
 | `snapshot_untokenized`, XCME | small, and only spreads created after the download |
@@ -167,7 +167,7 @@ cp -p $A/__PUBLIC/v6.3.0-backup-before-$D/*.parquet $A/__PUBLIC/v6.3.0/
 systemctl --user restart mdf-vendorv9xnas mdf-vendorv9xnastrades
 systemctl --user restart mdf-vendorv9xcme mdf-vendorv9xcmetrades
 systemctl --user restart mdf-vendorv9xcbo mdf-vendorv9xcbotrades
-systemctl --user try-restart alphaems-cpp alphaems-cpp-test alphaems-cpp-test2
+systemctl --user try-restart alphaems-cpp alphaems-cpp-test
 ```
 
 As in step 6, the publishers stay up and follow their lanes' files.
