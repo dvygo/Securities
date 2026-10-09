@@ -82,6 +82,29 @@ cd /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python
 source .venv/bin/activate
 ```
 
+### First run, or after `premarketv6/data/` was deleted
+
+`normalize` and `load` refuse to run without the numbering state,
+`premarketv6/data/_state/`. Create it once, after step 0 and before step 1:
+
+```bash
+python -m premarketv6 init-state --dry-run --reason "first run on this host"
+python -m premarketv6 init-state --reason "first run on this host"
+python -m premarketv6 check-state
+```
+
+The dry run shows the venues, the newest day it found for each, and the
+counter, and writes nothing.
+
+- If the day folders are still there and only `_state/` is gone, it carries on
+  from each venue's newest day. Tokens stay as they were.
+- If all of `data/` is gone, numbering starts again from the beginning. **Every
+  token changes from the day before.** Run steps 1–8 for every venue that day,
+  before the US open, and tell the traders their token lists have changed.
+
+`init-state` refuses if a state already exists. Never run it on the working
+system.
+
 ## 1. Download
 
 ```bash
