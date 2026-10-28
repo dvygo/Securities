@@ -1,13 +1,13 @@
-# check-state [ALL]  2026-10-09 08:24:20Z
+# check-state [ALL]  2026-10-12 12:21:00Z
 # 11 check(s): 11 pass, 0 fail, 0 warn
-[ALL] PASS state                 *     head readable      counter 53,809, 3 venue(s), last run 20261009T082358555666Z-20261009-live-1768032-2
-[v2] PASS state                 XCBO  snapshot           XCBO/20261008T120132129408Z-20261008-live-1982472-2.alloc.parquet: 50,540 held, 0 free
-[ALL] PASS state                 XCBO  newest on disk     state newest 20261008 (live), newest on disk 20261008
+[ALL] PASS state                 *     head readable      counter 84,487, 3 venue(s), last run 20261012T122056436742Z-20261012-live-490797-2
+[v2] PASS state                 XCBO  snapshot           XCBO/20261012T121326105263Z-20261012-live-466363-2.alloc.parquet: 79,676 held, 1,542 free
+[ALL] PASS state                 XCBO  newest on disk     state newest 20261012 (live), newest on disk 20261012
 [v2] PASS state                 XCME  snapshot           XCME/20261006T122648445003Z-20261006-live-3114850-2.alloc.parquet: 3,250 held, 11 free
 [ALL] PASS state                 XCME  newest on disk     state newest 20261006 (live), newest on disk 20261006
-[v2] PASS state                 XNAS  snapshot           XNAS/20261009T082358555666Z-20261009-live-1768032-2.alloc.parquet: 8 held, 0 free
-[ALL] PASS state                 XNAS  newest on disk     state newest 20261009 (live), newest on disk 20261009
+[v2] PASS state                 XNAS  snapshot           XNAS/20261012T100449277750Z-20261012-live-1775-2.alloc.parquet: 8 held, 0 free
+[ALL] PASS state                 XNAS  newest on disk     state newest 20261012 (live), newest on disk 20261012
 [v2] PASS state                 *     venues disjoint    0 token(s) held by more than one venue
-[v2] PASS state                 *     counter covers     head counter 53,809; highest on disk 53,809 (20261008), highest held 53,809
+[v2] PASS state                 *     counter covers     head counter 84,487; highest on disk 84,487 (20261009), highest held 84,487
 [ALL] PASS state                 *     commit finished    no staged files; last commit's header written
-[ALL] PASS state                 *     runs closed        85 event(s) in the run log
+[ALL] PASS state                 *     runs closed        188 event(s) in the run log
