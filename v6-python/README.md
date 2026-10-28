@@ -48,7 +48,8 @@ feed = fyers   ; Fyers CDN (MCX_COM.csv)       -> XIMC-FYERS.parquet
 
 Under `feed = mcx` the BOD process places one zip a day in
 `data/YYYYMMDD/MCX/`, and `normalize-mcx-contract` reads `MCXScrips.bcp` from
-inside it (`premarketv6/normalize/mcx_contract.py` documents the column layout).
+inside it. The column layout, how it was established, and where MCX's own spec
+lives are in `docs/DESIGN/MCX-CONTRACT-FILE.md`.
 Contracts are named without a prefix: `GOLD26OCT166000CE`, `GOLD27AUGFUT`, and
 `GOLD` for a spot row.
 Expired contracts and calendar spreads are dropped, and a file dated before the

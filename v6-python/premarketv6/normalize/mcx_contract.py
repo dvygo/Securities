@@ -14,7 +14,8 @@ folder is named MCX, not XIMC, because that is what the BOD process creates.
 MCXScrips.bcp is comma-separated with no header row, 118 columns. The column
 meanings below were worked out from the 2026-10-28 drop (file dated 2026-10-15,
 14,195 rows) and checked against the whole file; they are not from a published
-spec. What cost effort to establish:
+spec. MCX's own spec, "MCX Reference Data Files (Masters)", and the full column
+table are in docs/DESIGN/MCX-CONTRACT-FILE.md. What cost effort to establish:
 
 DATES ARE PLAIN UNIX SECONDS. Unlike NSE's files there is no 1980 epoch: every
 dated contract expires on or after the file's own date (column 1). Expiry
