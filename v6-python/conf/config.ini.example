@@ -151,6 +151,11 @@ enabled = 1
 venue_id = 18
 
 [EXCHANGE:XIMC]
+# Which feed serves XIMC (MCX).
+#   fyers = Fyers CDN, MCX_COM.csv -> XIMC-FYERS.parquet
+#   mcx   = MCX's own contract file, the zip the BOD process places in
+#           data/YYYYMMDD/MCX/ -> XIMC-MCX.parquet. counterTokenV2 is MCX's
+#           own token; XIMC is not numbered in data/_state.
 feed = fyers
 enabled = 1
 venue_id = 20

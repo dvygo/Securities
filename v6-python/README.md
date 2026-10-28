@@ -20,7 +20,7 @@ Design decisions and their reasons are in
 | `XCBO` | US options | Databento `OPRA.PILLAR` | 10:00–11:00 | 15:30–16:30 |
 | `XNSE` | NSE India (cash, F&O, currency) | Fyers *or* NSE contract masters — see below | — | — |
 | `XBOM` | BSE India | Fyers | — | — |
-| `XIMC` | MCX India | Fyers | — | — |
+| `XIMC` | MCX India | Fyers *or* MCX's own contract file — see below | — | — |
 
 `XNSE` is the one venue two feeds can serve, and `conf/config.ini` picks which:
 
@@ -37,6 +37,29 @@ the same setting rather than assuming a vendor. Under `feed = fyers` the
 not downloaded. Switching costs no tokens — the carry-forward keys on the script,
 not the source, so a swap keeps every symbol's `counterTokenV2` and draws nothing
 new from the shared sequence.
+
+`XIMC` has the same kind of switch:
+
+```ini
+[EXCHANGE:XIMC]
+feed = fyers   ; Fyers CDN (MCX_COM.csv)       -> XIMC-FYERS.parquet
+# feed = mcx   ; MCX's own contract file       -> XIMC-MCX.parquet
+```
+
+Under `feed = mcx` the BOD process places one zip a day in
+`data/YYYYMMDD/MCX/`, and `normalize-mcx-contract` reads `MCXScrips.bcp` from
+inside it (`premarketv6/normalize/mcx_contract.py` documents the column layout).
+Contracts are named without a prefix: `GOLD26OCT166000CE`, `GOLD27AUGFUT`, and
+`GOLD` for a spot row.
+Expired contracts and calendar spreads are dropped, and a file dated before the
+run day is warned about. Two differences from every other venue:
+
+- **`counterTokenV2` is MCX's own token**, and XIMC is not numbered in
+  `data/_state/` -- no plan, no manifest, nothing for `check-tokens` to check. It
+  can collide with another venue's `counterTokenV2` in a shared `resultset`.
+- **Trading hours and the expiry time come from the commodity group**: metals,
+  energy and indices 09:00-23:30 IST (23:55 while the US is on standard time),
+  agri 09:00-17:00, and COTTON, CPO, KAPAS and MENTHAOIL 09:00-21:00 (21:30).
 
 **The venues do not arrive together.** A full day is not available before roughly
 **16:30 IST**, because OPRA publishes last. The pipeline is built for this: run

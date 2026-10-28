@@ -3305,8 +3305,8 @@ class TestNormalizeWritesFilesOnly:
     def test_normalize_has_no_push_steps(self):
         names = self._names()
         assert not {"plugin", "postgres-plugin", "tokenmap", "clickhouse"} & set(names)
-        assert names[:4] == ["normalize-fyers", "normalize-nse", "normalize-nse-contract",
-                             "normalize-databento"]
+        assert names[:5] == ["normalize-fyers", "normalize-nse", "normalize-nse-contract",
+                             "normalize-mcx-contract", "normalize-databento"]
         assert names[-1] == "csv-export"
 
     @staticmethod

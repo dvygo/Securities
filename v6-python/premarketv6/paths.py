@@ -400,6 +400,8 @@ FEED_OUTPUTS = {
 # normalize/nse_contract.py's OUTPUT, stated here rather than imported to keep
 # paths.py free of pipeline imports. Guarded by a test that the two agree.
 FEED_OUTPUTS["XNSE"]["nse"] = "XNSE-NSE.parquet"
+# normalize/mcx_contract.py's OUTPUT, likewise.
+FEED_OUTPUTS["XIMC"]["mcx"] = "XIMC-MCX.parquet"
 
 # Segment -> owning MIC bundle, derived from FYERS_MIC_BUNDLES so a segment can
 # never be listed in one place and missing from the other.

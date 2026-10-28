@@ -132,6 +132,18 @@ python -m premarketv6 check-state
 
 `check-state` must end with `0 fail`. If not, stop here.
 
+MCX (`XIMC`, with `feed = mcx` in `conf/config.ini`): the BOD process places one
+zip in `premarketv6/data/20261005/MCX/`. Then:
+
+```bash
+python -m premarketv6 normalize --only normalize-mcx-contract --venue XIMC --reason "daily 20261005 XIMC"
+```
+
+It prints how many contracts it kept and dropped, and warns if the file inside
+the zip is dated before today. More than one zip in the folder stops it. XIMC is
+not numbered, so `check-state` does not cover it. Nothing is pushed to Postgres
+for XIMC yet.
+
 ## 3. Push Postgres and build the token maps
 
 ```bash
