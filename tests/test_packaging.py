@@ -107,3 +107,26 @@ def test_lock_pins_every_declared_dependency():
     }
     missing = sorted(_pyproject_names() - pinned)
     assert not missing, f"declared but absent from requirements.lock: {missing}"
+
+
+def _pins(filename):
+    """{normalized name: version} for every `name==version` line, markers dropped."""
+    pins = {}
+    for line in (REPO / filename).read_text().splitlines():
+        line = line.split("#", 1)[0].split(";", 1)[0].strip()
+        if "==" in line:
+            name, version = line.split("==", 1)
+            pins[_normalize(name)] = version.strip()
+    return pins
+
+
+def test_release_lock_agrees_with_requirements_lock():
+    """packaging/requirements.lock is what the release image installs. It pins
+    fewer libraries than requirements.lock (no test tools), never other versions,
+    and never leaves out a runtime dependency."""
+    release, source = _pins("packaging/requirements.lock"), _pins("requirements.lock")
+    differ = {n: (v, source.get(n)) for n, v in release.items() if source.get(n) != v}
+    assert not differ, f"packaging/requirements.lock vs requirements.lock: {differ}"
+    runtime = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["dependencies"]
+    missing = sorted({_requirement_name(d) for d in runtime} - set(release))
+    assert not missing, f"runtime dependencies absent from packaging/requirements.lock: {missing}"

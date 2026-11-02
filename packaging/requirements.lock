@@ -1,0 +1,40 @@
+# The release image's libraries: the runtime closure of pyproject.toml's
+# [project.dependencies], resolved on Ubuntu 24.04's Python 3.12 (the image's),
+# with every version taken from ../requirements.lock. docker/Dockerfile installs
+# exactly these with --no-deps, then `pip check`s them; THIRD_PARTY_NOTICES.txt
+# is written from this list.
+#
+# tests/test_packaging.py fails the build if a pin here differs from
+# requirements.lock, so change a version there first, then here. Regenerate the
+# list itself (after adding or dropping a dependency) by walking Requires-Dist
+# from pyproject.toml's dependencies in an environment built from
+# requirements.lock on Python 3.12.
+
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+attrs==26.1.0
+backports.zstd==1.7.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+clickhouse-connect==1.7.2
+databento==0.84.0
+databento-dbn==0.67.0
+frozenlist==1.8.0
+idna==3.19
+lz4==4.4.5
+multidict==6.7.1
+numpy==2.5.2
+pandas==3.0.5
+propcache==0.5.2
+psycopg==3.3.4
+psycopg-binary==3.3.4
+pyarrow==25.0.1
+python-dateutil==2.9.0.post0
+pytz==2026.3.post1
+requests==2.34.2
+six==1.17.0
+typing_extensions==4.16.0
+urllib3==2.7.0
+yarl==1.24.5
+zstandard==0.25.0

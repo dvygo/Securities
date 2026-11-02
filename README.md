@@ -28,7 +28,9 @@ Design decisions and their reasons are in
 | [`constituents/baskets/`](constituents/baskets/) | Basket definitions |
 | [`tests/`](tests/) | The test suite (`pytest`) |
 | [`docs/`](docs/) | Design records, the premarket runbook, and the check reports in `docs/QAT_GENERATED/` |
-| [`docker/`](docker/) | The databases the load sinks push into: `contract-postgres/` and `contract-clickhouse/` |
+| [`docker/`](docker/) | The release image (`Dockerfile`), and databases the load sinks can push into: `contract-postgres/` and `contract-clickhouse/` |
+| [`dockerup.sh`](dockerup.sh), [`deploy/`](deploy/) | Build that image from this checkout and run the pipeline in it: [SETUP](deploy/SETUP.md), [RUNBOOK](deploy/RUNBOOK.md) |
+| [`packaging/`](packaging/) | Release build and publish scripts (`release.sh`, `publish.sh`) for `deshik-ux/securities` |
 | [`RUNBOOK.md`](RUNBOOK.md) | The daily runbook for the production box |
 
 7.0.0 moved everything that was under `v6-python/` to the repo root, renamed the
@@ -114,15 +116,15 @@ python -m premarket load --sink clickhouse-normal --sink postgres-plugin-xcme \
                            --sink mdf-tokenmap
 ```
 
-**Older days** -- history before the first day, or a day that was missed --
-download with `--dates`, preview, then fill:
+**Older days** -- history before the first day, or a day that was missed. A
+download is today's live replay only, so put each day's definition file (live
+instrument ids) in `data/YYYYMMDD/<MIC>/` by hand, then preview and fill:
 
 ```bash
-python -m premarket xcme --dates=20260924,20260923
 python -m premarket normalize --dates=20260924,20260923 --venue XCME \
-                                --reason "history before go-live" --dry-run
+                              --reason "history before go-live" --dry-run
 python -m premarket normalize --dates=20260924,20260923 --venue XCME \
-                                --reason "history before go-live"
+                              --reason "history before go-live"
 ```
 
 A fill runs newest first, takes a backup first, and ends with a quality gate
