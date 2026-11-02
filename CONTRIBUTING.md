@@ -1,8 +1,9 @@
 # Contributing
 
 Thanks for looking at Securities. This repo hosts one symbology/basket
-pipeline, `v6-python/`. (The earlier `v5-python/` and `v4-golang/`
-implementations were removed in 6.3.0; they remain in git history.)
+pipeline, the `premarket` package at the repo root. (Before 7.0.0 it lived in
+`v6-python/` as `premarketv6`; the earlier `v5-python/` and `v4-golang/`
+implementations were removed in 6.3.0. All remain in git history.)
 
 ## Before you start
 
@@ -14,7 +15,6 @@ implementations were removed in 6.3.0; they remain in git history.)
 ## Setup
 
 ```bash
-cd v6-python
 python -m venv .venv
 .venv/bin/pip install -e .[dev]
 cp conf/config.ini.example conf/config.ini
@@ -37,7 +37,7 @@ docker compose -f docker/contract-postgres/docker-compose.yml up -d
 1. Fork, branch off `main`.
 2. Keep the diff scoped to one thing — a bug fix, one new feature, one
    refactor. Don't bundle unrelated cleanup into the same PR.
-3. Match the existing style: follow `v6-python/premarketv6/`'s existing
+3. Match the existing style: follow `premarket/`'s existing
    module shape.
 4. Add/update tests for the code you touch. A behavior change with no test
    covering it will get asked for one.

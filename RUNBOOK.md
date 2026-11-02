@@ -78,19 +78,19 @@ writing the old one, which nothing reads.
 
 ```bash
 tmux new -s premarket            # or: tmux attach -t premarket
-cd /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python
+cd /home/ubuntu/Production_Shailendra_Sir/Securities
 source .venv/bin/activate
 ```
 
-### First run, or after `premarketv6/data/` was deleted
+### First run, or after `premarket/data/` was deleted
 
 `normalize` and `load` refuse to run without the numbering state,
-`premarketv6/data/_state/`. Create it once, after step 0 and before step 1:
+`premarket/data/_state/`. Create it once, after step 0 and before step 1:
 
 ```bash
-python -m premarketv6 init-state --dry-run --reason "first run on this host"
-python -m premarketv6 init-state --reason "first run on this host"
-python -m premarketv6 check-state
+python -m premarket init-state --dry-run --reason "first run on this host"
+python -m premarket init-state --reason "first run on this host"
+python -m premarket check-state
 ```
 
 The dry run shows the venues, the newest day it found for each, and the
@@ -108,9 +108,9 @@ system.
 ## 1. Download
 
 ```bash
-python -m premarketv6 xnas --symbols-file /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/conf/symbols/XNAS.txt
-python -m premarketv6 xcme --symbols-file /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/conf/symbols/XCME.txt
-python -m premarketv6 xcbo --symbols-file /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/conf/symbols/XCBO.txt
+python -m premarket xnas --symbols-file /home/ubuntu/Production_Shailendra_Sir/Securities/conf/symbols/XNAS.txt
+python -m premarket xcme --symbols-file /home/ubuntu/Production_Shailendra_Sir/Securities/conf/symbols/XCME.txt
+python -m premarket xcbo --symbols-file /home/ubuntu/Production_Shailendra_Sir/Securities/conf/symbols/XCBO.txt
 ```
 
 Each prints a line like `kept 50,244 for 20261005 ... newest 2026-10-05 12:00:01Z`.
@@ -118,25 +118,25 @@ Each prints a line like `kept 50,244 for 20261005 ... newest 2026-10-05 12:00:01
 - "re-send has not happened yet": too early. Wait and run it again.
 - "already has a definition file -- skipping": it was downloaded already. To
   download again, delete the file in
-  `/home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/<XNAS|XCME|XCBO>/`
+  `/home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/<XNAS|XCME|XCBO>/`
   first.
 
 ## 2. Normalize (one at a time, this order)
 
 ```bash
-python -m premarketv6 normalize --venue XNAS --reason "daily 20261005 XNAS"
-python -m premarketv6 normalize --venue XCME --reason "daily 20261005 XCME"
-python -m premarketv6 normalize --venue XCBO --reason "daily 20261005 XCBO"
-python -m premarketv6 check-state
+python -m premarket normalize --venue XNAS --reason "daily 20261005 XNAS"
+python -m premarket normalize --venue XCME --reason "daily 20261005 XCME"
+python -m premarket normalize --venue XCBO --reason "daily 20261005 XCBO"
+python -m premarket check-state
 ```
 
 `check-state` must end with `0 fail`. If not, stop here.
 
 MCX (`XIMC`, with `feed = mcx` in `conf/config.ini`): the BOD process places one
-zip in `premarketv6/data/20261005/MCX/`. Then:
+zip in `premarket/data/20261005/MCX/`. Then:
 
 ```bash
-python -m premarketv6 normalize --only normalize-mcx-contract --venue XIMC --reason "daily 20261005 XIMC"
+python -m premarket normalize --only normalize-mcx-contract --venue XIMC --reason "daily 20261005 XIMC"
 ```
 
 It prints how many contracts it kept and dropped, and warns if the file inside
@@ -147,7 +147,7 @@ for XIMC yet.
 ## 3. Push Postgres and build the token maps
 
 ```bash
-python -m premarketv6 load --date-dir 20261005 --sink postgres-plugin-xnas --sink postgres-plugin-xcme --sink postgres-plugin-xcbo --sink mdf-tokenmap
+python -m premarket load --date-dir 20261005 --sink postgres-plugin-xnas --sink postgres-plugin-xcme --sink postgres-plugin-xcbo --sink mdf-tokenmap
 ```
 
 ## 4. Back up what is in place now
@@ -172,26 +172,26 @@ reads a half-copied file.
 Token maps (MDF):
 
 ```bash
-cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/plugin/tokenmap/tokenmap.XNAS.bin /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XNAS.bin.tmp
+cp /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/TRANSFORM/plugin/tokenmap/tokenmap.XNAS.bin /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XNAS.bin.tmp
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XNAS.bin.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XNAS.bin
 
-cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/plugin/tokenmap/tokenmap.XCME.bin /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XCME.bin.tmp
+cp /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/TRANSFORM/plugin/tokenmap/tokenmap.XCME.bin /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XCME.bin.tmp
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XCME.bin.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XCME.bin
 
-cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/plugin/tokenmap/tokenmap.XCBO.bin /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XCBO.bin.tmp
+cp /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/TRANSFORM/plugin/tokenmap/tokenmap.XCBO.bin /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XCBO.bin.tmp
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XCBO.bin.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/MarketDataFeeds_9.0.2_20260907/cpp-vendor-databento-linux-amd64-ab7be5f-20260907/config/cpp-vendor-databento/tokenmap.XCBO.bin
 ```
 
 Parquets (AlphaEMS, 9090):
 
 ```bash
-cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/normalized/XNAS-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XNAS-DATABENTO-normalized.parquet.tmp
+cp /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/TRANSFORM/normalized/XNAS-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XNAS-DATABENTO-normalized.parquet.tmp
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XNAS-DATABENTO-normalized.parquet.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XNAS-DATABENTO-normalized.parquet
 
-cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/normalized/XCME-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCME-DATABENTO-normalized.parquet.tmp
+cp /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/TRANSFORM/normalized/XCME-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCME-DATABENTO-normalized.parquet.tmp
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCME-DATABENTO-normalized.parquet.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCME-DATABENTO-normalized.parquet
 
-cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/normalized/XCBO-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet.tmp
+cp /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/TRANSFORM/normalized/XCBO-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet.tmp
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS_1.0.0_20260902/alphaems-engine-ubuntu22.04-x86_64-20260902/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet
 ```
 
@@ -200,13 +200,13 @@ side with 9090 and reads the repository's own folder, so it needs the same
 files:
 
 ```bash
-cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/normalized/XNAS-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XNAS-DATABENTO-normalized.parquet.tmp
+cp /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/TRANSFORM/normalized/XNAS-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XNAS-DATABENTO-normalized.parquet.tmp
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XNAS-DATABENTO-normalized.parquet.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XNAS-DATABENTO-normalized.parquet
 
-cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/normalized/XCME-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XCME-DATABENTO-normalized.parquet.tmp
+cp /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/TRANSFORM/normalized/XCME-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XCME-DATABENTO-normalized.parquet.tmp
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XCME-DATABENTO-normalized.parquet.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XCME-DATABENTO-normalized.parquet
 
-cp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/20261005/TRANSFORM/normalized/XCBO-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet.tmp
+cp /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/20261005/TRANSFORM/normalized/XCBO-DATABENTO-normalized.parquet /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet.tmp
 mv /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet.tmp /home/ubuntu/Production_Shailendra_Sir/dev-setup/AlphaEMS/__PUBLIC/v6.3.0/XCBO-DATABENTO-normalized.parquet
 ```
 
@@ -349,13 +349,13 @@ systemctl --user start mdf-vendorv9xnas mdf-vendorv9xcme mdf-vendorv9xcbo
 ## Never
 
 - Never put a historical (batch) Databento file in
-  `/home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/premarketv6/data/<date>/<VENUE>/`.
+  `/home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/<date>/<VENUE>/`.
   The lanes run on live ids; historical ids put prices under the wrong tokens.
 - Never restart only one of a venue's book and trades lanes on a new map. The
   other keeps writing the old snapshot file, which nothing reads.
 - Never restart a lane on a new map without also restarting `alphaems-cpp`. Both
   have to be on the same day's files.
-- Never run `python -m premarketv6 init-state` on the running system. It restarts
+- Never run `python -m premarket init-state` on the running system. It restarts
   the token numbering, and every client's token list changes.
 
 ## Code updates
@@ -367,22 +367,75 @@ git fetch origin
 git pull --ff-only
 ```
 
-If the pull refuses because of files under `v6-python/docs/QAT_GENERATED/`,
+If the pull refuses because of files under `docs/QAT_GENERATED/`,
 those are reports that every normalize and check-state run rewrites. Keep a copy
 outside the repo, drop the local versions, and pull again:
 
 ```bash
 mkdir -p /home/ubuntu/Production_Shailendra_Sir/tmp/qat-before-pull
-cp -rp /home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/docs/QAT_GENERATED /home/ubuntu/Production_Shailendra_Sir/tmp/qat-before-pull/
+cp -rp /home/ubuntu/Production_Shailendra_Sir/Securities/docs/QAT_GENERATED /home/ubuntu/Production_Shailendra_Sir/tmp/qat-before-pull/
 cd /home/ubuntu/Production_Shailendra_Sir/Securities
-git checkout -- v6-python/docs/QAT_GENERATED/
-git clean -f v6-python/docs/QAT_GENERATED/
+git checkout -- docs/QAT_GENERATED/
+git clean -f docs/QAT_GENERATED/
 git pull --ff-only
 ```
 
 Anything else blocking the pull is a real local change. Stop and ask; don't
 discard it.
 
+## Upgrading to 7.0.0
+
+Once per host, coming from 6.x. 7.0.0 moved everything under `v6-python/` to
+the repo root and renamed `premarketv6` to `premarket`. Your config, keys, sinks,
+venv and data tree are gitignored, so the checkout leaves them under
+`v6-python/`. Move them yourself. Do this after the day's run, never between
+steps 1 and 8.
+
+```bash
+cd /home/ubuntu/Production_Shailendra_Sir/Securities
+git status
+git fetch origin
+git checkout releases/7.0.0
+```
+
+If the checkout refuses because of files under `v6-python/docs/QAT_GENERATED/`,
+do what "Code updates" says for those files, under their 6.x path, then check
+out again.
+
+```bash
+mv v6-python/conf/config.ini v6-python/conf/keys.ini conf/
+mv v6-python/conf/sinks/*.ini conf/sinks/
+sed -i 's|^data_dir *= *premarketv6/data|data_dir = premarket/data|' conf/config.ini
+grep '^data_dir' conf/config.ini
+```
+
+It must print `data_dir = premarket/data`.
+
+```bash
+mv v6-python/premarketv6/data premarket/data
+[ -d v6-python/bin ] && mv v6-python/bin bin
+python3 -m venv .venv && .venv/bin/pip install -r requirements.lock
+.venv/bin/python -m premarket check-state
+```
+
+`check-state` must end with `0 fail`. If it says there is no state head, the
+data tree did not move. **Do not
+run `init-state`:** that restarts the numbering. Move the tree first, as the
+error says.
+
+Then remove what is left of 6.x. Only the old `.venv` and empty folders should
+remain:
+
+```bash
+find v6-python -type f -not -path 'v6-python/.venv/*' | head
+rm -rf v6-python
+```
+
+If `find` prints anything, stop and look at it first.
+
+From now on, step 0 runs from the repo root (`cd .../Securities`, not
+`.../Securities/v6-python`), and every command is `python -m premarket`.
+
 More detail on why things are the way they are:
-`/home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/docs/PREMARKET-RUNBOOK.md` and
-`/home/ubuntu/Production_Shailendra_Sir/Securities/v6-python/docs/DESIGN/LIVE-DEFINITIONS.md`.
+`/home/ubuntu/Production_Shailendra_Sir/Securities/docs/PREMARKET-RUNBOOK.md` and
+`/home/ubuntu/Production_Shailendra_Sir/Securities/docs/DESIGN/LIVE-DEFINITIONS.md`.

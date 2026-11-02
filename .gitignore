@@ -15,24 +15,17 @@ secrets/
 # Load sinks (6.3.0): one conf/sinks/<name>.ini per destination, with credentials.
 **/conf/sinks/*.ini
 
-# Legacy v3 scratch paths
-__________v3/20*/
-__________v3/config.ini
-__________v3_EquityAlgoV20260519-0/config.ini
-__________v3_EquityAlgoV20260519-0/*.zip
-__________v3_EquityAlgoV20260519-0/output_matrix/
-__________v3_EquityAlgoV20260519-0/output_matrix_*/
-
 # Generated symbology / download output
 **/raw/
 **/normalized/
-v4/**/20[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
-v4/constituents/contracts/
-v*-python/constituents/contracts/
+/constituents/contracts/
 data/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
-# v6 owns its data tree under the package (config.ini [paths].data_dir).
+# The pipeline owns its data tree under the package (config.ini [paths].data_dir).
 # Whole tree, not just raw/ and normalized/ -- plugin/ lands here too.
-v*-python/premarket*/data/
+/premarket/data/
+# What 6.x leaves behind on an upgraded host -- its data tree, .venv and conf
+# copies -- until they are moved into place (RUNBOOK.md, "Upgrading to 7.0.0").
+/v6-python/
 # Databento batch job downloads: one directory per job id, tens of GB of
 # .dbn.zst. Not matched by the dated data/YYYYMMDD/ rule above.
 data/_batch/
