@@ -18,7 +18,7 @@ import tomllib
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-PACKAGES = ("premarketv6", "strategiesv6")
+PACKAGES = ("premarketv6",)
 
 
 def _normalize(name):

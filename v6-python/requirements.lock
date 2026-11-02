@@ -24,11 +24,9 @@ coverage==7.15.4
 databento==0.84.0
 databento-dbn==0.67.0
 duckdb==1.5.5
-exchange_calendars==4.13.2
 frozenlist==1.8.0
 idna==3.19
 iniconfig==2.3.0
-korean_lunar_calendar==0.4.0
 lz4==4.4.5
 multidict==6.7.1
 numpy==2.5.2
@@ -40,14 +38,12 @@ psycopg==3.3.4
 psycopg-binary==3.3.4
 pyarrow==25.0.1
 Pygments==2.21.0
-pyluach==2.3.0
 pytest==9.1.1
 pytest-cov==7.1.0
 python-dateutil==2.9.0.post0
 pytz==2026.3.post1
 requests==2.34.2
 six==1.17.0
-toolz==1.1.0
 tzdata==2026.3
 urllib3==2.7.0
 yarl==1.24.5
