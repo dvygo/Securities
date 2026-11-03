@@ -2,6 +2,7 @@
 
 #include <duckdb.h>
 
+#include <optional>
 #include <system_error>
 
 #include "premarket/util.hpp"
@@ -52,9 +53,23 @@ struct Db {
     }
 };
 
-Db& reader() {
-    static Db db("", false, {});
-    return db;
+Db* shared_reader = nullptr;
+
+struct Result {
+    duckdb_result r;
+    ~Result() { duckdb_destroy_result(&r); }
+};
+
+struct Chunk {
+    duckdb_data_chunk c;
+    ~Chunk() { duckdb_destroy_data_chunk(&c); }
+};
+
+void query(Db& db, const std::string& sql, Result& result) {
+    if (duckdb_query(db.con, sql.c_str(), &result.r) != DuckDBSuccess) {
+        std::string msg = duckdb_result_error(&result.r) ? duckdb_result_error(&result.r) : "unknown error";
+        throw RuntimeError("duckdb: " + msg);
+    }
 }
 
 std::string type_sql(Type t) { return t == Type::Int32 ? "INTEGER" : "VARCHAR"; }
@@ -70,23 +85,18 @@ std::string copy_sql(const std::string& table, const fs::path& target) {
 
 template <typename Fn>
 void query_chunks(const std::string& sql, Fn&& on_chunk) {
-    auto& db = reader();
-    duckdb_result result;
-    if (duckdb_query(db.con, sql.c_str(), &result) != DuckDBSuccess) {
-        std::string msg = duckdb_result_error(&result) ? duckdb_result_error(&result) : "unknown error";
-        duckdb_destroy_result(&result);
-        throw RuntimeError("duckdb: " + msg);
-    }
-    idx_t ncols = duckdb_column_count(&result);
+    std::optional<Db> own;
+    Db& db = shared_reader ? *shared_reader : own.emplace("", false, fs::path{});
+    Result result{};
+    query(db, sql, result);
+    idx_t ncols = duckdb_column_count(&result.r);
     std::vector<std::string> names;
-    for (idx_t c = 0; c < ncols; ++c) names.emplace_back(duckdb_column_name(&result, c));
+    for (idx_t c = 0; c < ncols; ++c) names.emplace_back(duckdb_column_name(&result.r, c));
     while (true) {
-        duckdb_data_chunk chunk = duckdb_fetch_chunk(result);
-        if (!chunk) break;
-        on_chunk(names, chunk);
-        duckdb_destroy_data_chunk(&chunk);
+        Chunk chunk{duckdb_fetch_chunk(result.r)};
+        if (!chunk.c) break;
+        on_chunk(names, chunk.c);
     }
-    duckdb_destroy_result(&result);
 }
 
 std::string select_list(const fs::path& path, const std::vector<std::string>& columns) {
@@ -97,6 +107,15 @@ std::string select_list(const fs::path& path, const std::vector<std::string>& co
 }
 
 }  // namespace
+
+Reader::Reader() {
+    if (!shared_reader) shared_reader = new Db("", false, fs::path{});
+}
+
+Reader::~Reader() {
+    delete shared_reader;
+    shared_reader = nullptr;
+}
 
 std::string sql_quote(const std::string& s) { return "'" + util::replace_all(s, "'", "''") + "'"; }
 
@@ -290,16 +309,11 @@ void iter_rows(const fs::path& path, std::size_t batch_rows,
 
 std::vector<std::string> column_names(const fs::path& path) {
     std::vector<std::string> out;
-    auto& db = reader();
-    duckdb_result result;
-    std::string sql = "SELECT * FROM read_parquet(" + sql_quote(path.string()) + ") LIMIT 0";
-    if (duckdb_query(db.con, sql.c_str(), &result) != DuckDBSuccess) {
-        std::string msg = duckdb_result_error(&result) ? duckdb_result_error(&result) : "unknown error";
-        duckdb_destroy_result(&result);
-        throw RuntimeError("duckdb: " + msg);
-    }
-    for (idx_t c = 0; c < duckdb_column_count(&result); ++c) out.emplace_back(duckdb_column_name(&result, c));
-    duckdb_destroy_result(&result);
+    std::optional<Db> own;
+    Db& db = shared_reader ? *shared_reader : own.emplace("", false, fs::path{});
+    Result result{};
+    query(db, "SELECT * FROM read_parquet(" + sql_quote(path.string()) + ") LIMIT 0", result);
+    for (idx_t c = 0; c < duckdb_column_count(&result.r); ++c) out.emplace_back(duckdb_column_name(&result.r, c));
     return out;
 }
 

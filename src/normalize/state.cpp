@@ -125,6 +125,7 @@ void atomic_write(const fs::path& path, const std::string& payload) {
 }
 
 fs::path write_head(Head& head) {
+    util::failpoint("write_head");
     auto path = head_path();
     fs::create_directories(path.parent_path());
     head.updated_at = counter_token::utc_now();

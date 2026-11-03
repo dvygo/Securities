@@ -1,8 +1,10 @@
 #include "premarket/runner.hpp"
 
+#include <algorithm>
 #include <map>
 #include <set>
 
+#include "premarket/args.hpp"
 #include "premarket/log.hpp"
 #include "premarket/util.hpp"
 
@@ -16,12 +18,6 @@ bool venue_selected(const Opts& opts, const std::string& mic) {
     return false;
 }
 
-std::pair<std::string, std::string> parse_hist_range(const std::string& range) {
-    if (range.size() != 16 || !util::is_digits(range))
-        throw ValueError("--range must be 16 digits YYYYMMDDYYYYMMDD, got: " + range);
-    return {range.substr(0, 8), range.substr(8, 8)};
-}
-
 std::vector<Step> expand_only(const std::vector<std::string>& only, const std::vector<Step>& all_steps) {
     if (only.empty()) return all_steps;
     for (const auto& o : only)
@@ -29,13 +25,20 @@ std::vector<Step> expand_only(const std::vector<std::string>& only, const std::v
     static const std::map<std::string, std::vector<std::string>> aliases = {
         {"fyers", {"normalize-fyers"}},
         {"databento", {"normalize-databento"}},
-        {"normalize", {"normalize-fyers", "normalize-nse-contract", "normalize-databento", "baskets"}},
+        {"normalize", {"normalize-fyers", "normalize-nse-contract", "normalize-mcx-contract", "normalize-databento", "baskets"}},
     };
+    std::vector<std::string> known;
+    for (const auto& s : all_steps) known.push_back(s.name);
     std::set<std::string> expanded;
     for (const auto& item : only) {
-        auto it = aliases.find(item);
-        if (it != aliases.end()) expanded.insert(it->second.begin(), it->second.end());
-        else expanded.insert(item);
+        if (auto it = aliases.find(item); it != aliases.end()) {
+            expanded.insert(it->second.begin(), it->second.end());
+        } else if (std::find(known.begin(), known.end(), item) != known.end()) {
+            expanded.insert(item);
+        } else {
+            throw args::UsageError{"--only " + item + ": no such step (steps: " + util::join(known, ", ") +
+                                   "; aliases: fyers, databento, normalize, all)"};
+        }
     }
     std::vector<Step> out;
     for (const auto& s : all_steps)

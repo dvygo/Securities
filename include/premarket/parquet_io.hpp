@@ -52,6 +52,14 @@ private:
     void release();
 };
 
+class Reader {
+public:
+    Reader();
+    ~Reader();
+    Reader(const Reader&) = delete;
+    Reader& operator=(const Reader&) = delete;
+};
+
 bool write_rows(const fs::path& path, const std::vector<std::string>& columns, const std::vector<Row>& rows);
 
 void write_table(const fs::path& path, const std::vector<Column>& columns, const std::vector<NullableRow>& rows);

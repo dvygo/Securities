@@ -394,8 +394,10 @@ void VenueNumbering::commit(const Plan& plan, const std::string& started_at,
     head.last_commit = {{"run_id", run_id}, {"date", date_}, {"mic", mic_}, {"staged", staged}, {"header", payload}};
     state::write_head(head);
 
-    for (const auto& item : staged)
+    for (const auto& item : staged) {
+        util::failpoint("promote");
         util::replace_file(root / counter_token::jstr(item["staged"]), root / counter_token::jstr(item["final"]));
+    }
     std::error_code ec;
     if (plan.exceptions.empty() && fs::exists(exceptions_final, ec)) fs::remove(exceptions_final);
     counter_token::write_header(date_, mic_, payload);

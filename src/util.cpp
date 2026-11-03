@@ -587,4 +587,17 @@ std::int64_t utc_epoch_seconds(int year, int month, int day, int hour, int minut
     return std::chrono::duration_cast<std::chrono::seconds>(tp.time_since_epoch()).count();
 }
 
+namespace {
+Failpoint& failpoint_hook() {
+    static Failpoint hook;
+    return hook;
+}
+}  // namespace
+
+void set_failpoint(Failpoint fn) { failpoint_hook() = std::move(fn); }
+
+void failpoint(const std::string& name) {
+    if (const auto& hook = failpoint_hook()) hook(name);
+}
+
 }  // namespace premarket::util

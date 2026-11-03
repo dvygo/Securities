@@ -18,6 +18,7 @@ inline constexpr int LIVE_DEFINITION_REPLAY_CEILING_SEC = 15 * 60;
 inline constexpr std::uint64_t UNDEF_TIMESTAMP = 18446744073709551615ULL;
 
 std::string dataset_key(const std::string& dataset);
+std::string new_listings_utc(std::int64_t now_ns);
 std::vector<std::string> resolve_symbols(const config::Venue& venue, const std::optional<std::string>& symbols_file);
 
 struct Selection {

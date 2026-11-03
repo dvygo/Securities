@@ -4,11 +4,22 @@
 // process's configuration. Every test that touches disk builds one, so no test depends on
 // another's files or on the machine it runs on.
 
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <doctest/doctest.h>
+
+#include <algorithm>
+#include <cstdio>
 #include <filesystem>
+#include <map>
 #include <random>
 #include <string>
+#include <vector>
 
 #include "premarket/config.hpp"
+#include "premarket/jsonio.hpp"
+#include "premarket/paths.hpp"
 #include "premarket/normalize/counter_token.hpp"
 #include "premarket/util.hpp"
 
@@ -64,6 +75,90 @@ struct Tree {
     }
 
     fs::path data() const { return root / "data"; }
+};
+
+inline std::string source_dir() { return PREMARKET_SOURCE_DIR; }
+inline fs::path test_data(const std::string& relative = "") { return fs::path(source_dir()) / "tests" / "data" / relative; }
+
+inline const premarket::jsonio::Json& golden(const std::string& section) {
+    static const premarket::jsonio::Json all = premarket::jsonio::read(test_data("mappers_golden.json"));
+    return all.at(section);
+}
+
+inline void quiet(const std::string&) {}
+
+inline std::map<std::string, std::string> strings(const premarket::jsonio::Json& obj) {
+    std::map<std::string, std::string> out;
+    for (const auto& [k, v] : obj.items()) out[k] = v.get<std::string>();
+    return out;
+}
+
+template <typename Row>
+void same_leading_columns(const Row& row, const premarket::jsonio::Json& expected, std::size_t width) {
+    for (std::size_t i = 0; i < width; ++i) {
+        const auto& name = premarket::paths::NORMALIZED_COLUMNS[i];
+        CAPTURE(name);
+        CHECK(row.at(i) == expected.at(name).template get<std::string>());
+    }
+}
+
+inline std::vector<std::string> files_under(const fs::path& root, const std::vector<std::string>& skip_names = {".lock"}) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    if (!fs::exists(root, ec)) return out;
+    for (const auto& e : fs::recursive_directory_iterator(root))
+        if (e.is_regular_file() &&
+            std::find(skip_names.begin(), skip_names.end(), e.path().filename().string()) == skip_names.end())
+            out.push_back(fs::relative(e.path(), root).string());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+inline std::vector<std::string> files_ending(const fs::path& root, const std::string& suffix) {
+    std::vector<std::string> out;
+    for (const auto& f : files_under(root, {}))
+        if (f.size() >= suffix.size() && f.compare(f.size() - suffix.size(), suffix.size(), suffix) == 0) out.push_back(f);
+    return out;
+}
+
+struct Failpoint {
+    explicit Failpoint(premarket::util::Failpoint fn) { premarket::util::set_failpoint(std::move(fn)); }
+    ~Failpoint() { premarket::util::set_failpoint(nullptr); }
+    Failpoint(const Failpoint&) = delete;
+    Failpoint& operator=(const Failpoint&) = delete;
+};
+
+inline premarket::util::Failpoint crash_at(const std::string& point) {
+    return [point](const std::string& name) {
+        if (name == point) throw premarket::RuntimeError("simulated crash in " + point);
+    };
+}
+
+struct Stderr {
+    fs::path file;
+    int saved = -1;
+    Stderr() {
+        std::random_device rd;
+        file = fs::temp_directory_path() / ("premarket-stderr-" + std::to_string(rd()));
+        std::fflush(stderr);
+        saved = ::dup(2);
+        int fd = ::open(file.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        ::dup2(fd, 2);
+        ::close(fd);
+    }
+    std::string text() {
+        std::fflush(stderr);
+        return premarket::util::read_file(file);
+    }
+    ~Stderr() {
+        std::fflush(stderr);
+        ::dup2(saved, 2);
+        ::close(saved);
+        std::error_code ec;
+        fs::remove(file, ec);
+    }
+    Stderr(const Stderr&) = delete;
+    Stderr& operator=(const Stderr&) = delete;
 };
 
 }  // namespace fixture

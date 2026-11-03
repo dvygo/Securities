@@ -1,0 +1,101 @@
+{
+ "allocation": {
+  "bytes": 1301,
+  "count": 24,
+  "free_count": 0,
+  "highest": 24,
+  "path": "XNSE.alloc.parquet",
+  "retained_count": 0,
+  "rows": 24,
+  "sha256": "7549f923bd2308b88d92524bf5ab74da4dffcaf479156ba3c5157ad8e30d0a1c",
+  "venue_id": 16
+ },
+ "code": {
+  "build_sha": "unknown",
+  "manifest_version": 5
+ },
+ "completed_at": "2026-11-03T06:53:40Z",
+ "date": "20261103",
+ "inputs": [
+  {
+   "bytes": 1337,
+   "path": "XNSE/XNSE-FYERS.csv",
+   "sha256": "41a582fed96226ffdec178a88d829390b3f96afcead4b3f8ae0f0b00aa30dd20"
+  },
+  {
+   "bytes": 1426,
+   "path": "XNSE/XNFO-FYERS.csv",
+   "sha256": "50ca18df8daa1fe3ab61ebb1ac3ca6e137b1ac8185de144493a0e4896bd4f53d"
+  },
+  {
+   "bytes": 1312,
+   "path": "XNSE/XNCD-FYERS.csv",
+   "sha256": "89504ba3a90eb4f5900c0a555a9c224fd55007aa46f5b0d30c1046b654a756b9"
+  }
+ ],
+ "numbering": {
+  "counter_after": 48,
+  "counter_before": 48,
+  "counts": {
+   "arrived": 6,
+   "drawn": 0,
+   "exceptions": 0,
+   "kept": 18,
+   "released": 6,
+   "retained": 0,
+   "scripts": 24
+  },
+  "exceptions": {
+   "count": 0,
+   "path": "",
+   "sha256": ""
+  },
+  "mode": "live",
+  "neighbours": {
+   "earlier": "20261102"
+  },
+  "operator": "unknown@bba1b16ad927",
+  "reason": "",
+  "retired": 0,
+  "run_id": "20261103T065340905479Z-20261103-live-1-2",
+  "session": "20261103T065340863189Z-20261103-live-1-1",
+  "state_after": {
+   "sha256": "c0a72efed4af516e5344d934964ce4bf54ed9d1f09afec19c6f6c447127a5f42",
+   "snapshot": "XNSE/20261103T065340905479Z-20261103-live-1-2.alloc.parquet"
+  },
+  "state_before": {
+   "sha256": "e25d08fd53bc189d2acb6ae24da6dda0755283b887f23b82ff8bef644f55c7f6",
+   "snapshot": "XNSE/20261103T065338682224Z-20261102-live-1-2.alloc.parquet"
+  }
+ },
+ "outputs": [
+  {
+   "bytes": 26812,
+   "path": "TRANSFORM/normalized/XNSE-FYERS.parquet",
+   "rows": 24,
+   "sha256": "48638f6802844cda4f2e11981cbdcddcbc01de07af29b6c0f419ef8c77388a36"
+  }
+ ],
+ "started_at": "2026-11-03T06:53:40Z",
+ "tokens": {
+  "carried_from": "20261102",
+  "day": {
+   "arrived": 6,
+   "drawn": 0,
+   "exceptions": 0,
+   "kept": 18,
+   "released": 6,
+   "retained": 0,
+   "scripts": 24
+  },
+  "run": {
+   "anchored_on": "state",
+   "drawn": 0,
+   "sequence_after": 48,
+   "sequence_before": 48,
+   "sequence_from": "manifest.json"
+  }
+ },
+ "venue": "XNSE",
+ "version": 5
+}

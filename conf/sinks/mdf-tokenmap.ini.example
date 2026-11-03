@@ -1,12 +1,9 @@
-# Copy to mdf-tokenmap.ini (gitignored) and fill in.
-# `premarket load --sink mdf-tokenmap` writes MDF's tokenmap.<VENUE>.bin
-# (DBN instrument_id -> counterTokenV2) for Databento venues.
+# Copy to <sinks_dir>/mdf-tokenmap.ini and fill in. Writes MDF's tokenmap.<MIC>.bin
+# (DBN instrument_id -> counterTokenV2) for the Databento venues.
 [sink]
-type = mdf-tokenmap
-# Comma-separated Databento MICs; empty = every enabled Databento venue.
-markets = XCME,XNAS,XCBO
-# Where to write. Empty = the day's own tree (data/YYYYMMDD/TRANSFORM/plugin/tokenmap/).
-# Set it to MDF's config/cpp-vendor/ to deliver in place (the write is atomic);
-# delivering a day older than the venue's newest live day is refused, because
-# MDF would load the old map as current.
-dir =
+type    = mdf-tokenmap
+markets = XCME,XNAS,XCBO # empty = every enabled Databento venue
+# Absolute path of MDF's config/cpp-vendor/ to deliver in place (the write is atomic);
+# empty = the day's own tree, data/YYYYMMDD/TRANSFORM/plugin/tokenmap/. Delivering a day
+# older than the venue's newest live day is refused: MDF would load the old map as current.
+dir     =

@@ -38,7 +38,7 @@ std::vector<Step> build_normalizer_steps(const std::vector<std::string>& only) {
     return steps;
 }
 
-std::vector<Step> build_download_steps(const std::string& venue, const std::optional<std::string>&) {
+std::vector<Step> build_download_steps(const std::string& venue) {
     if (venue == "india") return {{"download-india", fyers::download}};
     return {{"download-" + venue, [venue](Opts& opts) { databento_src::download(opts, venue); }}};
 }

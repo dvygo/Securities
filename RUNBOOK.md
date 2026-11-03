@@ -78,9 +78,15 @@ writing the old one, which nothing reads.
 
 ```bash
 tmux new -s premarket            # or: tmux attach -t premarket
-cd /home/ubuntu/Production_Shailendra_Sir/Securities
-source .venv/bin/activate
+PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini"
+$PM --version                    # premarket 8.0.0 (...)
 ```
+
+Since 8.0.0, premarket is one binary installed from the release under
+`/opt/securities/` (no venv, no Docker), and its `config.ini` points at the data
+tree this box has always used,
+`/home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/`. Every
+command below takes the config and keys by full path through `$PM`.
 
 ### First run, or after `premarket/data/` was deleted
 
@@ -88,9 +94,9 @@ source .venv/bin/activate
 `premarket/data/_state/`. Create it once, after step 0 and before step 1:
 
 ```bash
-python -m premarket init-state --dry-run --reason "first run on this host"
-python -m premarket init-state --reason "first run on this host"
-python -m premarket check-state
+$PM init-state --dry-run --reason "first run on this host"
+$PM init-state --reason "first run on this host"
+$PM check-state
 ```
 
 The dry run shows the venues, the newest day it found for each, and the
@@ -108,12 +114,14 @@ system.
 ## 1. Download
 
 ```bash
-python -m premarket xnas --symbols-file /home/ubuntu/Production_Shailendra_Sir/Securities/conf/symbols/XNAS.txt
-python -m premarket xcme --symbols-file /home/ubuntu/Production_Shailendra_Sir/Securities/conf/symbols/XCME.txt
-python -m premarket xcbo --symbols-file /home/ubuntu/Production_Shailendra_Sir/Securities/conf/symbols/XCBO.txt
+$PM xnas
+$PM xcme
+$PM xcbo
 ```
 
-Each prints a line like `kept 50,244 for 20261005 ... newest 2026-10-05 12:00:01Z`.
+What each asks for is the venue's `symbols =` file in `config.ini`
+(`/opt/securities/conf/symbols/<MIC>.txt`). Each prints a line like
+`kept 50,244 for 20261005 ... newest 2026-10-05 12:00:01Z`.
 
 - "re-send has not happened yet": too early. Wait and run it again.
 - "already has a definition file -- skipping": it was downloaded already. To
@@ -124,19 +132,19 @@ Each prints a line like `kept 50,244 for 20261005 ... newest 2026-10-05 12:00:01
 ## 2. Normalize (one at a time, this order)
 
 ```bash
-python -m premarket normalize --venue XNAS --reason "daily 20261005 XNAS"
-python -m premarket normalize --venue XCME --reason "daily 20261005 XCME"
-python -m premarket normalize --venue XCBO --reason "daily 20261005 XCBO"
-python -m premarket check-state
+$PM normalize --venue XNAS --reason "daily 20261005 XNAS"
+$PM normalize --venue XCME --reason "daily 20261005 XCME"
+$PM normalize --venue XCBO --reason "daily 20261005 XCBO"
+$PM check-state
 ```
 
 `check-state` must end with `0 fail`. If not, stop here.
 
-MCX (`XIMC`, with `feed = mcx` in `conf/config.ini`): the BOD process places one
+MCX (`XIMC`, with `feed = mcx` in `config.ini`): the BOD process places one
 zip in `premarket/data/20261005/MCX/`. Then:
 
 ```bash
-python -m premarket normalize --only normalize-mcx-contract --venue XIMC --reason "daily 20261005 XIMC"
+$PM normalize --only normalize-mcx-contract --venue XIMC --reason "daily 20261005 XIMC"
 ```
 
 It prints how many contracts it kept and dropped, and warns if the file inside
@@ -147,7 +155,7 @@ for XIMC yet.
 ## 3. Push Postgres and build the token maps
 
 ```bash
-python -m premarket load --date-dir 20261005 --sink postgres-plugin-xnas --sink postgres-plugin-xcme --sink postgres-plugin-xcbo --sink mdf-tokenmap
+$PM load --date-dir 20261005 --sink postgres-plugin-xnas --sink postgres-plugin-xcme --sink postgres-plugin-xcbo --sink mdf-tokenmap
 ```
 
 ## 4. Back up what is in place now
@@ -355,87 +363,86 @@ systemctl --user start mdf-vendorv9xnas mdf-vendorv9xcme mdf-vendorv9xcbo
   other keeps writing the old snapshot file, which nothing reads.
 - Never restart a lane on a new map without also restarting `alphaems-cpp`. Both
   have to be on the same day's files.
-- Never run `python -m premarket init-state` on the running system. It restarts
-  the token numbering, and every client's token list changes.
+- Never run `premarket init-state` on the running system. It restarts the token
+  numbering, and every client's token list changes.
 
-## Code updates
+## Updating premarket
 
-```bash
-cd /home/ubuntu/Production_Shailendra_Sir/Securities
-git status
-git fetch origin
-git pull --ff-only
-```
-
-If the pull refuses because of files under `docs/QAT_GENERATED/`,
-those are reports that every normalize and check-state run rewrites. Keep a copy
-outside the repo, drop the local versions, and pull again:
+A new release is installed beside the old one, and `current` moves only after it
+runs. `conf/` and the data tree are not touched:
 
 ```bash
-mkdir -p /home/ubuntu/Production_Shailendra_Sir/tmp/qat-before-pull
-cp -rp /home/ubuntu/Production_Shailendra_Sir/Securities/docs/QAT_GENERATED /home/ubuntu/Production_Shailendra_Sir/tmp/qat-before-pull/
-cd /home/ubuntu/Production_Shailendra_Sir/Securities
-git checkout -- docs/QAT_GENERATED/
-git clean -f docs/QAT_GENERATED/
-git pull --ff-only
+cd /home/ubuntu/Production_Shailendra_Sir/tmp
+gh release download vX.Y.Z -R deshik-ux/securities -p 'securities_X.Y.Z_ubuntu22.04_amd64.tar.gz' -p SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf securities_X.Y.Z_ubuntu22.04_amd64.tar.gz
+sudo securities_X.Y.Z_ubuntu22.04_amd64/install.sh --prefix /opt/securities --owner ubuntu
+$PM --version
 ```
 
-Anything else blocking the pull is a real local change. Stop and ask; don't
-discard it.
-
-## Upgrading to 7.0.0
-
-Once per host, coming from 6.x. 7.0.0 moved everything under `v6-python/` to
-the repo root and renamed `premarketv6` to `premarket`. Your config, keys, sinks,
-venv and data tree are gitignored, so the checkout leaves them under
-`v6-python/`. Move them yourself. Do this after the day's run, never between
-steps 1 and 8.
+Do it after the day's run, never between steps 1 and 8. To go back, point
+`current` at the previous version:
 
 ```bash
-cd /home/ubuntu/Production_Shailendra_Sir/Securities
-git status
-git fetch origin
-git checkout releases/7.0.0
+sudo ln -sfn 8.0.0 /opt/securities/.current.new && sudo mv -T /opt/securities/.current.new /opt/securities/current
 ```
 
-If the checkout refuses because of files under `v6-python/docs/QAT_GENERATED/`,
-do what "Code updates" says for those files, under their 6.x path, then check
-out again.
+## Upgrading to 8.0.0
 
-```bash
-mv v6-python/conf/config.ini v6-python/conf/keys.ini conf/
-mv v6-python/conf/sinks/*.ini conf/sinks/
-sed -i 's|^data_dir *= *premarketv6/data|data_dir = premarket/data|' conf/config.ini
-grep '^data_dir' conf/config.ini
-```
+Once, coming from 7.x, after the day's run and never between steps 1 and 8.
+8.0.0 keeps this box's tokens: it continues from the same data tree, after a
+one-time `migrate-state`. The general steps, and what every 7.x setting became,
+are in `deploy/SETUP.md`, "Upgrade from 7.x". On this box:
 
-It must print `data_dir = premarket/data`.
+1. Install 8.0.0 as in "Updating premarket" (`X.Y.Z` = `8.0.0`).
 
-```bash
-mv v6-python/premarketv6/data premarket/data
-[ -d v6-python/bin ] && mv v6-python/bin bin
-python3 -m venv .venv && .venv/bin/pip install -r requirements.lock
-.venv/bin/python -m premarket check-state
-```
+2. In `/opt/securities/conf/config.ini`, point `[paths]` at what 7.x used:
 
-`check-state` must end with `0 fail`. If it says there is no state head, the
-data tree did not move. **Do not
-run `init-state`:** that restarts the numbering. Move the tree first, as the
-error says.
+   ```ini
+   [paths]
+   data_dir      = /home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data
+   contracts_dir = /home/ubuntu/Production_Shailendra_Sir/Securities/constituents/contracts
+   logs_dir      = /home/ubuntu/Production_Shailendra_Sir/Securities/bin/LOGS
+   reports_dir   = /home/ubuntu/Production_Shailendra_Sir/Securities/docs/QAT_GENERATED
+   baskets_dir   = /opt/securities/current/share/baskets
+   sinks_dir     = /opt/securities/conf/sinks
+   ```
 
-Then remove what is left of 6.x. Only the old `.venv` and empty folders should
-remain:
+   and copy each `[EXCHANGE:<MIC>]` of the old `conf/config.ini` into its
+   `[venue.<MIC>]`: the same `feed`, `enabled` and `venue_id`.
 
-```bash
-find v6-python -type f -not -path 'v6-python/.venv/*' | head
-rm -rf v6-python
-```
+3. Keys and sinks:
 
-If `find` prints anything, stop and look at it first.
+   ```bash
+   O=/home/ubuntu/Production_Shailendra_Sir/Securities/conf
+   { echo '[databento]'; sed -n '/^\[production\]/,/^\[/s/^key_\(X[A-Z]*\) *= */\1 = /p' $O/keys.ini; } > /opt/securities/conf/keys.ini
+   grep -c '^X... = db-' /opt/securities/conf/keys.ini        # must print 3; the keys are not shown
+   cp $O/sinks/postgres-plugin-*.ini $O/sinks/mdf-tokenmap.ini /opt/securities/conf/sinks/
+   chmod 600 /opt/securities/conf/keys.ini /opt/securities/conf/sinks/*.ini
+   ```
 
-From now on, step 0 runs from the repo root (`cd .../Securities`, not
-`.../Securities/v6-python`), and every command is `python -m premarket`.
+   This turns 7.x's `[production]` `key_XNAS=db-...` into 8.0.0's
+   `[databento]` `XNAS = db-...`. In each copied sink, delete a `tcp_port` line
+   if there is one and write `secure` as `0` or `1`.
+
+4. Migrate and check. It takes a backup first and verifies that no token moved:
+
+   ```bash
+   $PM migrate-state --dry-run --reason "upgrade to 8.0.0"
+   $PM migrate-state --reason "upgrade to 8.0.0"
+   $PM check-state
+   $PM load --dry-run
+   ```
+
+   `check-state` must end with `0 fail`, and `load --dry-run` must list every
+   sink without an `error:` line. If `migrate-state` refuses, stop: nothing has
+   been changed. **Do not run `init-state`:** that restarts the numbering.
+
+From now on, step 0 defines `$PM` and every command is `$PM ...`. The old
+checkout under `/home/ubuntu/Production_Shailendra_Sir/Securities` is no
+longer run, but its `premarket/data/`, `constituents/contracts/`, `bin/LOGS/` and
+`docs/QAT_GENERATED/` are where 8.0.0 now writes: keep them.
 
 More detail on why things are the way they are:
-`/home/ubuntu/Production_Shailendra_Sir/Securities/docs/PREMARKET-RUNBOOK.md` and
-`/home/ubuntu/Production_Shailendra_Sir/Securities/docs/DESIGN/LIVE-DEFINITIONS.md`.
+`/home/ubuntu/Production_Shailendra_Sir/Securities/docs/DESIGN/LIVE-DEFINITIONS.md`
+and the README of the release.

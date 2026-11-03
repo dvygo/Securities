@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -89,6 +90,10 @@ std::int64_t day_start_ns(std::string_view yyyymmdd);
 int utc_year_of_ns(std::int64_t ns);
 std::string utc_format_ns(std::int64_t ns, const char* format);
 std::int64_t utc_epoch_seconds(int year, int month, int day, int hour = 0, int minute = 0, int second = 0);
+
+using Failpoint = std::function<void(const std::string& name)>;
+void set_failpoint(Failpoint fn);
+void failpoint(const std::string& name);
 
 }  // namespace util
 }  // namespace premarket

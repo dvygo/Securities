@@ -1,143 +1,171 @@
 # Setup
 
-One time per host. Builds the image from this checkout and sets up its config and numbering state. Daily commands are in [RUNBOOK.md](RUNBOOK.md).
+One time per host: install a release, give it its keys and sinks, and create (or migrate) the numbering state. Daily commands are in [RUNBOOK.md](RUNBOOK.md).
 
 ```mermaid
 flowchart TB
-    A["Install Docker"] --> B["git clone, checkout releases/7.0.0"]
-    B --> C["./dockerup.sh up"]
-    C --> D["Edit conf/keys.ini"]
-    D --> E["Copy the sinks you deliver to into conf/sinks/"]
-    E --> F["Create or move the numbering state"]
-    F --> G["./dockerup.sh check"]
+    A["Download the release and SHA256SUMS"] --> B["sha256sum -c, tar -xzf"]
+    B --> C["install.sh"]
+    C --> D["Fill conf/keys.ini"]
+    D --> E["Create the sinks you deliver to"]
+    E --> F{"This host ran 7.x?"}
+    F -->|no| G["init-state"]
+    F -->|yes| H["migrate-state (Upgrade from 7.x)"]
+    G --> I["check-state, load --dry-run"]
+    H --> I
 ```
 
-## 1. Install Docker
+## 1. The host
+
+Ubuntu 22.04 on x86_64, with `tzdata` (in every stock install). Nothing else: premarket is one binary and the DuckDB library beside it. No Docker, no Python. It needs outbound HTTPS to `public.fyers.in` (India) and Databento's live gateways, TCP 13000 (US).
+
+Run it as an ordinary user. Only `install.sh` may need `sudo`, to create `/opt/securities`.
+
+## 2. Install
+
+Download `securities_8.0.0_ubuntu22.04_amd64.tar.gz` and `SHA256SUMS` from the release page: [GitHub](https://github.com/deshik-ux/securities/releases/tag/v8.0.0), or the LAN GitLab, http://192.168.1.15:8929/deshik-ux/securities/-/releases/v8.0.0. With `gh`:
 
 ```sh
-sudo apt-get install -y docker.io docker-compose-v2
-sudo usermod -aG docker $USER      # then log out and back in
-docker compose version
+gh release download v8.0.0 -R deshik-ux/securities -p 'securities_8.0.0_ubuntu22.04_amd64.tar.gz' -p SHA256SUMS
 ```
 
-## 2. Get the code
+Then:
 
 ```sh
-git clone git@github.com:dvygo/Securities.git
-cd Securities
-git checkout releases/7.0.0
+sha256sum -c SHA256SUMS --ignore-missing        # must say OK
+tar -xzf securities_8.0.0_ubuntu22.04_amd64.tar.gz
+sudo securities_8.0.0_ubuntu22.04_amd64/install.sh --prefix /opt/securities --owner "$USER"
 ```
 
-## 3. Build
+`install.sh` copies the release to `/opt/securities/8.0.0/`, points `/opt/securities/current` at it, and creates what is missing in `/opt/securities/conf/` and `/opt/securities/state/`. It never overwrites a file you have edited. Every command takes the config and keys by full path:
 
 ```sh
-./dockerup.sh up
+PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini"
+$PM --version
 ```
 
-This builds `securities:latest` from `docker/Dockerfile` (unit tests, then the Nuitka compile; a few minutes), and creates `conf/config.ini` and `conf/keys.ini` from the `.example` files. It starts no database.
+## 3. Databento keys
 
-## 4. Databento keys
-
-```mermaid
-flowchart LR
-    Q{"Downloading XNAS, XCME or XCBO?"} -->|yes| K["Fill conf/keys.ini"]
-    Q -->|no| N["Leave it empty: India needs no key"]
-```
-
-`conf/keys.ini`:
+`/opt/securities/conf/keys.ini`, mode 0600 (install.sh sets it):
 
 ```ini
-[production]
-key_XNAS=db-...
-key_XCBO=db-...
-key_XCME=db-...
+[databento]
+XNAS = db-...
+XCBO = db-...
+XCME = db-...
 ```
 
-What gets downloaded is `conf/symbols/<MIC>.txt`: 36 XNAS stocks; SPY, SPX and SPXW options on XCBO; the XCME roots. Delete a file to take every symbol of that venue.
+Only the downloads read it, and only the venue they download. India needs no key: leave the file as it is if you only run `india`.
+
+## 4. What to download
+
+`/opt/securities/conf/symbols/<MIC>.txt` is what each US download asks Databento for: 36 XNAS stocks; SPY, SPX and SPXW options on XCBO; the XCME roots. One symbol per line. To take every instrument of a venue, empty its `symbols =` in `config.ini`.
+
+`config.ini` needs no other change on a new host: its venue ids are the ones every existing host numbers under. Every key it accepts is in the file, with what it means.
 
 ## 5. Sinks
 
-`./dockerup.sh push` delivers through every `conf/sinks/<name>.ini`. Copy the ones you need and edit them:
+`load` delivers through every `<name>.ini` in `/opt/securities/conf/sinks/`. Copy the templates you need and fill them in:
 
 ```sh
-cp conf/sinks/postgres-plugin-xnas.ini.example conf/sinks/postgres-plugin-xnas.ini
-cp conf/sinks/postgres-plugin-xcme.ini.example conf/sinks/postgres-plugin-xcme.ini
-cp conf/sinks/postgres-plugin-xcbo.ini.example conf/sinks/postgres-plugin-xcbo.ini
-cp conf/sinks/mdf-tokenmap.ini.example conf/sinks/mdf-tokenmap.ini
+cd /opt/securities/conf/sinks
+cp postgres-plugin-xnas.ini.example postgres-plugin-xnas.ini
+cp postgres-plugin-xcme.ini.example postgres-plugin-xcme.ini
+cp postgres-plugin-xcbo.ini.example postgres-plugin-xcbo.ini
+cp mdf-tokenmap.ini.example mdf-tokenmap.ini
+chmod 600 *.ini
 ```
 
 | Sink | Delivers | Set |
 |------|----------|-----|
 | `postgres-plugin-<mic>` | that market's rows to the legacy symbol master, upserted on `(token, trade_date)` | `database_url`, `schema`, `table`; `venue_id` must equal `config.ini`'s |
-| `mdf-tokenmap` | `tokenmap.<MIC>.bin` for MDF | `dir`: empty = the day's tree; MDF's `config/cpp-vendor-databento/` to deliver in place |
-| `clickhouse-normal` | every venue, every column: `contracts_YYYYMMDD`, `baskets_YYYYMMDD`, `contracts`, `baskets` | `host`, `port`, `database`, `username`, `password` |
+| `mdf-tokenmap` | `tokenmap.<MIC>.bin` for MDF | `dir`: empty = the day's tree; the absolute path of MDF's `config/cpp-vendor-databento/` to deliver in place |
+| `clickhouse-normal` | every venue, every column: `contracts_YYYYMMDD`, `baskets_YYYYMMDD`, `contracts`, `baskets` | `host`, `port` (HTTP), `database`, `username`, `password`, `secure` (0/1) |
 
-```mermaid
-flowchart LR
-    Q{"clickhouse-normal, and no ClickHouse yet?"} -->|yes| C["./dockerup.sh db up clickhouse (port 8744, matches the template)"]
-    Q -->|no| N["Point the sink at yours"]
-```
+A key a sink type does not know is an error, so a typo is caught on the first `load --dry-run`.
 
 ## 6. Numbering state
 
-`normalize` and `push` refuse to run without it: `premarket/data/_state/`.
+`normalize` and `load` refuse to run without it: `/opt/securities/state/data/_state/`.
 
-```mermaid
-flowchart LR
-    Q{"This host ran 6.x?"} -->|yes| M["Move its data tree: ../RUNBOOK.md, Upgrading to 7.0.0"]
-    Q -->|no| I["init-state below"]
-```
+- **A new host** creates it once:
 
-```sh
-./dockerup.sh premarket init-state --dry-run --reason "first run on this host"
-./dockerup.sh premarket init-state --reason "first run on this host"
-```
+  ```sh
+  $PM init-state --dry-run --reason "first run on this host"
+  $PM init-state --reason "first run on this host"
+  ```
 
-Never run `init-state` on a host that already numbers: it restarts the tokens. It refuses if a state exists, and refuses if a 6.x state is still under `v6-python/`.
+- **A host that ran 7.x** keeps its state and migrates it: [Upgrade from 7.x](#upgrade-from-7x).
+
+Never run `init-state` on a host that already numbers: it restarts the tokens. It refuses if a state exists.
 
 ## 7. Check
 
 ```sh
-./dockerup.sh check
+$PM check-state          # must end with 0 fail
+$PM load --dry-run       # reads every sink, connects to nothing
 ```
 
-```text
-config:    conf/config.ini
-config:    conf/keys.ini
-databento: [production] keys for: XNAS XCBO XCME
-symbols:   XCBO.txt XCME.txt XNAS.txt
-sink:      mdf-tokenmap (mdf-tokenmap): ok (the day tree)
-sink:      postgres-plugin-xcbo (postgres-plugin): ok (127.0.0.1:6006/plugindb?sslmode=disable)
-...
-7 check(s): 7 pass, 0 fail, 0 warn
-```
+## Upgrade from 7.x
 
-```mermaid
-flowchart LR
-    Q{"Every sink ok and 0 fail?"} -->|yes| R["Done. Go to RUNBOOK.md"]
-    Q -->|no| S{"Which line?"}
-    S -->|"sink FAILED"| U["Fix conf/sinks/NAME.ini, or start its DB"]
-    S -->|"state: none yet"| V["Step 6"]
-```
+Once per host, after the day's run and never between its steps. 8.0.0 continues the same tokens from the same data tree: nothing is renumbered.
 
-## After a code change
+1. **Install 8.0.0** (step 2). The 7.x install stays where it is until you remove it.
+2. **config.ini.** Start from the one install.sh created and carry over from the 7.x file:
+   - `[paths]`: point at the 7.x tree, by absolute path. A `dockerup.sh` host kept it in `state/` beside `dockerup.sh` (`SECURITIES_STATE_DIR`): `data_dir = <state>/data`, `contracts_dir = <state>/contracts`, `logs_dir = <state>/logs`, `reports_dir = <state>/qat`.
+   - each `[EXCHANGE:<MIC>]` becomes `[venue.<MIC>]` with the same `feed`, `enabled` and **`venue_id`** (a different id is refused), and for Databento venues `dataset` and `stype_in`. `symbols` is new: the absolute path of the list that 7.x took as `--symbols-file`. `schema`, `stype_in_all_symbols`, `all_symbols_default` and `hist_*` are gone; leave them out.
+   - `[baskets] enabled` and `[fyers]` (`base_url`, `user_agent`, `timeout_sec`, `retries`, `retry_delay_sec`) carry over as they are. `[databento]` (`live_*`, `max_maps`) and `[postgres]` are gone, and so are `bin_dir` and the relative paths of 7.x's `[paths]`.
+3. **keys.ini.** `[production]` `key_XNAS = db-...` becomes `[databento]` `XNAS = db-...`, and so on. `[development]` and `DATABENTO_ENV` are gone: a host has one key per venue. To convert without showing the keys (`OLD` = the 7.x `conf/`):
+
+   ```sh
+   { echo '[databento]'; sed -n '/^\[production\]/,/^\[/s/^key_\(X[A-Z]*\) *= */\1 = /p' "$OLD/keys.ini"; } > /opt/securities/conf/keys.ini
+   chmod 600 /opt/securities/conf/keys.ini
+   grep -c '^X... = db-' /opt/securities/conf/keys.ini     # 3 when all three venues have a key
+   ```
+4. **Sinks.** Copy each 7.x `<name>.ini` into `/opt/securities/conf/sinks/`. Remove `tcp_port`; write `secure` as `0` or `1`. Anything that came from a `PREMARKET_SINK_<NAME>_<KEY>` variable goes into the file: 8.0.0 reads no environment.
+5. **Migrate the state.** It takes a backup first, rewrites the head, every venue header and every `_sequence.json` as v8, and verifies that no token, free list or snapshot changed:
+
+   ```sh
+   $PM migrate-state --dry-run --reason "upgrade to 8.0.0"
+   $PM migrate-state --reason "upgrade to 8.0.0"
+   $PM check-state                                   # must end with 0 fail
+   ```
+
+6. **Scheduling.** Replace the 7.x cron lines with 8.0.0's ([RUNBOOK.md](RUNBOOK.md#scheduling)). From the next run on, `normalize` carries every venue on from the state as 7.x left it.
+
+## Roll back
+
+**To the previous 8.x release:**
 
 ```sh
-git pull --ff-only
-./dockerup.sh up      # rebuilds the image; conf/ and premarket/data/ stay
+sudo ln -sfn 8.0.0 /opt/securities/.current.new && sudo mv -T /opt/securities/.current.new /opt/securities/current
 ```
+
+**To 7.x**, only before 8.0.0 has numbered a day: restore the backup `migrate-state` took, from the data directory, and point the 7.x cron lines back:
+
+```sh
+cd /opt/securities/state/data           # your data_dir
+ls -t _state/backups/ | head -3         # the *-migrate-*.tar.gz one
+tar -xzf _state/backups/<run_id>.tar.gz
+```
+
+Once 8.0.0 has numbered a day, its headers are v8 and 7.x refuses them. Fix forward instead.
 
 ## Where things are
 
 | Path | What |
 |------|------|
-| `conf/` | `config.ini`, `keys.ini`, `sinks/*.ini`, `symbols/*.txt` (read-only in the container) |
-| `premarket/data/YYYYMMDD/` | raw downloads, `TRANSFORM/normalized/`, `TRANSFORM/plugin/`, `TRANSFORM/manifests/` |
-| `premarket/data/_state/` | the numbering state: back it up, never delete it |
-| `constituents/contracts/YYYYMMDD/` | basket contracts |
-| `bin/LOGS/` | one log per run |
-| `docs/QAT_GENERATED/` | check-tokens, check-lineage, check-state reports |
-| `docker/Dockerfile` | the image |
-| `docker/contract-clickhouse/`, `docker/contract-postgres/` | bundled databases, started only on request |
+| `/opt/securities/current/` | the release in use: `bin/premarket`, `lib/libduckdb.so`, `share/` (templates, baskets), `THIRD_PARTY_NOTICES.txt` |
+| `/opt/securities/conf/config.ini` | venues, paths, Fyers settings |
+| `/opt/securities/conf/keys.ini` | Databento keys (0600) |
+| `/opt/securities/conf/sinks/<name>.ini` | one per delivery; `load` uses every one present |
+| `/opt/securities/conf/symbols/<MIC>.txt` | what each US download asks for |
+| `/opt/securities/state/data/YYYYMMDD/` | downloads, `TRANSFORM/normalized/`, `TRANSFORM/plugin/`, `TRANSFORM/manifests/` |
+| `/opt/securities/state/data/_state/` | the numbering state: back it up, never delete it |
+| `/opt/securities/state/contracts/YYYYMMDD/` | basket contracts |
+| `/opt/securities/state/logs/` | one log per run |
+| `/opt/securities/state/reports/` | the latest check-tokens, check-lineage and check-state reports |
 
-Without Docker (venv): the [README](../README.md#quick-start).
+## Security
+
+`keys.ini` and the sink files hold credentials: keep them 0600, owned by the account that runs premarket, and never copy them into a repository. premarket reads them from the paths you give it and from nowhere else; it reads no environment variable.

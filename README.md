@@ -5,8 +5,8 @@ contract master, normalizes every venue into a common schema, assigns a stable
 cross-venue instrument token, and pushes the day to its consumers.
 
 US venues come from Databento (`GLBX.MDP3`, `EQUS.MINI`, `OPRA.PILLAR`). India
-comes from NSE's own contract masters for `XNSE`, from MCX's contract file or
-Fyers for `XIMC`, and from Fyers for `XBOM`.
+comes from NSE's own contract masters or Fyers for `XNSE`, from MCX's contract
+file or Fyers for `XIMC`, and from Fyers for `XBOM`.
 
 The pipeline, `premarket`, runs in three stages:
 
@@ -16,6 +16,12 @@ The pipeline, `premarket`, runs in three stages:
 3. **load** the day into its consumers -- ClickHouse, the Postgres symbol
    master, MDF's token map -- through named sinks.
 
+Since 8.0.0 `premarket` is a single C++20 binary for Ubuntu 22.04. Docker is
+used to build it and never to run it: a host needs only the release tarball and
+`tzdata`. 8.0.0 reads the numbering state and the manifests of 7.x after a
+one-time `premarket migrate-state`, and numbers every venue exactly as 7.0.0
+did (see [RUNBOOK.md, "Upgrading to 8.0.0"](RUNBOOK.md#upgrading-to-800)).
+
 Design decisions and their reasons are in
 [`docs/DESIGN/OLD-DATE-PROCESSING.md`](docs/DESIGN/OLD-DATE-PROCESSING.md).
 
@@ -23,40 +29,80 @@ Design decisions and their reasons are in
 
 | Path | What it is |
 |------|------------|
-| [`premarket/`](premarket/) | The pipeline. CLI: `python -m premarket {india,xcme,xcbo,xnas,normalize,load,init-state,check-tokens,check-lineage,check-state}` |
+| [`apps/`](apps/), [`include/premarket/`](include/premarket/), [`src/`](src/) | The pipeline: `main()`, the headers, the implementation |
+| [`tests/`](tests/) | The test suite (doctest). `tests/test_<module>.hpp` documents each module; `tests/data/` holds what 7.0.0 produced, which 8.0.0 must reproduce |
 | [`conf/`](conf/) | `config.ini`, `keys.ini` and `sinks/<name>.ini` templates (`*.example`), and the per-venue symbol lists in `symbols/` |
 | [`constituents/baskets/`](constituents/baskets/) | Basket definitions |
-| [`tests/`](tests/) | The test suite (`pytest`) |
-| [`docs/`](docs/) | Design records, the premarket runbook, and the check reports in `docs/QAT_GENERATED/` |
-| [`docker/`](docker/) | The release image (`Dockerfile`), and databases the load sinks can push into: `contract-postgres/` and `contract-clickhouse/` |
-| [`dockerup.sh`](dockerup.sh), [`deploy/`](deploy/) | Build that image from this checkout and run the pipeline in it: [SETUP](deploy/SETUP.md), [RUNBOOK](deploy/RUNBOOK.md) |
-| [`packaging/`](packaging/) | Release build and publish scripts (`release.sh`, `publish.sh`) for `deshik-ux/securities` |
+| [`docs/`](docs/) | Design records and the plugin table's column types |
+| [`docker/build.Dockerfile`](docker/build.Dockerfile) | The build image, `securities-build:22.04`: clang 18 + libc++ and every library at a pinned version |
+| [`docker/contract-*`](docker/) | Throwaway ClickHouse and Postgres the load sinks can push into |
+| [`build.sh`](build.sh) | Build and test inside the build image |
+| [`packaging/`](packaging/) | The release build (`release.sh`) and publish (`publish.sh`) for `deshik-ux/securities` |
+| [`deploy/`](deploy/) | Installing and running a release on a host: [SETUP](deploy/SETUP.md), [RUNBOOK](deploy/RUNBOOK.md) |
 | [`RUNBOOK.md`](RUNBOOK.md) | The daily runbook for the production box |
 
-7.0.0 moved everything that was under `v6-python/` to the repo root, renamed the
-package from `premarketv6` to `premarket`, and removed `strategiesv6`. Hosts
-upgrading from 6.x move their config and data tree once: see
-[RUNBOOK.md, "Upgrading to 7.0.0"](RUNBOOK.md#upgrading-to-700). The earlier
-implementations (`v5-python/`, `v4-golang/`, the v3 scripts) were removed in
-6.3.0. All of them remain in git history.
+## Building
+
+```bash
+./build.sh             # configure, build, run the tests -> build/premarket
+./build.sh sanitize    # the tests again under AddressSanitizer + UBSan
+./build.sh shell       # a shell in the build image, repo at /src
+packaging/release.sh   # the release tarball, tested on a bare ubuntu:22.04 -> dist/<version>/
+```
+
+The first run builds `securities-build:22.04` from `docker/build.Dockerfile`
+(Ubuntu 22.04, clang 18, libc++, CMake 3.30.5, databento-cpp 0.69.0, DuckDB
+1.5.5, cpp-httplib 0.62.0, nlohmann/json 3.12.0, HH date 3.0.5, doctest 2.4.12,
+and libpq from PostgreSQL 18.6, linked statically). The binary links libc++
+statically and loads `libduckdb.so` from `../lib` beside it; everything else it
+needs (glibc, OpenSSL 3, zlib, zstd) is in a stock Ubuntu 22.04.
+
+## Running
+
+```
+premarket --config=/abs/config.ini [--keys=/abs/keys.ini] <command> [options]
+```
+
+| Command | What it does |
+|---|---|
+| `india` | download Fyers' Indian symbol masters (XNSE, XBOM, XIMC) |
+| `xnas`, `xcme`, `xcbo` | download the venue's definitions: a live replay of today's session |
+| `normalize` | normalize a day and number it (`counterTokenV2`); `--dates` fills older days |
+| `load` | deliver a normalized day through named sinks |
+| `check-tokens`, `check-lineage`, `check-state` | validate the numbering, the lineage, the state |
+| `init-state` | create the numbering state, once per host |
+| `migrate-state` | move a 7.x numbering state and its manifests to v8, once |
+
+`--config` is required by every command and `--keys` by the downloads. Both take
+an absolute path, always: a cron job or an HTCondor job runs in a directory
+nobody chose. `premarket <command> --help` lists a command's options. Exit status
+is 0 on success, 1 on a failure, 2 on a command-line mistake.
+
+Nothing is read from the environment. Every setting is in `config.ini`, every
+key in `keys.ini`, every sink in `<sinks_dir>/<name>.ini`, and each file is
+strict: an unknown section or key is an error naming the file and line.
 
 ## Venues and sources
 
-| MIC | Market | Source | Arrives (UTC) | Arrives (IST) |
-|-----|--------|--------|---------------|---------------|
-| `XCME` | CME Globex futures/options | Databento `GLBX.MDP3` | 00:00–01:00 | 05:30–06:30 |
-| `XNAS` | US equities | Databento `EQUS.MINI` | 05:00–06:00 | 10:30–11:30 |
-| `XCBO` | US options | Databento `OPRA.PILLAR` | 10:00–11:00 | 15:30–16:30 |
-| `XNSE` | NSE India (cash, F&O, currency) | Fyers *or* NSE contract masters — see below | — | — |
-| `XBOM` | BSE India | Fyers | — | — |
-| `XIMC` | MCX India | Fyers *or* MCX's own contract file — see below | — | — |
+| MIC | Market | Source | Definitions out (UTC, US winter time) |
+|-----|--------|--------|------------------------|
+| `XCME` | CME Globex futures/options | Databento `GLBX.MDP3` | from Sunday afternoon |
+| `XNAS` | US equities | Databento `EQUS.MINI` | ~06:00–07:00 |
+| `XCBO` | US options | Databento `OPRA.PILLAR` | session ~11:30, new listings ~13:00 |
+| `XNSE` | NSE India (cash, F&O, currency) | Fyers *or* NSE contract masters — see below | — |
+| `XBOM` | BSE India | Fyers | — |
+| `XIMC` | MCX India | Fyers *or* MCX's own contract file — see below | — |
 
-`XNSE` is the one venue two feeds can serve, and `conf/config.ini` picks which:
+Databento definitions are a **live** replay of the current session: a download
+is only ever today's, and it is refused until the day's re-send has happened.
+History before the first day is filled from files placed by hand (below).
+
+`XNSE` is the one venue two feeds can serve, and `config.ini` picks which:
 
 ```ini
-[EXCHANGE:XNSE]
-feed = fyers   ; Fyers CDN (NSE_CM/FO/CD)      -> XNSE-FYERS.parquet
-# feed = nse   ; NSE's own contract masters    -> XNSE-NSE.parquet
+[venue.XNSE]
+feed = fyers      # Fyers CDN (NSE_CM/FO/CD)      -> XNSE-FYERS.parquet
+# feed = nse      # NSE's own contract masters    -> XNSE-NSE.parquet
 ```
 
 That value is the whole switch. A normalize step runs a venue only when it owns
@@ -70,9 +116,9 @@ new from the shared sequence.
 `XIMC` has the same kind of switch:
 
 ```ini
-[EXCHANGE:XIMC]
-feed = fyers   ; Fyers CDN (MCX_COM.csv)       -> XIMC-FYERS.parquet
-# feed = mcx   ; MCX's own contract file       -> XIMC-MCX.parquet
+[venue.XIMC]
+feed = fyers      # Fyers CDN (MCX_COM.csv)       -> XIMC-FYERS.parquet
+# feed = mcx      # MCX's own contract file       -> XIMC-MCX.parquet
 ```
 
 Under `feed = mcx` the BOD process places one zip a day in
@@ -91,29 +137,24 @@ run day is warned about. Two differences from every other venue:
   energy and indices 09:00-23:30 IST (23:55 while the US is on standard time),
   agri 09:00-17:00, and COTTON, CPO, KAPAS and MENTHAOIL 09:00-21:00 (21:30).
 
-**The venues do not arrive together.** A full day is not available before roughly
-**16:30 IST**, because OPRA publishes last. The pipeline is built for this: run
-normalize as often as you like, and each run picks up whatever has landed without
-disturbing what is already numbered. A common pattern is one run at ~06:30 IST for
-XCME and a second at ~16:30 IST for XNAS and XCBO.
+**The venues do not arrive together.** Run normalize as often as you like: each
+run picks up whatever has landed without disturbing what is already numbered.
 
 ## Quick start
 
-```bash
-python -m venv .venv && .venv/bin/pip install -e .[dev]
-cp conf/config.ini.example conf/config.ini      # venue ids; keys go in conf/keys.ini
-for f in conf/sinks/*.ini.example; do cp "$f" "${f%.example}"; done   # then edit
+Install a release (see [deploy/SETUP.md](deploy/SETUP.md)), or build one, then:
 
-python -m premarket init-state --reason "first run on this host"    # once per host
+```bash
+PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini"
+$PM init-state --reason "first run on this host"      # once per host; 7.x hosts run migrate-state instead
 ```
 
 A day -- download, normalize, load:
 
 ```bash
-python -m premarket xcme --today            # and xnas, xcbo, india
-python -m premarket normalize
-python -m premarket load --sink clickhouse-normal --sink postgres-plugin-xcme \
-                           --sink mdf-tokenmap
+$PM xcme                 # and xnas, xcbo, india
+$PM normalize --reason "daily"
+$PM load                 # every sink in sinks_dir; or --sink NAME ...
 ```
 
 **Older days** -- history before the first day, or a day that was missed. A
@@ -121,10 +162,8 @@ download is today's live replay only, so put each day's definition file (live
 instrument ids) in `data/YYYYMMDD/<MIC>/` by hand, then preview and fill:
 
 ```bash
-python -m premarket normalize --dates=20260924,20260923 --venue XCME \
-                              --reason "history before go-live" --dry-run
-python -m premarket normalize --dates=20260924,20260923 --venue XCME \
-                              --reason "history before go-live"
+$PM normalize --dates=20260924,20260923 --venue XCME --reason "history before go-live" --dry-run
+$PM normalize --dates=20260924,20260923 --venue XCME --reason "history before go-live"
 ```
 
 A fill runs newest first, takes a backup first, and ends with a quality gate
@@ -134,7 +173,7 @@ refused, because numbering it as a live day would fork the token chain.
 ## Layout of a day
 
 ```
-data/YYYYMMDD/
+<data_dir>/YYYYMMDD/
   XCME/  glbx-mdp3-YYYYMMDD.definition.dbn.zst      live definition replay (live ids)
   XNAS/  equs-mini-YYYYMMDD.definition.dbn.zst
   XCBO/  opra-pillar-YYYYMMDD.definition.dbn.zst
@@ -149,11 +188,15 @@ data/YYYYMMDD/
                   <MIC>.exceptions.parquet           a fill's recorded breaks, if any
                   _sequence.json                     the counter as this day left it
 
-data/_state/                                       the numbering state (see below)
+<data_dir>/_state/                                 the numbering state (see below)
   manifest.json                                    the head: counter, last run, venues
   <MIC>/<run_id>.alloc.parquet                     state snapshots, never modified
   runs.jsonl                                       the run log (OpenLineage-shaped)
-  backups/<run_id>.tar.gz                          before every fill and init-state
+  backups/<run_id>.tar.gz                          before every fill, init-state and migrate-state
+
+<logs_dir>/<command>_<date>_<stamp>.log            one log per run
+<reports_dir>/<check>.{v2,ALL}.txt                 the latest report of each check
+<contracts_dir>/YYYYMMDD/                          basket contracts
 ```
 
 ## counterTokenV2
@@ -211,48 +254,44 @@ not done yet; it never means empty.
 
 ```jsonc
 {
-  "version": 5,
-  "date": "20260901", "venue": "XCBO",
-  "started_at": "...Z", "completed_at": "...Z",   // when this venue actually ran
-  "code":       { "build_sha": "...", "manifest_version": 4 },
-  "allocation": { "venue_id": 10, "count": 2007183, "free_count": 69068,
-                  "path": "XCBO.alloc.parquet", "sha256": "..." },
-  "tokens":     { "arrived": 7937, "departed": 9396, "reused": 7937, "drawn": 0,
-                  "sequence_before": 3367460, "sequence_after": 3367460 },
-  "inputs":     [{ "path": "XCBO/opra-pillar-...dbn.zst", "sha256": "..." }],
-  "outputs":    [{ "path": "TRANSFORM/normalized/...parquet", "rows": 2007183, "sha256": "..." }],
-  "numbering":  { "mode": "live", "run_id": "...", "reason": "...", "operator": "user@host",
-                  "state_before": { "snapshot": "XCBO/<run>.alloc.parquet", "sha256": "..." },
-                  "state_after":  { "snapshot": "XCBO/<run>.alloc.parquet", "sha256": "..." },
-                  "neighbours": { "earlier": "20260831" }, "counter_before": 3367460,
-                  "counter_after": 3367460, "exceptions": { "count": 0 } }
+ "version": 8,
+ "date": "20261103", "venue": "XCBO",
+ "started_at": "...Z", "completed_at": "...Z",   // when this venue actually ran
+ "code":       { "build_sha": "...", "manifest_version": 8 },
+ "allocation": { "venue_id": 10, "count": 2007183, "free_count": 69068, "highest": 3367460,
+                 "path": "XCBO.alloc.parquet", "sha256": "..." },
+ "tokens":     { "carried_from": "20261102", "day": { "arrived": 7937, "released": 9396, "drawn": 0, ... },
+                 "run": { "sequence_before": 3367460, "sequence_after": 3367460, ... } },
+ "inputs":     [{ "path": "XCBO/opra-pillar-...dbn.zst", "sha256": "..." }],
+ "outputs":    [{ "path": "TRANSFORM/normalized/...parquet", "rows": 2007183, "sha256": "..." }],
+ "numbering":  { "mode": "live", "run_id": "...", "reason": "...", "operator": "user@host",
+                 "state_before": { "snapshot": "XCBO/<run>.alloc.parquet", "sha256": "..." },
+                 "state_after":  { "snapshot": "XCBO/<run>.alloc.parquet", "sha256": "..." },
+                 "neighbours": { "earlier": "20261102" }, "counter_before": 3367460,
+                 "counter_after": 3367460, "exceptions": { "count": 0 } }
 }
 ```
-
-Version 5 adds the `numbering` block and a third row state in the allocation
-table, `retained`. A version-4 table reads unchanged.
 
 The allocation itself lives in `<MIC>.alloc.parquet` (`script`, `token`, `state`)
 rather than inline. Assigned and free share one file deliberately: they are two
 halves of one invariant, and splitting them would let a crash leave an allocation
 with an empty pool, which the next day would read as "nothing to recycle".
 
-Converting a pre-v4 manifest:
-
-```bash
-python -m premarket migrate-manifests --dry-run
-python -m premarket migrate-manifests
-```
+Version 8 is version 5 (7.x) with nothing removed. A header that
+`migrate-state` moved from 7.x also carries
+`"migrated": {"from_version": 5, "by", "at", "run_id"}`. 8.0.0 refuses to number
+against a version-5 header or a 7.x head and names `migrate-state` in the
+refusal; it never rewrites one on the fly.
 
 ## The numbering state
 
-`data/_state/` is what every numbering run starts from and leaves behind: per
-venue, the tokens it holds now and the ones it may hand out. It is created once
-per host by `init-state` (from each venue's newest manifest; it refuses if two
-venues share a token), and after that `normalize` and `load` refuse to run
-without it.
+`<data_dir>/_state/` is what every numbering run starts from and leaves behind:
+per venue, the tokens it holds now and the ones it may hand out. It is created
+once per host by `init-state` (from each venue's newest manifest; it refuses if
+two venues share a token) -- or, on a 7.x host, moved to v8 by `migrate-state` --
+and after that `normalize` and `load` refuse to run without it.
 
-- **One run at a time.** Every numbering or load run holds `data/_state/.lock`; a
+- **One run at a time.** Every numbering or load run holds `_state/.lock`; a
   second one exits at once, naming the holder.
 - **Crash-safe.** A run reserves its numbers before publishing a file, stages its
   manifests and snapshot, and commits by replacing the head; the next run's
@@ -261,32 +300,33 @@ without it.
 - **Audited.** `runs.jsonl` records every run -- START, COMPLETE or FAIL, the
   operator, the reason, what it read and wrote with digests -- in the OpenLineage
   shape, so it can be fed to a lineage catalog.
-- **Backed up.** Every fill and `init-state` first writes
+- **Backed up.** Every fill, `init-state` and `migrate-state` first writes
   `backups/<run_id>.tar.gz` (every day's manifests and the head; the newest ten
   are kept). Restore from the data root: `tar -xzf _state/backups/<run_id>.tar.gz`.
 
 ## Load
 
-`premarket load --date-dir D --sink NAME ...` delivers a normalized day. Each
-sink is one `conf/sinks/<name>.ini` (gitignored; copy the `.example`):
+`premarket load [--date-dir D] [--sink NAME ...]` delivers a normalized day, by
+default through every sink in `sinks_dir`. Each sink is one `<name>.ini` with a
+`[sink]` section (copy a `conf/sinks/*.ini.example`):
 
-| type | what it delivers |
-|---|---|
-| `clickhouse-normal` | the canonical schema, every venue: `contracts_YYYYMMDD`/`baskets_YYYYMMDD` and the current `contracts`/`baskets` |
-| `postgres-plugin` | ONE market, as the legacy 17-column symbol master, upserted on `(token, trade_date)`; its `venue_id` must match config.ini's |
-| `mdf-tokenmap` | `tokenmap.<VENUE>.bin` for Databento venues, into the day's tree or MDF's `dir` |
+| type | keys | what it delivers |
+|---|---|---|
+| `clickhouse-normal` | `host port database username password secure` | the canonical schema, every venue: `contracts_YYYYMMDD`/`baskets_YYYYMMDD` and the current `contracts`/`baskets` |
+| `postgres-plugin` | `market venue_id database_url schema table create_table` | ONE market, as the legacy 17-column symbol master, upserted on `(token, trade_date)`; its `venue_id` must match config.ini's |
+| `mdf-tokenmap` | `markets dir` | `tokenmap.<MIC>.bin` for Databento venues, into the day's tree or MDF's `dir` |
 
-A day older than the newest live day never becomes "current": it loads its dated
-ClickHouse tables but not the mirrors, and is refused for MDF's delivery
-directory. `--dry-run` validates every sink and connects to nothing. Any setting
-can be overridden with `PREMARKET_SINK_<NAME>_<KEY>`.
+Every sink is read before anything is pushed. A day older than the newest live
+day never becomes "current": it loads its dated ClickHouse tables but not the
+mirrors, and is refused for MDF's delivery directory. `--dry-run` validates
+every sink and connects to nothing.
 
 ## Validation
 
 ```bash
-python -m premarket check-tokens  --dates=20260824,20260825,20260826
-python -m premarket check-lineage --dates=20260901 --venue XCBO
-python -m premarket check-state
+$PM check-tokens  --dates=20260824,20260825,20260826
+$PM check-lineage --dates=20260901 --venue XCBO
+$PM check-state
 ```
 
 `check-tokens` pins the numbering: tokens populated, numeric and inside int32,
@@ -298,23 +338,23 @@ the allocation chained from. A token may change between two consecutive days onl
 where a fill recorded it as an exception for exactly that pair; a filled day is
 also held to "never releases" and to every token having a legitimate source.
 
-`check-state` audits `data/_state/` itself: the snapshots verify, no day was
+`check-state` audits `_state/` itself: the snapshots verify, no day was
 numbered outside a session, no token is held by two venues, the counter covers
 every number on disk, no commit is half-done, and every run was closed.
 
 `check-lineage` traces each stage back to the one before it: raw payload →
 normalized → plugin, plus the digests each manifest recorded for what it read and
-wrote. Reports land in `docs/QAT_GENERATED/` tagged `[v2]` and `[ALL]`.
+wrote. Reports land in `reports_dir`, tagged `[v2]` and `[ALL]`.
 
-Both exit non-zero on a hard failure. Soft findings (a clamped download window,
+All three exit non-zero on a hard failure. Soft findings (an unclosed run,
 counterTokenV2's expected offset reuse) are reported and do not fail the run.
 
 ## Operating notes
 
-- **Download inside the publish window and you get a partial file.** Databento
-  clamps the query to what has published, and the result looks like a complete
-  day. `check-lineage` flags it as `full day ... ends HH:MMZ`. Re-download after
-  the window closes.
+- **A Databento download is refused until the day's re-send has happened**
+  ("nothing in the live replay was sent on YYYYMMDD"). Wait and run it again.
+  OPRA re-sends around 11:30Z in US winter time and lists the day's new
+  contracts around 13:00Z; an XCBO download before then is warned about.
 - **A venue's raw directory must hold only that day's payload.** A stray file from
   another date is silently blended into the output; `check-lineage` catches this
   as `raw is this day`.
@@ -338,15 +378,17 @@ counterTokenV2's expected offset reuse) are reported and do not fail the run.
 
 ## Databases
 
+Throwaway databases for trying the sinks (Docker here is the database, not
+premarket):
+
 ```bash
-docker compose -f docker/contract-clickhouse/docker-compose.yml up -d   # clickhouse-normal sink
-docker compose -f docker/contract-postgres/docker-compose.yml up -d     # postgres-plugin-* sinks
+docker compose -f docker/contract-clickhouse/docker-compose.yml up -d   # clickhouse-normal: HTTP on 127.0.0.1:8744
+docker compose -f docker/contract-postgres/docker-compose.yml up -d     # postgres-plugin-*: 127.0.0.1:6006
 ```
 
-Postgres: `postgres://contract:contract@127.0.0.1:6006/contractdb?sslmode=disable`
-(the default in every `.ini.example` — only real credentials in your own
-local copies should ever differ from this). ClickHouse: `127.0.0.1:8744`, see
-`docker/contract-clickhouse/docker-compose.yml`.
+The Postgres one is `postgres://contract:contract@127.0.0.1:6006/contractdb?sslmode=disable`.
+The `.ini.example` files hold placeholders; put real credentials only in your
+own copies under `sinks_dir`, which are never committed.
 
 ## Contributing
 

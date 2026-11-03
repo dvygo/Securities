@@ -45,3 +45,6 @@
 // breaks         every script whose token differs from a neighbour's assigned token,
 //                computed from the finished day so it cannot miss one.
 // neighbours     the nearest numbered days strictly before and after a date.
+//
+// The two 300k-script scale cases have a wall-clock budget (10 s each), so a sanitizer build
+// (./build.sh sanitize, PREMARKET_SANITIZED=1) skips them: Debug + ASan runs them ~7x slower.

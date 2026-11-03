@@ -268,7 +268,7 @@ TEST_CASE("live: a same-day re-run is idempotent") {
 // A real XCME day is 1.09M scripts and OPRA about 2M. Anything quadratic in the allocators
 // takes hours there -- a list membership test did, on 7.x's first rehearsal against real
 // data. 300k scripts must stay well inside the Python suite's 10 s budget.
-TEST_CASE("scale: a live re-run at 300k scripts is linear") {
+TEST_CASE("scale: a live re-run at 300k scripts is linear" * doctest::skip(PREMARKET_SANITIZED)) {
     std::vector<std::string> scripts;
     for (int i = 0; i < 300000; ++i) scripts.push_back("S" + util::zero_pad(i, 7));
     Sequence seq;
@@ -280,7 +280,7 @@ TEST_CASE("scale: a live re-run at 300k scripts is linear") {
     CHECK(again.day.retained.size() == 1000);
 }
 
-TEST_CASE("scale: a fill at 300k scripts is linear") {
+TEST_CASE("scale: a fill at 300k scripts is linear" * doctest::skip(PREMARKET_SANITIZED)) {
     std::vector<std::string> scripts;
     for (int i = 0; i < 300000; ++i) scripts.push_back("S" + util::zero_pad(i, 7));
     Sequence seq;

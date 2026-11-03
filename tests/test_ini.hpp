@@ -6,8 +6,9 @@
 //   - [section] headers; section names are case-sensitive ("venue.XNAS")
 //   - key = value; keys are letters, digits, '_', '-', '.'; case-sensitive
 //   - '#' or ';' starts a comment at the start of a line, or after whitespace inside a value
-//     ("enabled = 1  # on" is 1). A value that must hold " #" is written in double quotes,
-//     where \" and \\ are the only escapes
+//     ("enabled = 1  # on" is 1; "dir =   # empty" is empty). A value that must start with
+//     '#' or ';', or hold " #", is written in double quotes, where \" and \\ are the only
+//     escapes
 //   - no interpolation, no continuation lines, no [DEFAULT] -- a value is exactly what is
 //     written after '='
 //   - a repeated section or key, a key outside a section, or a line without '=' is an error

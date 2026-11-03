@@ -1,8 +1,8 @@
 # ADR: XIMC from MCX's own contract file
 
 - **Status:** accepted, 2026-10-28, released in 6.9.0
-- **Code:** `premarket/normalize/mcx_contract.py`, tests in `tests/test_mcx_contract.py`
-- **Switch:** `[EXCHANGE:XIMC] feed = mcx` in `conf/config.ini` (the example still says `fyers`)
+- **Code:** `src/normalize/mcx_contract.cpp` (8.0.0; `premarket/normalize/mcx_contract.py` until 7.x), tests in `tests/test_mcx_contract.cpp`
+- **Switch:** `[venue.XIMC] feed = mcx` in `config.ini` (the example still says `fyers`)
 
 ## Context
 

@@ -9,6 +9,7 @@
 #include "premarket/config.hpp"
 #include "premarket/log.hpp"
 #include "premarket/normalize/numbering_session.hpp"
+#include "premarket/parquet_io.hpp"
 #include "premarket/runlog.hpp"
 #include "premarket/runner.hpp"
 #include "premarket/util.hpp"
@@ -137,7 +138,7 @@ int run_download(const std::string& venue, const args::Parsed& p) {
             throw SystemExit{1, "--symbols-file must be an absolute path, got `" + *f + "`"};
         opts.symbols_file = *f;
     }
-    auto steps = runner::build_download_steps(venue, std::nullopt);
+    auto steps = runner::build_download_steps(venue);
     return runner::run(steps, opts);
 }
 
@@ -347,6 +348,7 @@ int run(const std::vector<std::string>& argv) {
 
 int main(int argc, char** argv) {
     std::vector<std::string> args_v(argv + 1, argv + argc);
+    parquet::Reader reader;
     return run(args_v);
 }
 

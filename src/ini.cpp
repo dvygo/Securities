@@ -12,6 +12,7 @@ bool key_char(char c) {
 }
 
 std::string strip_inline_comment(const std::string& raw) {
+    if (!raw.empty() && (raw[0] == '#' || raw[0] == ';')) return "";
     for (std::size_t i = 1; i < raw.size(); ++i)
         if ((raw[i] == '#' || raw[i] == ';') && (raw[i - 1] == ' ' || raw[i - 1] == '\t')) return util::rstrip(raw.substr(0, i));
     return raw;

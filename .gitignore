@@ -1,52 +1,29 @@
-# Python
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-*.egg-info/
+# Build output (./build.sh, packaging/release.sh)
+/build/
+/build-sanitize/
+/.cache/
+/dist/
 
-# Secrets and local config (never commit real keys)
+# Secrets and real configuration: only the .example templates are tracked
 secrets/
-**/secrets.ini
 **/config.ini
-!**/config.example.ini
 **/keys.ini
-!**/keys.ini.example
-# Load sinks (6.3.0): one conf/sinks/<name>.ini per destination, with credentials.
 **/conf/sinks/*.ini
 
-# Generated symbology / download output
+# Data a local run can leave in the tree when its [paths] point here
+/state/
 **/raw/
 **/normalized/
 /constituents/contracts/
-data/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
-# The pipeline owns its data tree under the package (config.ini [paths].data_dir).
-# Whole tree, not just raw/ and normalized/ -- plugin/ lands here too.
-/premarket/data/
-# What 6.x leaves behind on an upgraded host -- its data tree, .venv and conf
-# copies -- until they are moved into place (RUNBOOK.md, "Upgrading to 7.0.0").
-/v6-python/
-# Databento batch job downloads: one directory per job id, tens of GB of
-# .dbn.zst. Not matched by the dated data/YYYYMMDD/ rule above.
-data/_batch/
+/data/
 
-# Binaries, archives, local DBs
-*.exe
+# Archives, local databases, logs
 *.zip
 *.db
 *.sqlite
 *.sqlite3
-/bin/
-/vendor/
-/dist/
-
-# Logs and runtime dumps
-*LOGS/
-**/LOGS/
 *.log
-
-# Local scratch / experiments (not part of the pipeline)
-v1-hist-downloader/
+**/LOGS/
 
 # OS / editor
 .DS_Store
@@ -54,3 +31,6 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Core dumps
+core.[0-9]*

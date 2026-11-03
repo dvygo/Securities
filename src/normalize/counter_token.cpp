@@ -443,6 +443,7 @@ Json header_payload(const std::string& as_of, const std::string& mic, const Venu
 }
 
 fs::path write_header(const std::string& as_of, const std::string& mic, const Json& payload) {
+    util::failpoint("write_header");
     auto path = venue_manifest_path(as_of, mic);
     fs::create_directories(path.parent_path());
     auto staging = util::staging_path(path);
@@ -546,8 +547,8 @@ std::pair<std::int64_t, std::string> highest_issued() {
         for (const auto& header : util::list_dir_sorted(manifests_dir(day))) {
             std::string name = header.filename().string();
             if (!util::ends_with(name, ".json") || util::starts_with(name, "_")) continue;
-            const Json& alloc = jget(read_json(header), "allocation");
-            const Json& h = jget(alloc, "highest");
+            Json doc = read_json(header);
+            const Json& h = jget(jget(doc, "allocation"), "highest");
             std::int64_t highest = truthy(h) ? jint(h) : 0;
             if (highest > best) {
                 best = highest;

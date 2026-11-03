@@ -6,6 +6,7 @@
 #include <databento/iwritable.hpp>
 #include <databento/live.hpp>
 #include <databento/live_blocking.hpp>
+#include <date/tz.h>
 #include <zstd.h>
 
 #include <algorithm>
@@ -39,6 +40,14 @@ std::string utc_hms(std::int64_t ns) { return util::utc_format_ns(ns, "%Y-%m-%d 
 std::string dataset_key(const std::string& dataset) {
     auto dot = dataset.find('.');
     return util::upper(util::strip(dot == std::string::npos ? dataset : dataset.substr(0, dot)));
+}
+
+std::string new_listings_utc(std::int64_t now_ns) {
+    using namespace std::chrono;
+    auto day = date::floor<date::days>(sys_time<nanoseconds>(nanoseconds(now_ns)));
+    date::local_seconds at = date::local_days(day.time_since_epoch()) + hours(8);
+    auto utc = date::make_zoned(date::locate_zone("America/New_York"), at, date::choose::earliest).get_sys_time();
+    return date::format("%H:%M", date::floor<minutes>(utc));
 }
 
 std::string list_repr(const std::vector<std::string>& items) {
@@ -118,9 +127,10 @@ std::size_t download_live(const std::string& api_key, const config::Venue& venue
     std::string key = dataset_key(venue.dataset);
     if (key == "OPRA") {
         std::string hm = util::utc_format_ns(now_ns, "%H:%M");
-        if (hm < "12:00")
-            log::out("  WARNING: " + venue.dataset + " lists new contracts at ~12:00Z and it is " + hm +
-                     "Z -- today's new listings will be missing from this file");
+        std::string listings = new_listings_utc(now_ns);
+        if (hm < listings)
+            log::out("  WARNING: " + venue.dataset + " lists new contracts at ~" + listings +
+                     "Z (08:00 New York) and it is " + hm + "Z -- today's new listings will be missing from this file");
     }
     log::out("  Live definition replay: " + venue.dataset + " stype_in=" + stype_in + " symbols=" + list_repr(symbols));
 

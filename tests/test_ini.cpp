@@ -14,6 +14,7 @@ data_dir = /srv/data   # inline comment
 url = postgres://u:p@h:6006/db?x=1;y=2
 agent = "Mozilla/5.0 (X11; Linux) #not-a-comment"
 empty =
+only_comment =   # nothing set
 [venue.XNAS]
 enabled = 1
 venue_id = 14
@@ -27,6 +28,7 @@ TEST_CASE("values are read as written, minus comments") {
     CHECK(f.text(paths, "url") == "postgres://u:p@h:6006/db?x=1;y=2");
     CHECK(f.text(paths, "agent") == "Mozilla/5.0 (X11; Linux) #not-a-comment");
     CHECK(f.text(paths, "empty").empty());
+    CHECK(f.text(paths, "only_comment").empty());
     CHECK(f.absolute_path(paths, "data_dir") == "/srv/data");
     const auto& xnas = f.at("venue.XNAS");
     CHECK(f.flag(xnas, "enabled"));

@@ -16,6 +16,7 @@ ARG HTTPLIB_VERSION=0.62.0
 ARG JSON_VERSION=3.12.0
 ARG DATE_VERSION=3.0.5
 ARG DOCTEST_VERSION=2.4.12
+ARG POSTGRES_VERSION=18.6
 
 ENV DEBIAN_FRONTEND=noninteractive \
     CC=clang-18 \
@@ -31,9 +32,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         > /etc/apt/sources.list.d/llvm.list \
     && apt-get update && apt-get install -y --no-install-recommends \
         clang-${LLVM_VERSION} lld-${LLVM_VERSION} \
-        libc++-${LLVM_VERSION}-dev libc++abi-${LLVM_VERSION}-dev libunwind-${LLVM_VERSION}-dev \
-        binutils make ninja-build ccache pkg-config python3-pip \
-        zlib1g-dev libssl-dev libzstd-dev libpq-dev tzdata \
+        libc++-${LLVM_VERSION}-dev libc++abi-${LLVM_VERSION}-dev libunwind-${LLVM_VERSION}-dev libclang-rt-${LLVM_VERSION}-dev \
+        binutils make ninja-build ccache pkg-config python3-pip bison flex perl \
+        zlib1g-dev libssl-dev libzstd-dev tzdata \
     && pip3 install --no-cache-dir cmake==${CMAKE_VERSION} \
     && rm -rf /var/lib/apt/lists/*
 
@@ -89,8 +90,27 @@ RUN curl -fsSL -o databento.tar.gz \
     && install -Dm0644 databento-cpp-${DATABENTO_VERSION}/LICENSE /usr/local/share/doc/databento-cpp/LICENSE \
     && rm -rf /tmp/src/*
 
+# libpq, static, from PostgreSQL's own source: OpenSSL only, no GSSAPI/LDAP/ICU/readline, so
+# the binary does not drag Kerberos, LDAP and GnuTLS onto every host the way the distro's
+# libpq.so.5 does.
+RUN curl -fsSL -o pg.tar.gz "https://ftp.postgresql.org/pub/source/v${POSTGRES_VERSION}/postgresql-${POSTGRES_VERSION}.tar.gz" \
+    && tar -xzf pg.tar.gz && cd postgresql-${POSTGRES_VERSION} \
+    && CC=clang-18 CFLAGS="-O2 -fPIC" CXXFLAGS= LDFLAGS= ./configure --prefix=/usr/local/pgsql --without-readline --without-icu \
+        --without-zlib --without-zstd --without-lz4 --with-ssl=openssl \
+    && export CXXFLAGS= LDFLAGS= && make -s -C src/include && make -s -C src/common && make -s -C src/port && make -s -C src/interfaces/libpq \
+    && install -d /usr/local/pgsql/lib /usr/local/pgsql/include \
+    && cp src/interfaces/libpq/libpq.a src/common/libpgcommon_shlib.a src/port/libpgport_shlib.a /usr/local/pgsql/lib/ \
+    && cp src/interfaces/libpq/libpq-fe.h src/interfaces/libpq/libpq-events.h src/include/postgres_ext.h \
+        /usr/local/pgsql/include/ \
+    && install -Dm0644 COPYRIGHT /usr/local/share/doc/postgresql/LICENSE \
+    && cd /tmp/src && rm -rf /tmp/src/*
+
 # curl --create-dirs makes 0750 directories; the build runs as the caller's uid.
 RUN chmod -R a+rX /usr/local/include /usr/local/lib /usr/local/share
+
+# The pins, visible at run time for packaging/notices.sh.
+ENV DATABENTO_VERSION=${DATABENTO_VERSION} DUCKDB_VERSION=${DUCKDB_VERSION} POSTGRES_VERSION=${POSTGRES_VERSION} \
+    JSON_VERSION=${JSON_VERSION} HTTPLIB_VERSION=${HTTPLIB_VERSION} DATE_VERSION=${DATE_VERSION}
 
 WORKDIR /work
 CMD ["/bin/bash"]
