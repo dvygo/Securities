@@ -71,11 +71,11 @@ docker run --rm -v "$PWD/$dist":/dist:ro -v "$PWD/tests/data":/fixture:ro ubuntu
     mkdir -p \$D/20261103 && cp -r /fixture/state7x/20261103/X* \$D/20261103/
     \$PM init-state --reason 'release smoke test' >/dev/null
     \$PM normalize --date-dir 20261103 --reason 'release smoke test' >/dev/null
-    for c in check-state 'check-tokens --dates 20261103' 'check-lineage --dates 20261103'; do \$PM \$c | tail -1; done
+    for c in check-state 'check-tokens --dates 20261103' 'check-lineage --dates 20261103'; do out=\$(\$PM \$c | grep 'check(s):'); echo \"\$c: \$out\"; done
     mkdir -p /tmp/m && cp -r /fixture/state7x /tmp/m/data
     sed 's|^data_dir .*|data_dir = /tmp/m/data|' /opt/securities/conf/config.ini > /tmp/m/config.ini
     M='/opt/securities/current/bin/premarket --config=/tmp/m/config.ini'
     \$M migrate-state --reason 'release smoke test' | tail -1
     \$M normalize --date-dir 20261103 --only normalize-fyers --reason 'release smoke test' >/dev/null
-    \$M check-state | tail -1"
+    out=\$(\$M check-state | grep 'check(s):'); echo \"after migrate-state, check-state: \$out\""
 ls -la "$dist"
