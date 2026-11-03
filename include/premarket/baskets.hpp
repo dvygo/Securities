@@ -43,7 +43,7 @@ private:
 };
 
 std::vector<ContractRow> refresh_basket(const std::string& name, const std::string& as_of);
-void refresh_all(const std::string& as_of, bool dry_run);
+void refresh_all(const std::string& as_of, const std::string& venue, bool dry_run);
 void run(runner::Opts& opts);
 
 }  // namespace premarket::baskets

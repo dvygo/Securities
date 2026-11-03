@@ -11,7 +11,7 @@ flowchart TB
     E --> F{"This host ran 7.x?"}
     F -->|no| G["init-state"]
     F -->|yes| H["migrate-state (Upgrade from 7.x)"]
-    G --> I["check-state, load --dry-run"]
+    G --> I["check-state, load --venue MIC --dry-run"]
     H --> I
 ```
 
@@ -55,7 +55,7 @@ XCBO = db-...
 XCME = db-...
 ```
 
-Only the downloads read it, and only the venue they download. India needs no key: leave the file as it is if you only run `india`.
+Only `download` reads it, and only the key of the venue it downloads. The India venues (Fyers) need no key.
 
 ## 4. What to download
 
@@ -65,7 +65,7 @@ Only the downloads read it, and only the venue they download. India needs no key
 
 ## 5. Sinks
 
-`load` delivers through every `<name>.ini` in `/opt/securities/conf/sinks/`. Copy the templates you need and fill them in:
+`load --venue MIC` delivers that venue through the `<name>.ini` files in `/opt/securities/conf/sinks/` that carry it: `clickhouse-normal` for every venue, `postgres-plugin-<mic>` for its own market, `mdf-tokenmap` for a Databento venue. Copy the templates you need and fill them in:
 
 ```sh
 cd /opt/securities/conf/sinks
@@ -82,7 +82,7 @@ chmod 600 *.ini
 | `mdf-tokenmap` | `tokenmap.<MIC>.bin` for MDF | `dir`: empty = the day's tree; the absolute path of MDF's `config/cpp-vendor-databento/` to deliver in place |
 | `clickhouse-normal` | every venue, every column: `contracts_YYYYMMDD`, `baskets_YYYYMMDD`, `contracts`, `baskets` | `host`, `port` (HTTP), `database`, `username`, `password`, `secure` (0/1) |
 
-A key a sink type does not know is an error, so a typo is caught on the first `load --dry-run`.
+A key a sink type does not know is an error, so a typo is caught on the first `load --dry-run`. `clickhouse-normal` replaces only the loaded venue's rows in the day's tables, so loading the venues one by one builds the whole day.
 
 ## 6. Numbering state
 
@@ -102,8 +102,8 @@ Never run `init-state` on a host that already numbers: it restarts the tokens. I
 ## 7. Check
 
 ```sh
-$PM check-state          # must end with 0 fail
-$PM load --dry-run       # reads every sink, connects to nothing
+$PM check-state                        # must end with 0 fail
+for v in XNAS XCME XCBO XNSE XBOM XIMC; do $PM load --venue $v --dry-run; done   # reads the sinks, connects to nothing
 ```
 
 ## Upgrade from 7.x
@@ -158,7 +158,7 @@ Once 8.0.0 has numbered a day, its headers are v8 and 7.x refuses them. Fix forw
 | `/opt/securities/current/` | the release in use: `bin/premarket`, `lib/libduckdb.so`, `share/` (templates, baskets), `THIRD_PARTY_NOTICES.txt` |
 | `/opt/securities/conf/config.ini` | venues, paths, Fyers settings |
 | `/opt/securities/conf/keys.ini` | Databento keys (0600) |
-| `/opt/securities/conf/sinks/<name>.ini` | one per delivery; `load` uses every one present |
+| `/opt/securities/conf/sinks/<name>.ini` | one per delivery; `load --venue MIC` uses every one that carries the venue |
 | `/opt/securities/conf/symbols/<MIC>.txt` | what each US download asks for |
 | `/opt/securities/state/data/YYYYMMDD/` | downloads, `TRANSFORM/normalized/`, `TRANSFORM/plugin/`, `TRANSFORM/manifests/` |
 | `/opt/securities/state/data/_state/` | the numbering state: back it up, never delete it |

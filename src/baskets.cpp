@@ -310,11 +310,12 @@ std::vector<ContractRow> refresh_basket(const std::string& name, const std::stri
     return refresh(name, as_of, cache);
 }
 
-void refresh_all(const std::string& as_of, bool dry_run) {
+void refresh_all(const std::string& as_of, const std::string& venue, bool dry_run) {
     std::filesystem::create_directories(paths::contracts_day_dir(as_of));
     Cache cache;
     std::vector<std::string> failed, empty;
-    for (const auto& name : paths::basket_names()) {
+    auto names = paths::basket_names_of(venue);
+    for (const auto& name : names) {
         if (dry_run) {
             log::out("    Would refresh basket " + name);
             continue;
@@ -335,7 +336,7 @@ void refresh_all(const std::string& as_of, bool dry_run) {
     if (!empty.empty())
         log::out("    " + std::to_string(empty.size()) + " basket(s) resolved to no contracts: " + util::join(empty, ", "));
     if (!failed.empty()) {
-        log::out("    " + std::to_string(failed.size()) + "/" + std::to_string(paths::basket_names().size()) +
+        log::out("    " + std::to_string(failed.size()) + "/" + std::to_string(names.size()) +
                  " basket(s) FAILED:");
         for (const auto& m : failed) log::out("      " + m);
     }
@@ -353,6 +354,8 @@ void run(runner::Opts& opts) {
         return;
     }
     if (opts.basket) {
+        if (paths::basket_venue(*opts.basket) != opts.venue)
+            throw ValueError("basket " + *opts.basket + " is not a " + opts.venue + " basket");
         try {
             auto file = paths::baskets_dir() / (*opts.basket + ".csv");
             if (!std::filesystem::exists(file, ec)) {
@@ -369,7 +372,7 @@ void run(runner::Opts& opts) {
         }
         return;
     }
-    refresh_all(opts.date_dir, opts.dry_run);
+    refresh_all(opts.date_dir, opts.venue, opts.dry_run);
 }
 
 }  // namespace premarket::baskets

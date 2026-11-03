@@ -22,20 +22,25 @@ const char* kUsage = R"(usage: premarket --config=/abs/config.ini [--keys=/abs/k
 
 Pre-market symbology pipeline: download, normalize, load.
 
-commands:
-  india                   download Fyers' Indian symbol masters (XNSE, XBOM, XIMC)
-  xnas | xcme | xcbo      download the venue's definitions: a live replay of today's session
-  normalize               normalize a day and number it (counterTokenV2); --dates fills older days
-  load                    deliver a normalized day through named sinks (<sinks_dir>/<name>.ini)
-  check-tokens            validate counterTokenV2 against the normalized files and manifests
-  check-lineage           trace each stage's output back to its input
+Every run is for one exchange, named with --venue MIC (XNAS, XCBO, XCME, XNSE, XBOM, XIMC, ...):
+
+  download --venue MIC    download the venue's contract master: Fyers' symbol master for a
+                          feed = fyers venue, the live definition replay for a Databento one
+  normalize --venue MIC   normalize the venue's day and number it (counterTokenV2); --dates fills
+                          older days
+  load --venue MIC        deliver the venue's normalized day through the sinks that carry it
+  check-tokens --venue MIC   validate counterTokenV2 against the normalized files and manifests
+  check-lineage --venue MIC  trace each stage's output back to its input
+
+The numbering state is one store shared by every venue, so these take no venue:
+
   check-state             audit the numbering state against the days on disk and the run log
   init-state              create the numbering state, once per host
   migrate-state           move a 7.x numbering state and its manifests to v8, once
 
 global options (accepted anywhere on the line, always full paths):
   --config=PATH           config.ini (required)
-  --keys=PATH             keys.ini with the Databento keys (needed by xnas/xcme/xcbo)
+  --keys=PATH             keys.ini with the Databento keys (needed to download a Databento venue)
   --help, --version
 
 `premarket <command> --help` lists a command's options.
@@ -79,36 +84,36 @@ Global split_global(const std::vector<std::string>& argv) {
     return g;
 }
 
-std::vector<args::Option> download_options(bool databento) {
-    std::vector<args::Option> o = {
-        {"date-dir", true, false, "YYYYMMDD", "day to download into (default: today in [run] timezone)"},
-        {"dry-run", false, false, "", "say what would be downloaded; fetch nothing"},
-    };
-    if (databento)
-        o.push_back({"symbols-file", true, false, "PATH", "absolute path of a symbol list; overrides the venue's `symbols`"});
-    return o;
-}
+const args::Option kVenue = {"venue", true, false, "MIC", "the one exchange this run is for (required)"};
+
+const std::vector<args::Option> kDownload = {
+    kVenue,
+    {"date-dir", true, false, "YYYYMMDD", "day to download into (default: today in [run] timezone)"},
+    {"dry-run", false, false, "", "say what would be downloaded; fetch nothing"},
+    {"symbols-file", true, false, "PATH", "Databento venues: absolute path of a symbol list; overrides the venue's `symbols`"},
+};
 
 const std::vector<args::Option> kNormalize = {
+    kVenue,
     {"date-dir", true, false, "YYYYMMDD", "the live day (default: today in [run] timezone)"},
-    {"dates", true, false, "D1,D2", "fill OLDER days, newest first; needs --venue and --reason"},
+    {"dates", true, false, "D1,D2", "fill OLDER days, newest first; needs --reason"},
     {"reason", true, false, "TEXT", "why this run is happening; recorded in the run log and manifests"},
     {"dry-run", false, false, "", "live: write nothing; --dates: a real preview that writes nothing"},
-    {"only", true, true, "STEP", "normalize-fyers, normalize-nse-contract, normalize-mcx-contract, normalize-databento, baskets, csv-export"},
-    {"venue", true, true, "MIC", "restrict the per-venue steps to this MIC"},
-    {"basket", true, false, "NAME", "refresh this basket only"},
-    {"csv", true, false, "DIR", "also export the aggregated CSVs to this absolute directory"},
+    {"only", true, true, "STEP", "run only this step of the venue's: its normalize step, baskets, csv-export"},
+    {"basket", true, false, "NAME", "refresh this basket only (one of the venue's)"},
+    {"csv", true, false, "DIR", "also export the venue's contracts and baskets as CSV to this absolute directory"},
 };
 
 const std::vector<args::Option> kLoad = {
+    kVenue,
     {"date-dir", true, false, "YYYYMMDD", "day to push (default: today in [run] timezone)"},
-    {"sink", true, true, "NAME", "a sink in <sinks_dir>/<NAME>.ini; default: every sink there"},
-    {"dry-run", false, false, "", "validate every sink and say what it would push; connect to nothing"},
+    {"sink", true, true, "NAME", "a sink in <sinks_dir>/<NAME>.ini; default: every sink there that delivers the venue"},
+    {"dry-run", false, false, "", "validate the sinks and say what they would push; connect to nothing"},
 };
 
 const std::vector<args::Option> kChecks = {
+    kVenue,
     {"dates", true, false, "D1,D2", "comma-separated YYYYMMDD (default: today in [run] timezone)"},
-    {"venue", true, true, "MIC", "restrict to this MIC"},
 };
 
 const std::vector<args::Option> kReason = {
@@ -127,18 +132,23 @@ std::string date_or_today(const args::Parsed& p) {
     return date;
 }
 
-int run_download(const std::string& venue, const args::Parsed& p) {
+int run_download(const args::Parsed& p) {
+    std::string venue = required_venue(p, "download");
     std::string date = date_or_today(p);
-    runlog::Run log_run("premarket-" + venue, date);
     runner::Opts opts;
     opts.as_of = opts.date_dir = date;
+    opts.venue = venue;
     opts.dry_run = p.flag("dry-run");
     if (auto f = p.value("symbols-file")) {
+        if (config::feed_for(venue) != "databento")
+            throw args::UsageError{"--symbols-file is for a Databento venue; " + venue + " is on the " +
+                                   config::feed_for(venue) + " feed"};
         if (!std::filesystem::path(*f).is_absolute())
             throw SystemExit{1, "--symbols-file must be an absolute path, got `" + *f + "`"};
         opts.symbols_file = *f;
     }
     auto steps = runner::build_download_steps(venue);
+    runlog::Run log_run("download-" + venue, date);
     return runner::run(steps, opts);
 }
 
@@ -154,35 +164,32 @@ int numbered_run(const std::string& command, const std::vector<runner::Step>& st
 }
 
 int run_normalize(const args::Parsed& p) {
+    std::string venue = required_venue(p, "normalize");
     std::string date = date_or_today(p);
-    auto only = p.all("only");
-    runlog::Run log_run("normalizer", date);
     runner::Opts opts;
     opts.as_of = opts.date_dir = date;
+    opts.venue = venue;
     opts.dry_run = p.flag("dry-run");
     opts.basket = p.value("basket");
-    opts.venues = venue_selection(p.all("venue"));
     if (auto c = p.value("csv")) {
         if (!std::filesystem::path(*c).is_absolute()) throw SystemExit{1, "--csv must be an absolute directory, got `" + *c + "`"};
         opts.csv_dir = *c;
     }
-    auto steps = runner::build_normalizer_steps(only);
+    auto steps = runner::build_normalizer_steps(venue, p.all("only"));
+    runlog::Run log_run("normalize-" + venue, date);
     return numbered_run("normalize", steps, opts, opts.dry_run, p.value("reason").value_or(""));
 }
 
 int run_fill(const args::Parsed& p) {
+    std::string venue = required_venue(p, "normalize");
     auto dates = date_list(*p.value("dates"));
-    auto venues = venue_selection(p.all("venue"));
-    if (venues.empty())
-        throw SystemExit{1, "--dates needs --venue: name every venue you are filling (e.g. --venue XCME --venue XNAS). "
-                            "The scope of a manual backfill is explicit and recorded."};
     std::string reason = util::strip(p.value("reason").value_or(""));
     if (reason.empty())
         throw SystemExit{1, "--dates needs --reason \"...\": a backfill changes the record, and the run log keeps why."};
-    auto steps = runner::build_normalizer_steps(p.all("only"));
+    auto steps = runner::build_normalizer_steps(venue, p.all("only"));
     bool dry_run = p.flag("dry-run");
-    runlog::Run log_run("normalizer-fill", dates.front());
-    log::err("Filling " + util::join(dates, ", ") + " for " + util::join(venues, ", ") + " (newest first)" +
+    runlog::Run log_run("fill-" + venue, dates.front());
+    log::err("Filling " + util::join(dates, ", ") + " for " + venue + " (newest first)" +
              (dry_run ? " -- PREVIEW, nothing is written" : ""));
     numbering_session::Session session("normalize", numbering::FILL, reason, dry_run,
                                        dates.back() + "-" + dates.front());
@@ -191,23 +198,17 @@ int run_fill(const args::Parsed& p) {
             runner::Opts opts;
             opts.as_of = opts.date_dir = date;
             opts.dry_run = dry_run;
-            opts.venues = venues;
+            opts.venue = venue;
             opts.numbering = &session;
             int step_rc = runner::run(steps, opts);
-            std::set<std::string> done;
+            bool done = false;
             std::vector<std::string> problems;
             for (const auto& o : session.outcomes) {
-                if (o.date != date) continue;
-                if (o.status == "done" || o.status == "previewed") done.insert(o.mic);
-                if (std::find(venues.begin(), venues.end(), o.mic) != venues.end() &&
-                    (o.status == "refused" || o.status == "no-input"))
-                    problems.push_back(o.mic + ": " + o.status + " -- " + o.detail);
+                if (o.date != date || o.mic != venue) continue;
+                if (o.status == "done" || o.status == "previewed") done = true;
+                if (o.status == "refused" || o.status == "no-input") problems.push_back(o.mic + ": " + o.status + " -- " + o.detail);
             }
-            for (const auto& mic : venues) {
-                bool mentioned = std::any_of(problems.begin(), problems.end(),
-                                             [&](const std::string& pr) { return util::starts_with(pr, mic + ":"); });
-                if (!done.count(mic) && !mentioned) problems.push_back(mic + ": nothing was numbered");
-            }
+            if (!done && problems.empty()) problems.push_back(venue + ": nothing was numbered");
             if (step_rc != 0 || !problems.empty()) {
                 std::string why = problems.empty() ? "a step failed (exit " + std::to_string(step_rc) + ")"
                                                    : util::join(problems, "; ");
@@ -224,13 +225,12 @@ int run_fill(const args::Parsed& p) {
         log::err("Preview complete; nothing was written.");
         return 0;
     }
-    return commands::quality_gate(dates, venues, session.run_id);
+    return commands::quality_gate(dates, venue, session.run_id);
 }
 
 int dispatch(const std::string& command, const std::vector<std::string>& rest) {
     auto parse = [&](const std::vector<args::Option>& options) { return args::parse(rest, options); };
-    if (command == "india") return run_download("india", parse(download_options(false)));
-    if (command == "xnas" || command == "xcme" || command == "xcbo") return run_download(command, parse(download_options(true)));
+    if (command == "download") return run_download(parse(kDownload));
     if (command == "normalize") {
         auto p = parse(kNormalize);
         if (p.value("dates") && p.value("date-dir")) throw args::UsageError{"--dates and --date-dir are mutually exclusive"};
@@ -238,15 +238,16 @@ int dispatch(const std::string& command, const std::vector<std::string>& rest) {
     }
     if (command == "load") {
         auto p = parse(kLoad);
+        std::string venue = required_venue(p, "load");
         std::string date = date_or_today(p);
-        runlog::Run log_run("load", date);
-        return commands::load(date, p.all("sink"), p.flag("dry-run"));
+        runlog::Run log_run("load-" + venue, date);
+        return commands::load(date, venue, p.all("sink"), p.flag("dry-run"));
     }
     if (command == "check-tokens" || command == "check-lineage") {
         auto p = parse(kChecks);
+        std::string venue = required_venue(p, command);
         auto dates = date_list(p.value("dates").value_or(config::today()));
-        auto venues = venue_selection(p.all("venue"));
-        return command == "check-tokens" ? commands::check_tokens(dates, venues) : commands::check_lineage(dates, venues);
+        return command == "check-tokens" ? commands::check_tokens(dates, venue) : commands::check_lineage(dates, venue);
     }
     if (command == "check-state") {
         parse({});
@@ -263,8 +264,7 @@ int dispatch(const std::string& command, const std::vector<std::string>& rest) {
 }
 
 std::string help_for(const std::string& command) {
-    if (command == "india") return command_help(command, download_options(false));
-    if (command == "xnas" || command == "xcme" || command == "xcbo") return command_help(command, download_options(true));
+    if (command == "download") return command_help(command, kDownload);
     if (command == "normalize") return command_help(command, kNormalize);
     if (command == "load") return command_help(command, kLoad);
     if (command == "check-tokens" || command == "check-lineage") return command_help(command, kChecks);
@@ -291,27 +291,23 @@ std::vector<std::string> date_list(const std::string& raw) {
     return out;
 }
 
-std::vector<std::string> venue_selection(const std::vector<std::string>& raw) {
-    if (raw.empty()) return {};
-    std::set<std::string> known;
-    for (const auto& [mic, v] : config::get().venues) known.insert(mic);
-    std::vector<std::string> picked;
-    std::set<std::string> unknown;
-    for (const auto& value : raw)
-        for (const auto& part : util::split(value, ",")) {
-            std::string mic = util::upper(util::strip(part));
-            if (mic.empty()) continue;
-            if (known.count(mic)) {
-                if (std::find(picked.begin(), picked.end(), mic) == picked.end()) picked.push_back(mic);
-            } else {
-                unknown.insert(mic);
-            }
-        }
-    if (!unknown.empty())
-        throw SystemExit{1, "Unknown venue(s): " + util::join({unknown.begin(), unknown.end()}, ", ") +
-                                ". Venues come from [venue.<MIC>] sections in " + config::get().file.string() +
-                                "; configured: " + (known.empty() ? "(none)" : util::join({known.begin(), known.end()}, ", "))};
-    return picked;
+std::string required_venue(const args::Parsed& p, const std::string& command) {
+    std::vector<std::string> known;
+    for (const auto& [mic, v] : config::get().venues) known.push_back(mic);
+    std::string list = known.empty() ? "(none)" : util::join(known, ", ");
+    auto raw = p.value("venue");
+    if (!raw || util::strip(*raw).empty())
+        throw args::UsageError{command + " needs --venue MIC: every run is for one exchange (configured: " + list + ")"};
+    std::string mic = util::upper(util::strip(*raw));
+    if (mic.find(',') != std::string::npos)
+        throw args::UsageError{"--venue " + *raw + ": one exchange per run; run " + command + " once for each"};
+    const auto* v = config::venue(mic);
+    if (v == nullptr)
+        throw SystemExit{1, "Unknown venue: " + mic + ". Venues come from [venue.<MIC>] sections in " +
+                                config::get().file.string() + "; configured: " + list};
+    if (!v->enabled)
+        throw SystemExit{1, mic + " is disabled: enabled = 0 in [venue." + mic + "] of " + config::get().file.string()};
+    return mic;
 }
 
 int run(const std::vector<std::string>& argv) {

@@ -63,13 +63,16 @@ needs (glibc, OpenSSL 3, zlib, zstd) is in a stock Ubuntu 22.04.
 premarket --config=/abs/config.ini [--keys=/abs/keys.ini] <command> [options]
 ```
 
+Every run is for one exchange, named with `--venue MIC`. There is no run for
+"all venues": a venue's day is its own download, normalize and load.
+
 | Command | What it does |
 |---|---|
-| `india` | download Fyers' Indian symbol masters (XNSE, XBOM, XIMC) |
-| `xnas`, `xcme`, `xcbo` | download the venue's definitions: a live replay of today's session |
-| `normalize` | normalize a day and number it (`counterTokenV2`); `--dates` fills older days |
-| `load` | deliver a normalized day through named sinks |
-| `check-tokens`, `check-lineage`, `check-state` | validate the numbering, the lineage, the state |
+| `download --venue MIC` | download the venue's contract master: the Databento live replay of today's session (XNAS, XCME, XCBO), or its Fyers symbol master (XNSE, XBOM, XIMC) |
+| `normalize --venue MIC` | normalize the venue's day and number it (`counterTokenV2`); `--dates` fills older days |
+| `load --venue MIC` | deliver the venue's normalized day through the sinks that carry it |
+| `check-tokens --venue MIC`, `check-lineage --venue MIC` | validate the venue's numbering and lineage |
+| `check-state` | audit the numbering state, which every venue shares |
 | `init-state` | create the numbering state, once per host |
 | `migrate-state` | move a 7.x numbering state and its manifests to v8, once |
 
@@ -149,12 +152,15 @@ PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.i
 $PM init-state --reason "first run on this host"      # once per host; 7.x hosts run migrate-state instead
 ```
 
-A day -- download, normalize, load:
+A venue's day -- download, normalize, load -- and the venues one at a time, in
+the order new contracts are numbered:
 
 ```bash
-$PM xcme                 # and xnas, xcbo, india
-$PM normalize --reason "daily"
-$PM load                 # every sink in sinks_dir; or --sink NAME ...
+for v in XNAS XCME XCBO XNSE XBOM XIMC; do
+    $PM download  --venue $v
+    $PM normalize --venue $v --reason "daily $v"
+    $PM load      --venue $v          # every sink that carries $v; or --sink NAME ...
+done
 ```
 
 **Older days** -- history before the first day, or a day that was missed. A
@@ -162,8 +168,8 @@ download is today's live replay only, so put each day's definition file (live
 instrument ids) in `data/YYYYMMDD/<MIC>/` by hand, then preview and fill:
 
 ```bash
-$PM normalize --dates=20260924,20260923 --venue XCME --reason "history before go-live" --dry-run
-$PM normalize --dates=20260924,20260923 --venue XCME --reason "history before go-live"
+$PM normalize --venue XCME --dates=20260924,20260923 --reason "history before go-live" --dry-run
+$PM normalize --venue XCME --dates=20260924,20260923 --reason "history before go-live"
 ```
 
 A fill runs newest first, takes a backup first, and ends with a quality gate
@@ -194,8 +200,8 @@ refused, because numbering it as a live day would fork the token chain.
   runs.jsonl                                       the run log (OpenLineage-shaped)
   backups/<run_id>.tar.gz                          before every fill, init-state and migrate-state
 
-<logs_dir>/<command>_<date>_<stamp>.log            one log per run
-<reports_dir>/<check>.{v2,ALL}.txt                 the latest report of each check
+<logs_dir>/<command>-<MIC>_<date>_<stamp>.log      one log per run
+<reports_dir>/<check>[-<MIC>].{v2,ALL}.txt         the latest report of each check, per venue
 <contracts_dir>/YYYYMMDD/                          basket contracts
 ```
 
@@ -306,31 +312,35 @@ and after that `normalize` and `load` refuse to run without it.
 
 ## Load
 
-`premarket load [--date-dir D] [--sink NAME ...]` delivers a normalized day, by
-default through every sink in `sinks_dir`. Each sink is one `<name>.ini` with a
-`[sink]` section (copy a `conf/sinks/*.ini.example`):
+`premarket load --venue MIC [--date-dir D] [--sink NAME ...]` delivers one
+venue's normalized day, by default through every sink in `sinks_dir` that
+carries that venue. Each sink is one `<name>.ini` with a `[sink]` section (copy a
+`conf/sinks/*.ini.example`):
 
-| type | keys | what it delivers |
-|---|---|---|
-| `clickhouse-normal` | `host port database username password secure` | the canonical schema, every venue: `contracts_YYYYMMDD`/`baskets_YYYYMMDD` and the current `contracts`/`baskets` |
-| `postgres-plugin` | `market venue_id database_url schema table create_table` | ONE market, as the legacy 17-column symbol master, upserted on `(token, trade_date)`; its `venue_id` must match config.ini's |
-| `mdf-tokenmap` | `markets dir` | `tokenmap.<MIC>.bin` for Databento venues, into the day's tree or MDF's `dir` |
+| type | keys | carries | what it delivers |
+|---|---|---|---|
+| `clickhouse-normal` | `host port database username password secure` | every venue | the canonical schema into `contracts_YYYYMMDD`/`baskets_YYYYMMDD` and the current `contracts`/`baskets`, replacing only this venue's rows (its contracts, and its baskets, whose names start with its MIC) |
+| `postgres-plugin` | `market venue_id database_url schema table create_table` | its `market` | the legacy 17-column symbol master, upserted on `(token, trade_date)`; its `venue_id` must match config.ini's |
+| `mdf-tokenmap` | `markets dir` | Databento venues in `markets` (empty = all) | `tokenmap.<MIC>.bin`, into the day's tree or MDF's `dir` |
 
-Every sink is read before anything is pushed. A day older than the newest live
+Loading the venues one by one builds the whole day in ClickHouse; the current
+mirrors hold each venue's newest live day. Every chosen sink is read and
+validated before anything is pushed. A day older than the venue's newest live
 day never becomes "current": it loads its dated ClickHouse tables but not the
-mirrors, and is refused for MDF's delivery directory. `--dry-run` validates
-every sink and connects to nothing.
+mirrors, and is refused for MDF's delivery directory. `--dry-run` validates the
+sinks and connects to nothing.
 
 ## Validation
 
 ```bash
-$PM check-tokens  --dates=20260824,20260825,20260826
-$PM check-lineage --dates=20260901 --venue XCBO
+$PM check-tokens  --venue XCME --dates=20260824,20260825,20260826
+$PM check-lineage --venue XCBO --dates=20260901
 $PM check-state
 ```
 
 `check-tokens` pins the numbering: tokens populated, numeric and inside int32,
-one-to-one with scripts, disjoint between venues, covered by the sequence, and
+one-to-one with scripts, disjoint from every other venue's on the same day,
+covered by the sequence, and
 agreeing with the manifest. Across a pair of days it also proves the recycling
 actually fired — that departures released, that arrivals drained the pool before
 drawing (held against the state snapshot the run started from), and which day
@@ -344,7 +354,8 @@ every number on disk, no commit is half-done, and every run was closed.
 
 `check-lineage` traces each stage back to the one before it: raw payload →
 normalized → plugin, plus the digests each manifest recorded for what it read and
-wrote. Reports land in `reports_dir`, tagged `[v2]` and `[ALL]`.
+wrote. Reports land in `reports_dir` (`check-tokens-<MIC>.{v2,ALL}.txt`, one per
+venue; `check-state.{v2,ALL}.txt`).
 
 All three exit non-zero on a hard failure. Soft findings (an unclosed run,
 counterTokenV2's expected offset reuse) are reported and do not fail the run.

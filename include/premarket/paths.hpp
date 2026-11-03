@@ -76,6 +76,8 @@ struct OptionBasketSource {
 extern const std::vector<OptionBasketSource> OPTION_BASKET_SOURCES;
 extern const std::vector<std::string> ALL_INDEX_FUTURES_PARTS;
 const std::vector<std::string>& basket_names();
+std::string basket_venue(const std::string& basket);
+std::vector<std::string> basket_names_of(const std::string& venue);
 std::string options_basket_name(const std::string& futures);
 
 }  // namespace premarket::paths

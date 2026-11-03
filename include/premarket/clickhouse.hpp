@@ -46,6 +46,6 @@ private:
     Config cfg_;
 };
 
-Result push(const Config& cfg, const std::string& date_dir, bool update_current);
+Result push(const Config& cfg, const std::string& date_dir, const std::string& venue, bool update_current);
 
 }  // namespace premarket::clickhouse

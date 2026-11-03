@@ -7,6 +7,9 @@ Every command is the one program, with the config and the keys by full path:
 
 ```PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini"```
 
+Every run is for one exchange, named with `--venue`: XNAS, XCME, XCBO, XNSE, XBOM,
+XIMC. There is no run for all of them at once.
+
 ## Once per host (8.0.0 and later)
 
 1. Install the release: deploy/SETUP.md, steps 1-2.
@@ -24,23 +27,28 @@ Every command is the one program, with the config and the keys by full path:
 
 ## Every day
 
-1. ```$PM india```, ```$PM xnas```, ```$PM xcme```, ```$PM xcbo```
+For each venue, one at a time, in the order XNAS, XCME, XCBO, XNSE, XBOM, XIMC:
+
+1. ```$PM download --venue XNAS```
 
 2. from NSE contract file 'NEW FILE FORMAT.rar', extract entire folder as a
    folder to /{YYYYMMDD}/XNSE/*
 
    Skip this while config.ini has `[venue.XNSE] feed = fyers` -- step 1's
-   `india` download already supplies XNSE. It applies only when XNSE is
-   switched back to the NSE file drop.
+   `download --venue XNSE` already supplies XNSE. It applies only when XNSE is
+   switched back to the NSE file drop (then XNSE has nothing to download).
 
-3. ```$PM normalize --reason "daily"```
+3. ```$PM normalize --venue XNAS --reason "daily"```
 
-   Run it as often as the venues arrive. A re-run keeps every token it already
-   gave out.
+   Run it as often as the venue's data arrives. A re-run keeps every token it
+   already gave out.
 
-4. ```$PM load```
+4. ```$PM check-state``` -- must end with `0 fail`.
 
-   Every sink in `/opt/securities/conf/sinks/`, or name them with `--sink NAME`.
+5. ```$PM load --venue XNAS```
+
+   Every sink in `/opt/securities/conf/sinks/` that carries the venue, or name
+   them with `--sink NAME`.
    `--dry-run` checks every sink file and connects to nothing. A failed sink
    does not stop the others, but the command exits non-zero -- read the
    `error:` line.
@@ -53,7 +61,7 @@ For history before a host's first day, or a day that was missed:
 
 1. Put the day's definition file (live instrument ids) in
    state/data/{YYYYMMDD}/{MIC}/ by hand: a download is today's live replay only.
-2. ```$PM normalize --dates=... --venue XCME --reason "why" --dry-run```
+2. ```$PM normalize --venue XCME --dates=... --reason "why" --dry-run```
    -- read the preview: per date and venue, where the tokens come from, how
    many are new, and how many exceptions.
 3. The same without `--dry-run`. It takes a backup first, fills newest first,
@@ -67,6 +75,7 @@ India (XBOM, XIMC, XNSE via Fyers) cannot be filled: Fyers serves today only.
 
 ## When something refuses
 
+- **"... needs --venue MIC"** -- name the exchange the run is for.
 - **"another numbering run holds ... .lock"** -- a normalize/load is already
   running (the message names it). Wait for it; do not delete the lock.
 - **"no state head ... run init-state"** -- this host was never initialised.
@@ -82,7 +91,7 @@ India (XBOM, XIMC, XNSE via Fyers) cannot be filled: Fyers serves today only.
 ## Checks
 
 ```$PM check-state```
-```$PM check-tokens --dates=YYYYMMDD,YYYYMMDD```
+```$PM check-tokens --venue XNAS --dates=YYYYMMDD,YYYYMMDD```
 
 Reports land in state/reports/. The run log is state/data/_state/runs.jsonl.
 

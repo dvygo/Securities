@@ -62,11 +62,31 @@ std::pair<std::string, std::int64_t> plugin_market(const Sink& sink) {
     return {market, *vid};
 }
 
-std::string newest_live(const state::Head& head) {
-    std::string best;
-    for (const auto& [mic, v] : head.venues)
-        if (!v.live_date.empty() && v.live_date > best) best = v.live_date;
-    return best;
+std::string newest_live(const state::Head& head, const std::string& venue) {
+    auto it = head.venues.find(venue);
+    return it == head.venues.end() ? "" : it->second.live_date;
+}
+
+std::vector<std::string> tokenmap_markets(const Sink& sink) {
+    std::vector<std::string> markets;
+    for (const auto& m : util::split(sink.get("markets", ""), ","))
+        if (!util::strip(m).empty()) markets.push_back(util::upper(util::strip(m)));
+    return markets;
+}
+
+std::string not_delivered(const Sink& sink, const std::string& venue) {
+    if (sink.type == POSTGRES_PLUGIN) {
+        std::string market = util::upper(util::strip(sink.get("market")));
+        return market == venue ? "" : "it pushes " + (market.empty() ? std::string("no market") : market);
+    }
+    if (sink.type == MDF_TOKENMAP) {
+        const auto* v = config::venue(venue);
+        if (v == nullptr || v->feed != "databento") return "MDF token maps are for Databento venues";
+        auto markets = tokenmap_markets(sink);
+        if (!markets.empty() && std::find(markets.begin(), markets.end(), venue) == markets.end())
+            return "its markets are " + util::join(markets, ",");
+    }
+    return "";
 }
 
 Json normalized_inputs(const std::string& date_dir, const std::set<std::string>& markets) {
@@ -83,7 +103,8 @@ struct Outcome {
     std::optional<bool> current_updated;
 };
 
-Outcome clickhouse_normal(const std::string& date_dir, const Sink& sink, const state::Head& head, bool dry_run) {
+Outcome clickhouse_normal(const std::string& date_dir, const std::string& venue, const Sink& sink, const state::Head& head,
+                          bool dry_run) {
     clickhouse::Config cfg;
     cfg.host = sink.require("host");
     auto port = util::parse_int(sink.get("port", "8123"));
@@ -95,19 +116,19 @@ Outcome clickhouse_normal(const std::string& date_dir, const Sink& sink, const s
     std::string secure = sink.get("secure", "0");
     if (secure != "0" && secure != "1") throw SinkError("sink " + sink.name + ": secure must be 0 or 1, got `" + secure + "`");
     cfg.secure = secure == "1";
-    std::string newest = newest_live(head);
+    std::string newest = newest_live(head, venue);
     bool current = newest.empty() || date_dir >= newest;
     if (!current)
-        log::out("    " + date_dir + " is older than the newest live day " + newest +
+        log::out("    " + date_dir + " is older than " + venue + "'s newest live day " + newest +
                  ": dated tables only, the current contracts/baskets mirrors are left alone");
     Outcome o;
-    o.inputs = normalized_inputs(date_dir, {});
+    o.inputs = normalized_inputs(date_dir, {venue});
     if (dry_run) {
-        log::out("    DRY RUN: would push " + std::to_string(o.inputs.size()) + " normalized file(s) to " + cfg.host + ":" +
-                 std::to_string(cfg.port) + "/" + cfg.database + (current ? "" : " (dated tables only)"));
+        log::out("    DRY RUN: would push " + venue + " (" + std::to_string(o.inputs.size()) + " normalized file(s)) to " +
+                 cfg.host + ":" + std::to_string(cfg.port) + "/" + cfg.database + (current ? "" : " (dated tables only)"));
         return o;
     }
-    auto result = clickhouse::push(cfg, date_dir, current);
+    auto result = clickhouse::push(cfg, date_dir, venue, current);
     for (const auto& t : result.tables)
         o.outputs.push_back({{"path", "clickhouse://" + cfg.host + "/" + t},
                              {"sha256", ""},
@@ -116,7 +137,7 @@ Outcome clickhouse_normal(const std::string& date_dir, const Sink& sink, const s
     return o;
 }
 
-Outcome postgres_plugin(const std::string& date_dir, const Sink& sink, const state::Head&, bool dry_run) {
+Outcome postgres_plugin(const std::string& date_dir, const std::string&, const Sink& sink, const state::Head&, bool dry_run) {
     auto [market, vid] = plugin_market(sink);
     postgres::Config cfg;
     cfg.database_url = sink.require("database_url");
@@ -141,13 +162,9 @@ Outcome postgres_plugin(const std::string& date_dir, const Sink& sink, const sta
     return o;
 }
 
-Outcome mdf_tokenmap(const std::string& date_dir, const Sink& sink, const state::Head& head, bool dry_run) {
-    std::vector<std::string> markets;
-    for (const auto& m : util::split(sink.get("markets", ""), ","))
-        if (!util::strip(m).empty()) markets.push_back(util::upper(util::strip(m)));
-    if (markets.empty())
-        for (const auto* v : config::venues_of_feed("databento"))
-            if (v->enabled) markets.push_back(v->mic);
+Outcome mdf_tokenmap(const std::string& date_dir, const std::string& venue, const Sink& sink, const state::Head& head,
+                     bool dry_run) {
+    std::vector<std::string> markets = {venue};
     std::string delivery = util::strip(sink.get("dir", ""));
     if (!delivery.empty() && !std::filesystem::path(delivery).is_absolute())
         throw SinkError("sink " + sink.name + ": dir must be an absolute path, got `" + delivery + "`");
@@ -198,18 +215,48 @@ Sink load_sink(const std::string& name) {
         throw SinkError("sink " + name + ": unknown type " + util::quoted(sink.type) + " (one of clickhouse-normal, postgres-plugin, mdf-tokenmap)");
     file.only(*sec, keys->second);
     for (const auto& k : sec->order) sink.settings[k] = sec->entries.at(k).value;
-    if (sink.type == POSTGRES_PLUGIN) plugin_market(sink);
     return sink;
 }
 
-int run(const std::string& date_dir, const std::vector<std::string>& names_in, bool dry_run) {
+void validate(const Sink& sink) {
+    if (sink.type == POSTGRES_PLUGIN) plugin_market(sink);
+    if (sink.type == MDF_TOKENMAP) {
+        std::string dir = util::strip(sink.get("dir", ""));
+        if (!dir.empty() && !std::filesystem::path(dir).is_absolute())
+            throw SinkError("sink " + sink.name + ": dir must be an absolute path, got `" + dir + "`");
+    }
+}
+
+std::vector<Sink> sinks_for(const std::string& venue, const std::vector<std::string>& names_in) {
     std::vector<std::string> names;
-    for (const auto& n : names_in.empty() ? available() : names_in)
+    for (const auto& n : names_in)
         if (std::find(names.begin(), names.end(), n) == names.end()) names.push_back(n);
-    if (names.empty())
-        throw SinkError("no sinks: " + paths::sinks_dir().string() + " holds no <name>.ini (templates: *.ini.example)");
-    std::vector<Sink> sinks;
-    for (const auto& n : names) sinks.push_back(load_sink(n));
+    std::vector<Sink> picked;
+    if (names.empty()) {
+        auto have = available();
+        if (have.empty())
+            throw SinkError("no sinks: " + paths::sinks_dir().string() + " holds no <name>.ini (templates: *.ini.example)");
+        for (const auto& n : have) {
+            auto sink = load_sink(n);
+            if (not_delivered(sink, venue).empty()) picked.push_back(sink);
+        }
+        if (picked.empty())
+            throw SinkError("no sink in " + paths::sinks_dir().string() + " delivers " + venue + " (sinks there: " +
+                            util::join(have, ", ") + ")");
+    } else {
+        for (const auto& n : names) {
+            auto sink = load_sink(n);
+            if (auto why = not_delivered(sink, venue); !why.empty())
+                throw SinkError("sink " + n + " does not deliver " + venue + ": " + why);
+            picked.push_back(sink);
+        }
+    }
+    for (const auto& sink : picked) validate(sink);
+    return picked;
+}
+
+int run(const std::string& date_dir, const std::string& venue, const std::vector<std::string>& names_in, bool dry_run) {
+    auto sinks = sinks_for(venue, names_in);
     std::vector<std::string> failures;
     state::Lock lock("load");
     auto head = state::require_head();
@@ -218,27 +265,27 @@ int run(const std::string& date_dir, const std::vector<std::string>& names_in, b
         Json sink_names = Json::array();
         for (const auto& s : sinks) sink_names.push_back(s.name);
         state::append_event(state::event("START", run_id, "load",
-                                         {{"date", date_dir}, {"sinks", sink_names}, {"operator", state::operator_id()}}));
+                                         {{"date", date_dir}, {"venue", venue}, {"sinks", sink_names}, {"operator", state::operator_id()}}));
     }
     for (const auto& sink : sinks) {
         log::out(">>> load " + sink.name + " (" + sink.type + ")");
         std::string child = state::new_run_id(date_dir, "load");
         Outcome result;
         try {
-            if (sink.type == CLICKHOUSE_NORMAL) result = clickhouse_normal(date_dir, sink, head, dry_run);
-            else if (sink.type == POSTGRES_PLUGIN) result = postgres_plugin(date_dir, sink, head, dry_run);
-            else result = mdf_tokenmap(date_dir, sink, head, dry_run);
+            if (sink.type == CLICKHOUSE_NORMAL) result = clickhouse_normal(date_dir, venue, sink, head, dry_run);
+            else if (sink.type == POSTGRES_PLUGIN) result = postgres_plugin(date_dir, venue, sink, head, dry_run);
+            else result = mdf_tokenmap(date_dir, venue, sink, head, dry_run);
         } catch (const std::exception& exc) {
             failures.push_back(sink.name + ": " + exc.what());
             log::out("error: load " + sink.name + ": " + exc.what());
             if (!dry_run)
                 state::append_event(state::event("FAIL", child, "load",
-                                                 {{"sink", sink.name}, {"type", sink.type}, {"date", date_dir}, {"error", exc.what()}},
+                                                 {{"sink", sink.name}, {"type", sink.type}, {"date", date_dir}, {"venue", venue}, {"error", exc.what()}},
                                                  Json::array(), Json::array(), run_id));
             continue;
         }
         if (!dry_run) {
-            Json facets = {{"sink", sink.name}, {"type", sink.type}, {"date", date_dir}};
+            Json facets = {{"sink", sink.name}, {"type", sink.type}, {"date", date_dir}, {"venue", venue}};
             if (result.current_updated) facets["current_updated"] = *result.current_updated;
             state::append_event(state::event("COMPLETE", child, "load", facets, result.inputs, result.outputs, run_id));
         }
@@ -246,7 +293,8 @@ int run(const std::string& date_dir, const std::vector<std::string>& names_in, b
     if (!dry_run) {
         Json f = Json::array();
         for (const auto& x : failures) f.push_back(x);
-        state::append_event(state::event(failures.empty() ? "COMPLETE" : "FAIL", run_id, "load", {{"date", date_dir}, {"failures", f}}));
+        state::append_event(state::event(failures.empty() ? "COMPLETE" : "FAIL", run_id, "load",
+                                         {{"date", date_dir}, {"venue", venue}, {"failures", f}}));
     }
     return failures.empty() ? 0 : 1;
 }

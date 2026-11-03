@@ -27,7 +27,7 @@ std::vector<std::filesystem::path> write_reports(const std::vector<Check>& check
 int report(const std::vector<Check>& checks, const std::string& suite = "");
 
 std::vector<Check> state_checks();
-std::vector<Check> token_checks(const std::vector<std::string>& dates, const std::vector<std::string>& venues);
-std::vector<Check> lineage_checks(const std::vector<std::string>& dates, const std::vector<std::string>& venues);
+std::vector<Check> token_checks(const std::vector<std::string>& dates, const std::string& venue);
+std::vector<Check> lineage_checks(const std::vector<std::string>& dates, const std::string& venue);
 
 }  // namespace premarket::qa

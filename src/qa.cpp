@@ -284,13 +284,13 @@ std::vector<Check> token_day(const std::string& date_dir, const std::set<std::st
     for (const auto& [mic, why] : unreadable) checks.push_back({date_dir, mic, "manifest readable", false, why});
     std::map<std::string, std::set<std::string>> seen_tokens;
     for (const auto& [mic, e] : entries) {
-        if (files.count(mic) || (!wanted.empty() && !wanted.count(mic))) continue;
+        if (files.count(mic) || !wanted.count(mic)) continue;
         checks.push_back({date_dir, mic, "manifest has data", false,
                           "manifest allocates " + cz(e.assigned.size()) +
                               " script(s) but no normalized parquet exists -- the next day will still carry this allocation forward"});
     }
     for (const auto& [mic, paths_] : files) {
-        if (!wanted.empty() && !wanted.count(mic)) continue;
+        if (!wanted.count(mic)) continue;
         const auto* cfg = config::venue(mic);
         if (cfg == nullptr || !cfg->venue_id) continue;
         auto cols = read_columns(paths_, {"script", "counterToken", "counterTokenV2"});
@@ -329,17 +329,23 @@ std::vector<Check> token_day(const std::string& date_dir, const std::set<std::st
         if (jstr(jget(block, "mode"), "") == "fill")
             for (auto& ch : check_fill(date_dir, mic, block)) checks.push_back(ch);
     }
-    if (seen_tokens.size() > 1) {
-        std::size_t total = 0;
-        std::set<std::string> uni;
-        std::vector<std::string> names;
-        for (const auto& [mic, t] : seen_tokens) {
-            total += t.size();
-            uni.insert(t.begin(), t.end());
-            names.push_back(mic);
+    for (const auto& [mic, mine] : seen_tokens) {
+        std::vector<std::string> clashes, others;
+        for (const auto& [other, files_] : files) {
+            if (other == mic) continue;
+            const auto* ocfg = config::venue(other);
+            if (ocfg == nullptr || !ocfg->venue_id) continue;
+            others.push_back(other);
+            auto theirs = read_columns(files_, {"counterTokenV2"});
+            std::size_t shared = 0;
+            std::set<std::string> counted;
+            for (const auto& t : theirs.cols[0])
+                if (t && !t->empty() && mine.count(*t) && counted.insert(*t).second) ++shared;
+            if (shared) clashes.push_back(cz(shared) + " with " + other);
         }
-        checks.push_back({date_dir, "*", "venues disjoint", total == uni.size(),
-                          cz(total - uni.size()) + " token(s) shared between venues (" + util::join(names, ", ") + ")"});
+        checks.push_back({date_dir, mic, "venues disjoint", clashes.empty(),
+                          clashes.empty() ? "no token shared with " + (others.empty() ? std::string("any other venue") : util::join(others, ", "))
+                                          : "token(s) shared: " + util::join(clashes, "; ")});
     }
     if (auto issued = counter_token::load_sequence(date_dir)) {
         std::int64_t highest = 0;
@@ -530,7 +536,7 @@ std::vector<Check> lineage_day(const std::string& date_dir, const std::set<std::
     std::int64_t day_start = util::day_start_ns(date_dir), day_end = day_start + 86400000000000LL;
     std::error_code ec;
     for (const auto& [mic, cfg] : config::get().venues) {
-        if (!wanted.empty() && !wanted.count(mic)) continue;
+        if (!wanted.count(mic)) continue;
         std::vector<std::filesystem::path> matches;
         if (std::filesystem::is_directory(ndir, ec))
             for (const auto& p : util::list_dir_sorted(ndir))
@@ -696,7 +702,7 @@ std::vector<Check> lineage_day(const std::string& date_dir, const std::set<std::
         std::vector<std::filesystem::path> files;
         for (const auto& p : util::list_dir_sorted(pdir)) {
             std::string n = p.filename().string();
-            if (util::ends_with(n, ".parquet") && (wanted.empty() || wanted.count(util::upper(n.substr(0, n.find('-'))))))
+            if (util::ends_with(n, ".parquet") && wanted.count(util::upper(n.substr(0, n.find('-')))))
                 files.push_back(p);
         }
         if (!files.empty()) {
@@ -860,9 +866,8 @@ std::vector<Check> state_checks() {
     return checks;
 }
 
-std::vector<Check> token_checks(const std::vector<std::string>& dates, const std::vector<std::string>& venues) {
-    std::set<std::string> wanted;
-    for (const auto& v : venues) wanted.insert(util::upper(v));
+std::vector<Check> token_checks(const std::vector<std::string>& dates, const std::string& venue) {
+    std::set<std::string> wanted = {util::upper(venue)};
     std::set<std::string> days(dates.begin(), dates.end());
     std::vector<Check> checks;
     for (const auto& day : days)
@@ -870,16 +875,15 @@ std::vector<Check> token_checks(const std::vector<std::string>& dates, const std
     std::map<std::string, std::vector<std::string>> per_venue;
     for (const auto& day : days)
         for (const auto& [mic, files] : venue_files(day))
-            if (wanted.empty() || wanted.count(mic)) per_venue[mic].push_back(day);
+            if (wanted.count(mic)) per_venue[mic].push_back(day);
     for (const auto& [mic, ds] : per_venue)
         for (std::size_t i = 0; i + 1 < ds.size(); ++i)
             for (auto& ch : token_pair(ds[i], ds[i + 1], mic)) checks.push_back(ch);
     return checks;
 }
 
-std::vector<Check> lineage_checks(const std::vector<std::string>& dates, const std::vector<std::string>& venues) {
-    std::set<std::string> wanted;
-    for (const auto& v : venues) wanted.insert(util::upper(v));
+std::vector<Check> lineage_checks(const std::vector<std::string>& dates, const std::string& venue) {
+    std::set<std::string> wanted = {util::upper(venue)};
     std::vector<Check> checks;
     for (const auto& day : std::set<std::string>(dates.begin(), dates.end()))
         for (auto& ch : lineage_day(day, wanted)) checks.push_back(ch);

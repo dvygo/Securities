@@ -70,17 +70,38 @@ TEST_CASE("sink files are strict") {
     CHECK_THROWS_WITH(load::load_sink("x"), doctest::Contains("unknown type"));
     box.sink("pg", "type = postgres-normal\n");
     CHECK_THROWS_WITH(load::load_sink("pg"), doctest::Contains("planned"));
-    box.sink("p", "type = postgres-plugin\nmarket = XCME,XNAS\nvenue_id = 12\n");
-    CHECK_THROWS_WITH(load::load_sink("p"), doctest::Contains("ONE market"));
-    box.sink("p", "type = postgres-plugin\nmarket = XNAS\nvenue_id = 12\n");
-    CHECK_THROWS_WITH(load::load_sink("p"), doctest::Contains("another's identity"));
-    box.sink("p", "type = postgres-plugin\nmarket = XCBO\nvenue_id = 10\n");
-    CHECK_THROWS_WITH(load::load_sink("p"), doctest::Contains("disabled"));
     box.sink("c", std::string(kClickhouse) + "passwd = x\n");
     CHECK_THROWS_WITH(load::load_sink("c"), doctest::Contains("passwd is not a known key"));
     box.sink("c", std::string(kClickhouse) + "[extra]\n");
     CHECK_THROWS_WITH(load::load_sink("c"), doctest::Contains("[extra] is not a known section (sink)"));
     CHECK(load::load_sink("clickhouse-normal").get("password") == "p");
+}
+
+TEST_CASE("a load delivers one venue, through the sinks that carry it") {
+    Box box;
+    box.sink("ch", kClickhouse);
+    box.sink("mdf", "type = mdf-tokenmap\n");
+    box.sink("mdf-xcme", "type = mdf-tokenmap\nmarkets = XCME\n");
+    box.sink("pg-xnas", "type = postgres-plugin\nmarket = XNAS\nvenue_id = 14\ndatabase_url = postgres://x\nschema = s\ntable = t\n");
+    box.sink("pg-xcbo", "type = postgres-plugin\nmarket = XCBO\nvenue_id = 10\ndatabase_url = postgres://x\nschema = s\ntable = t\n");
+    auto names = [](const std::vector<load::Sink>& sinks) {
+        std::vector<std::string> out;
+        for (const auto& s : sinks) out.push_back(s.name);
+        return out;
+    };
+    CHECK(names(load::sinks_for("XNAS", {})) == std::vector<std::string>{"ch", "mdf", "pg-xnas"});
+    CHECK(names(load::sinks_for("XCME", {})) == std::vector<std::string>{"ch", "mdf-xcme", "mdf"});
+    CHECK_THROWS_WITH(load::sinks_for("XNAS", {"pg-xcbo"}), "sink pg-xcbo does not deliver XNAS: it pushes XCBO");
+    CHECK_THROWS_WITH(load::sinks_for("XNAS", {"mdf-xcme"}), "sink mdf-xcme does not deliver XNAS: its markets are XCME");
+    CHECK_THROWS_WITH(load::sinks_for("XCBO", {"pg-xcbo"}), doctest::Contains("disabled"));
+    box.sink("pg-xnas", "type = postgres-plugin\nmarket = XNAS\nvenue_id = 12\ndatabase_url = postgres://x\nschema = s\ntable = t\n");
+    CHECK_THROWS_WITH(load::sinks_for("XNAS", {}), doctest::Contains("another's identity"));
+    box.sink("pg-xnas", "type = postgres-plugin\nmarket = XCME,XNAS\nvenue_id = 12\n");
+    CHECK_THROWS_WITH(load::sinks_for("XNAS", {"pg-xnas"}), doctest::Contains("does not deliver XNAS"));
+    fs::remove(box.root / "sinks" / "pg-xnas.ini");
+    fs::remove(box.root / "sinks" / "ch.ini");
+    box.sink("mdf", "type = mdf-tokenmap\nmarkets = XCME\n");
+    CHECK_THROWS_WITH(load::sinks_for("XNAS", {}), doctest::Contains("no sink in"));
 }
 
 TEST_CASE("every shipped template is a valid sink against the shipped config") {
@@ -102,13 +123,20 @@ TEST_CASE("every shipped template is a valid sink against the shipped config") {
     std::set<std::string> types;
     for (const auto& n : names) types.insert(load::load_sink(n).type);
     CHECK(types == std::set<std::string>{load::CLICKHOUSE_NORMAL, load::POSTGRES_PLUGIN, load::MDF_TOKENMAP});
+    for (const char* mic : {"XNAS", "XCBO", "XCME"}) {
+        CAPTURE(mic);
+        auto sinks = load::sinks_for(mic, {});
+        REQUIRE(sinks.size() == 3);
+        CHECK(sinks[2].name == "postgres-plugin-" + util::lower(mic));
+    }
+    CHECK(load::sinks_for("XNSE", {}).size() == 1);
     CHECK_THROWS_WITH(config::databento_key("XNAS"), doctest::Contains("No Databento API key for XNAS"));
 }
 
 TEST_CASE("every sink is loaded before anything is pushed") {
     Box box;
     box.sink("ch", kClickhouse);
-    CHECK_THROWS_AS(load::run(LIVE, {"ch", "missing"}, false), load::SinkError);
+    CHECK_THROWS_AS(load::run(LIVE, "XNAS", {"ch", "missing"}, false), load::SinkError);
     CHECK(load_events().empty());
 }
 
@@ -116,7 +144,7 @@ TEST_CASE("a dry run connects to nothing and logs nothing") {
     Box box;
     box.sink("ch", kClickhouse);
     auto before = state::read_events().size();
-    CHECK(load::run(LIVE, {"ch"}, true) == 0);
+    CHECK(load::run(LIVE, "XNAS", {"ch"}, true) == 0);
     CHECK(state::read_events().size() == before);
 }
 
@@ -124,25 +152,27 @@ TEST_CASE("load needs the state") {
     Box box;
     box.sink("ch", kClickhouse);
     fs::remove(state::head_path());
-    CHECK_THROWS_AS(load::run(LIVE, {"ch"}, false), state::StateMissing);
+    CHECK_THROWS_AS(load::run(LIVE, "XNAS", {"ch"}, false), state::StateMissing);
 }
 
 TEST_CASE("the run log records each sink") {
     Box box;
     box.sink("mdf", "type = mdf-tokenmap\n");
-    REQUIRE(load::run(LIVE, {"mdf"}, false) == 0);
+    REQUIRE(load::run(LIVE, "XNAS", {"mdf"}, false) == 0);
     auto loads = load_events();
     CHECK(kinds(loads) == std::vector<std::string>{"START", "COMPLETE", "COMPLETE"});
     REQUIRE(loads.size() == 3);
+    CHECK(loads[0]["run"]["facets"]["premarket"]["venue"] == "XNAS");
     CHECK(loads[1]["run"]["facets"]["premarket"]["sink"] == "mdf");
     CHECK(loads[1]["run"]["facets"]["parent"]["run"]["runId"] == loads[0]["run"]["runId"]);
+    CHECK(fixture::files_under(plugin::tokenmap::tokenmap_dir(LIVE)) == std::vector<std::string>{plugin::tokenmap::filename("XNAS")});
+    REQUIRE(load::run(LIVE, "XCME", {"mdf"}, false) == 0);
     for (const char* mic : {"XCME", "XNAS"}) {
         CAPTURE(mic);
         auto file = plugin::tokenmap::tokenmap_dir(LIVE) / plugin::tokenmap::filename(mic);
         REQUIRE(fs::exists(file));
         CHECK(plugin::tokenmap::verify(util::read_file(file), mic).entries == 1);
     }
-    CHECK_FALSE(fs::exists(plugin::tokenmap::tokenmap_dir(LIVE) / plugin::tokenmap::filename("XCBO")));
 }
 
 TEST_CASE("a failing sink fails the load but the others still run") {
@@ -150,7 +180,7 @@ TEST_CASE("a failing sink fails the load but the others still run") {
     box.sink("ch", kClickhouse);
     box.sink("mdf", "type = mdf-tokenmap\n");
     fixture::Stderr err;
-    CHECK(load::run(LIVE, {"ch", "mdf"}, false) == 1);
+    CHECK(load::run(LIVE, "XNAS", {"ch", "mdf"}, false) == 1);
     CHECK(kinds(load_events()) == std::vector<std::string>{"START", "FAIL", "COMPLETE", "FAIL"});
     CHECK(fs::exists(plugin::tokenmap::tokenmap_dir(LIVE) / plugin::tokenmap::filename("XNAS")));
 }
@@ -162,7 +192,7 @@ TEST_CASE("an older day's token map never reaches MDF, but may go into its own t
     box.sink("own", "type = mdf-tokenmap\n");
     {
         fixture::Stderr err;
-        CHECK(load::run(OLDER, {"mdf"}, false) == 1);
+        CHECK(load::run(OLDER, "XCME", {"mdf"}, false) == 1);
     }
     std::string error;
     for (const auto& e : load_events())
@@ -170,7 +200,6 @@ TEST_CASE("an older day's token map never reaches MDF, but may go into its own t
             error = e["run"]["facets"]["premarket"]["error"].get<std::string>();
     CHECK(error.find("refusing to deliver") != std::string::npos);
     CHECK(fixture::files_under(vendor).empty());
-    CHECK(load::run(OLDER, {"own"}, false) == 0);
-    CHECK(fixture::files_under(plugin::tokenmap::tokenmap_dir(OLDER)) ==
-          std::vector<std::string>{plugin::tokenmap::filename("XCME"), plugin::tokenmap::filename("XNAS")});
+    CHECK(load::run(OLDER, "XCME", {"own"}, false) == 0);
+    CHECK(fixture::files_under(plugin::tokenmap::tokenmap_dir(OLDER)) == std::vector<std::string>{plugin::tokenmap::filename("XCME")});
 }

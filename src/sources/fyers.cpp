@@ -131,11 +131,12 @@ std::string fetch(const std::string& url, const config::Fyers& cfg) {
 void download(runner::Opts& opts) {
     const auto& cfg = config::get().fyers;
     if (opts.dry_run) {
-        log::out("DRY RUN: Would download Fyers symbol master data");
+        log::out("DRY RUN: Would download the Fyers symbol masters of " + opts.venue);
         return;
     }
     for (const auto& seg : paths::FYERS_RAW_SEGMENTS) {
         std::string mic = paths::fyers_segment_mic(seg.segment);
+        if (!runner::venue_selected(opts, mic)) continue;
         if (!config::owns(mic, "fyers")) {
             std::string feed = config::feed_for(mic);
             log::out("Skipping " + seg.segment + ": " + mic + " is on the " + util::quoted(feed) + " feed, not Fyers");

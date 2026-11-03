@@ -62,14 +62,30 @@ void swap_into_place(Client& c, const std::string& db, const std::string& stage,
     c.command("DROP TABLE IF EXISTS " + q(db) + "." + q(stage));
 }
 
-std::int64_t push_contracts(Client& c, const std::string& db, const std::string& date_dir, bool update_current) {
+std::map<std::string, std::string> copy_settings() {
+    std::string n = std::to_string(EXPORT_BATCH_ROWS);
+    return {{"max_block_size", n}, {"max_insert_block_size", n}, {"min_insert_block_size_rows", n},
+            {"min_insert_block_size_bytes", "0"}};
+}
+
+void keep_others(Client& c, const std::string& db, const std::string& target, const std::string& stage,
+                 const std::string& others) {
+    c.command("INSERT INTO " + q(db) + "." + q(stage) + " SELECT * FROM " + q(db) + "." + q(target) + " WHERE " + others,
+              copy_settings());
+}
+
+std::string literal(const std::string& s) { return "'" + util::replace_all(util::replace_all(s, "\\", "\\\\"), "'", "\\'") + "'"; }
+
+std::int64_t push_contracts(Client& c, const std::string& db, const std::string& date_dir, const std::string& venue,
+                            bool update_current) {
     std::string dated = contracts_table(date_dir);
     auto cols = contract_columns();
     std::string order_by = "\"exchange\", \"script\"";
+    std::string others = "\"exchange\" != " + literal(venue);
     ensure_target(c, db, dated, cols, order_by);
     drop_create(c, db, staging(dated), cols, order_by);
     std::int64_t total = 0;
-    exporter::iter_contract_rows(date_dir, EXPORT_BATCH_ROWS, [&](const std::vector<std::vector<std::string>>& batch) {
+    exporter::iter_contract_rows(date_dir, venue, EXPORT_BATCH_ROWS, [&](const std::vector<std::vector<std::string>>& batch) {
         if (batch.empty()) return;
         std::string body;
         for (const auto& row : batch) {
@@ -83,50 +99,51 @@ std::int64_t push_contracts(Client& c, const std::string& db, const std::string&
         log::out("      " + std::to_string(total) + " row(s) -> " + db + "." + dated + "...");
     });
     if (!total) {
-        log::out("    No contracts to push for " + date_dir);
+        log::out("    No " + venue + " contracts to push for " + date_dir + "; " + db + "." + dated + " is left as it is");
         c.command("DROP TABLE IF EXISTS " + q(db) + "." + q(staging(dated)));
         return 0;
     }
+    keep_others(c, db, dated, staging(dated), others);
     swap_into_place(c, db, staging(dated), dated);
-    log::out("    Pushed " + std::to_string(total) + " rows -> " + db + "." + dated);
+    log::out("    Pushed " + std::to_string(total) + " " + venue + " rows -> " + db + "." + dated);
     if (!update_current) {
-        log::out("    Not touching " + db + ".contracts: " + date_dir + " is older than the newest live day");
+        log::out("    Not touching " + db + ".contracts: " + date_dir + " is older than " + venue + "'s newest live day");
         return total;
     }
     ensure_target(c, db, "contracts", cols, order_by);
     drop_create(c, db, staging("contracts"), cols, order_by);
-    std::string n = std::to_string(EXPORT_BATCH_ROWS);
-    c.command("INSERT INTO " + q(db) + "." + q(staging("contracts")) + " SELECT * FROM " + q(db) + "." + q(dated),
-              {{"max_block_size", n}, {"max_insert_block_size", n}, {"min_insert_block_size_rows", n},
-               {"min_insert_block_size_bytes", "0"}});
+    keep_others(c, db, "contracts", staging("contracts"), others);
+    c.command("INSERT INTO " + q(db) + "." + q(staging("contracts")) + " SELECT * FROM " + q(db) + "." + q(dated) +
+                  " WHERE \"exchange\" = " + literal(venue),
+              copy_settings());
     swap_into_place(c, db, staging("contracts"), "contracts");
-    log::out("    Pushed " + std::to_string(total) + " rows -> " + db + ".contracts (current mirror)");
+    log::out("    Pushed " + std::to_string(total) + " " + venue + " rows -> " + db + ".contracts (current mirror)");
     return total;
 }
 
-std::int64_t push_baskets(Client& c, const std::string& db, const std::string& date_dir, bool update_current) {
+std::int64_t push_baskets(Client& c, const std::string& db, const std::string& date_dir, const std::string& venue,
+                          bool update_current) {
     std::vector<std::string> order;
     std::map<std::string, std::vector<std::string>> grouped;
-    for (const auto& row : exporter::aggregate_basket_rows(date_dir)) {
+    for (const auto& row : exporter::basket_rows(date_dir, venue)) {
         if (row.basket.empty() || row.script.empty()) continue;
         if (!grouped.count(row.basket)) order.push_back(row.basket);
         grouped[row.basket].push_back(row.script);
     }
-    if (grouped.empty()) {
-        log::out("    No baskets to push for " + date_dir);
-        return 0;
-    }
+    if (grouped.empty()) return 0;
     std::vector<std::string> targets = {baskets_table(date_dir)};
     if (update_current) targets.push_back("baskets");
+    std::string others = "NOT startsWith(\"basket\", " + literal(venue + "_") + ")";
     for (const auto& target : targets) {
         ensure_target(c, db, target, kBasketColumns, "\"basket\"");
         drop_create(c, db, staging(target), kBasketColumns, "\"basket\"");
+        keep_others(c, db, target, staging(target), others);
         for (const auto& name : order) {
             jsonio::Json obj = {{"date", date_dir}, {"basket", name}, {"scripts", grouped[name]}};
             c.insert_json(staging(target), {"date", "basket", "scripts"}, jsonio::line(obj) + "\n");
         }
         swap_into_place(c, db, staging(target), target);
-        log::out("    Pushed " + std::to_string(order.size()) + " baskets -> " + db + "." + target);
+        log::out("    Pushed " + std::to_string(order.size()) + " " + venue + " baskets -> " + db + "." + target);
     }
     return static_cast<std::int64_t>(order.size());
 }
@@ -189,18 +206,18 @@ void Client::insert_json(const std::string& table, const std::vector<std::string
     post(cfg_, "async_insert=0&database=" + url_encode(cfg_.database) + "&query=" + url_encode(sql), body);
 }
 
-Result push(const Config& cfg, const std::string& date_dir, bool update_current) {
-    log::out("  Pushing to ClickHouse " + cfg.host + ":" + std::to_string(cfg.port) + "/" + cfg.database + "...");
+Result push(const Config& cfg, const std::string& date_dir, const std::string& venue, bool update_current) {
+    log::out("  Pushing " + venue + " to ClickHouse " + cfg.host + ":" + std::to_string(cfg.port) + "/" + cfg.database + "...");
     Client c(cfg);
     c.command("CREATE DATABASE IF NOT EXISTS " + q(cfg.database), {}, false);
     Result r;
-    r.contracts = push_contracts(c, cfg.database, date_dir, update_current);
-    r.baskets = push_baskets(c, cfg.database, date_dir, update_current);
-    std::vector<std::string> tables = {contracts_table(date_dir), baskets_table(date_dir)};
-    if (update_current) {
-        tables.push_back("contracts");
-        tables.push_back("baskets");
-    }
+    r.contracts = push_contracts(c, cfg.database, date_dir, venue, update_current);
+    r.baskets = push_baskets(c, cfg.database, date_dir, venue, update_current);
+    std::vector<std::string> tables;
+    if (r.contracts) tables.push_back(contracts_table(date_dir));
+    if (r.baskets) tables.push_back(baskets_table(date_dir));
+    if (update_current && r.contracts) tables.push_back("contracts");
+    if (update_current && r.baskets) tables.push_back("baskets");
     for (const auto& t : tables) r.tables.push_back(cfg.database + "." + t);
     log::out("  Successfully pushed to " + cfg.database);
     return r;

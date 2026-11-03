@@ -171,6 +171,15 @@ const std::vector<std::string>& basket_names() {
     return names;
 }
 
+std::string basket_venue(const std::string& basket) { return basket.substr(0, basket.find('_')); }
+
+std::vector<std::string> basket_names_of(const std::string& venue) {
+    std::vector<std::string> out;
+    for (const auto& name : basket_names())
+        if (basket_venue(name) == venue) out.push_back(name);
+    return out;
+}
+
 std::string options_basket_name(const std::string& futures) {
     auto pos = futures.find('_');
     if (pos == std::string::npos) return futures + "_OPTIONS_";

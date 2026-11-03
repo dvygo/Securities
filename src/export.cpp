@@ -27,11 +27,12 @@ std::string exchange_of(const std::filesystem::path& normalized_file) {
     return name.substr(0, name.find('-'));
 }
 
-void iter_contract_rows(const std::string& date_dir, std::size_t batch_rows,
+void iter_contract_rows(const std::string& date_dir, const std::string& venue, std::size_t batch_rows,
                         const std::function<void(const std::vector<std::vector<std::string>>&)>& fn) {
     std::set<std::pair<std::string, std::string>> seen;
     for (const auto& path : normalized_files(date_dir)) {
         std::string exchange = exchange_of(path);
+        if (exchange != venue) continue;
         std::vector<std::vector<std::string>> batch;
         try {
             parquet::iter_rows(path, parquet::CHUNK_ROWS, [&](const std::vector<std::string>& columns,
@@ -63,7 +64,7 @@ void iter_contract_rows(const std::string& date_dir, std::size_t batch_rows,
     }
 }
 
-std::vector<BasketRow> aggregate_basket_rows(const std::string& date_dir) {
+std::vector<BasketRow> basket_rows(const std::string& date_dir, const std::string& venue) {
     std::vector<BasketRow> rows;
     auto dir = paths::contracts_day_dir(date_dir);
     std::error_code ec;
@@ -72,6 +73,7 @@ std::vector<BasketRow> aggregate_basket_rows(const std::string& date_dir) {
         std::string name = path.filename().string();
         if (!util::ends_with(name, parquet::SUFFIX)) continue;
         std::string basket = name.substr(0, name.size() - std::string(parquet::SUFFIX).size());
+        if (paths::basket_venue(basket) != venue) continue;
         try {
             auto table = parquet::read_table(path);
             int i_script = table.index("script"), i_symbol = table.index("symbol");
@@ -94,22 +96,23 @@ std::vector<BasketRow> aggregate_basket_rows(const std::string& date_dir) {
     return rows;
 }
 
-void write_aggregate_csvs(const std::string& date_dir, const std::filesystem::path& output_dir) {
+std::vector<std::filesystem::path> write_csvs(const std::string& date_dir, const std::string& venue,
+                                              const std::filesystem::path& output_dir) {
     std::filesystem::create_directories(output_dir);
-    log::out("  Exporting contracts.csv...");
+    std::vector<std::filesystem::path> written;
     std::string contracts = "\xEF\xBB\xBF" + csv::format_line(paths::CONTRACT_COLUMNS) + "\n";
     std::size_t n = 0;
-    iter_contract_rows(date_dir, CONTRACT_BATCH_ROWS, [&](const auto& batch) {
+    iter_contract_rows(date_dir, venue, CONTRACT_BATCH_ROWS, [&](const auto& batch) {
         for (const auto& row : batch) contracts += csv::format_line(row) + "\n";
         n += batch.size();
     });
     if (n) {
-        auto out = output_dir / "contracts.csv";
+        auto out = output_dir / (venue + "-contracts.csv");
         util::write_file(out, contracts);
         log::out("    Wrote " + std::to_string(n) + " rows to " + out.string());
+        written.push_back(out);
     }
-    log::out("  Exporting baskets.csv...");
-    auto baskets = aggregate_basket_rows(date_dir);
+    auto baskets = basket_rows(date_dir, venue);
     if (!baskets.empty()) {
         std::vector<std::string> header = {"date", "basket", "script"};
         for (const auto& c : paths::NEXUS_BASKET_COLUMNS)
@@ -120,23 +123,22 @@ void write_aggregate_csvs(const std::string& date_dir, const std::filesystem::pa
             row.insert(row.end(), b.nexus.begin(), b.nexus.end());
             text += csv::format_line(row) + "\n";
         }
-        auto out = output_dir / "baskets.csv";
+        auto out = output_dir / (venue + "-baskets.csv");
         util::write_file(out, text);
         log::out("    Wrote " + std::to_string(baskets.size()) + " rows to " + out.string());
+        written.push_back(out);
     }
+    return written;
 }
 
 void run(runner::Opts& opts) {
+    if (!opts.csv_dir) return;
     if (opts.dry_run) {
-        log::out("DRY RUN: Would export CSVs");
+        log::out("DRY RUN: Would export " + opts.venue + "'s CSVs to " + *opts.csv_dir);
         return;
     }
-    log::out("  Exporting CSVs...");
-    if (!opts.csv_dir) {
-        log::out("    No --csv directory specified, skipping CSV export");
-        return;
-    }
-    write_aggregate_csvs(opts.date_dir, *opts.csv_dir);
+    log::out("  Exporting " + opts.venue + "'s CSVs...");
+    write_csvs(opts.date_dir, opts.venue, *opts.csv_dir);
 }
 
 }  // namespace premarket::exporter

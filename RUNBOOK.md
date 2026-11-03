@@ -114,12 +114,12 @@ system.
 ## 1. Download
 
 ```bash
-$PM xnas
-$PM xcme
-$PM xcbo
+$PM download --venue XNAS
+$PM download --venue XCME
+$PM download --venue XCBO
 ```
 
-What each asks for is the venue's `symbols =` file in `config.ini`
+Every run is for one exchange, named with `--venue`. What each asks for is the venue's `symbols =` file in `config.ini`
 (`/opt/securities/conf/symbols/<MIC>.txt`). Each prints a line like
 `kept 50,244 for 20261005 ... newest 2026-10-05 12:00:01Z`.
 
@@ -144,7 +144,7 @@ MCX (`XIMC`, with `feed = mcx` in `config.ini`): the BOD process places one
 zip in `premarket/data/20261005/MCX/`. Then:
 
 ```bash
-$PM normalize --only normalize-mcx-contract --venue XIMC --reason "daily 20261005 XIMC"
+$PM normalize --venue XIMC --reason "daily 20261005 XIMC"
 ```
 
 It prints how many contracts it kept and dropped, and warns if the file inside
@@ -155,8 +155,13 @@ for XIMC yet.
 ## 3. Push Postgres and build the token maps
 
 ```bash
-$PM load --date-dir 20261005 --sink postgres-plugin-xnas --sink postgres-plugin-xcme --sink postgres-plugin-xcbo --sink mdf-tokenmap
+$PM load --venue XNAS --date-dir 20261005 --sink postgres-plugin-xnas --sink mdf-tokenmap
+$PM load --venue XCME --date-dir 20261005 --sink postgres-plugin-xcme --sink mdf-tokenmap
+$PM load --venue XCBO --date-dir 20261005 --sink postgres-plugin-xcbo --sink mdf-tokenmap
 ```
+
+Each pushes that venue's rows to its Postgres plugin table and writes its
+`tokenmap.<MIC>.bin`.
 
 ## 4. Back up what is in place now
 
@@ -431,11 +436,11 @@ are in `deploy/SETUP.md`, "Upgrade from 7.x". On this box:
    $PM migrate-state --dry-run --reason "upgrade to 8.0.0"
    $PM migrate-state --reason "upgrade to 8.0.0"
    $PM check-state
-   $PM load --dry-run
+   for v in XNAS XCME XCBO; do $PM load --venue $v --dry-run; done
    ```
 
-   `check-state` must end with `0 fail`, and `load --dry-run` must list every
-   sink without an `error:` line. If `migrate-state` refuses, stop: nothing has
+   `check-state` must end with `0 fail`, and each `load --dry-run` must list the
+   venue's sinks without an `error:` line. If `migrate-state` refuses, stop: nothing has
    been changed. **Do not run `init-state`:** that restarts the numbering.
 
 From now on, step 0 defines `$PM` and every command is `$PM ...`. The old

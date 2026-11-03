@@ -32,7 +32,7 @@ TEST_CASE("check-tokens: a live chain passes") {
     init();
     numbered(numbering::LIVE, "20260926", "XCME", 12, {"A", "B", "C"});
     numbered(numbering::LIVE, "20260927", "XCME", 12, {"A", "C", "D"});
-    auto checks = qa::token_checks({"20260926", "20260927"}, {"XCME"});
+    auto checks = qa::token_checks({"20260926", "20260927"}, "XCME");
     CHECK(hard_failures(checks).empty());
     CHECK(has_check(checks, "pool drained first"));
 }
@@ -43,7 +43,7 @@ TEST_CASE("check-tokens: a fill with a recorded clash passes") {
     numbered(numbering::LIVE, "20260926", "XCME", 12, {"K", "M"});
     numbered(numbering::LIVE, "20260928", "XCME", 12, {"K", "X"});
     numbered(numbering::FILL, "20260927", "XCME", 12, {"K", "M", "X"}, "missed day");
-    auto checks = qa::token_checks({"20260926", "20260927", "20260928"}, {"XCME"});
+    auto checks = qa::token_checks({"20260926", "20260927", "20260928"}, "XCME");
     CHECK(hard_failures(checks).empty());
     CHECK(std::any_of(checks.begin(), checks.end(), [](const qa::Check& c) {
         return c.name == "stable" && c.detail.find("recorded as exceptions") != std::string::npos;
@@ -62,10 +62,25 @@ TEST_CASE("check-tokens: an unrecorded move fails stable") {
     auto moved = plan.day.assigned;
     std::swap(moved.at("A"), moved.at("B"));
     write_normalized("20260927", "XCME", moved);
-    auto failures = hard_failures(qa::token_checks({"20260926", "20260927"}, {"XCME"}));
+    auto failures = hard_failures(qa::token_checks({"20260926", "20260927"}, "XCME"));
     CHECK(std::any_of(failures.begin(), failures.end(), [](const std::string& f) {
         return f.find("stable") != std::string::npos && f.find("no recorded exception") != std::string::npos;
     }));
+}
+
+// One venue's check still holds it against every other venue of the day: a token XCME
+// shares with XNSE on 20260926 fails XCME's "venues disjoint", and XNSE's.
+TEST_CASE("check-tokens: a venue's tokens are disjoint from every other venue's") {
+    Box box;
+    init();
+    numbered(numbering::LIVE, "20260926", "XNSE", 16, {"N1", "N2"});
+    auto clean = qa::token_checks({"20260926"}, "XNSE");
+    CHECK(hard_failures(clean).empty());
+    write_normalized("20260926", "XCME", {{"C1", assigned("20260926", "XNSE").at("N1")}});
+    for (const char* mic : {"XCME", "XNSE"}) {
+        CAPTURE(mic);
+        CHECK(any_contains(hard_failures(qa::token_checks({"20260926"}, mic)), "venues disjoint: token(s) shared: 1 with"));
+    }
 }
 
 TEST_CASE("check-state: passes after normal runs, fails with no state") {

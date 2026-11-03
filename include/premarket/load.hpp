@@ -29,6 +29,7 @@ struct Sink {
 
 std::vector<std::string> available();
 Sink load_sink(const std::string& name);
-int run(const std::string& date_dir, const std::vector<std::string>& names, bool dry_run);
+std::vector<Sink> sinks_for(const std::string& venue, const std::vector<std::string>& names);
+int run(const std::string& date_dir, const std::string& venue, const std::vector<std::string>& names, bool dry_run);
 
 }  // namespace premarket::load

@@ -11,17 +11,24 @@
 //   postgres-plugin    type market venue_id database_url schema table create_table
 //   mdf-tokenmap       type markets dir
 // A missing sink names the ones that exist; postgres-normal is refused as planned, not
-// built; a plugin sink pushes exactly one market, under the venue_id config.ini gives it,
-// and only while that venue is enabled. Every shipped conf/sinks/*.ini.example, copied to
-// .ini, loads against the shipped config.ini.example.
+// built. Every shipped conf/sinks/*.ini.example, copied to .ini, loads against the shipped
+// config.ini.example.
 //
-// A run loads every named sink before it pushes anything, so a typo in the second sink
-// costs nothing in the first; it needs the state head; a dry run connects to nothing and
-// logs nothing. Each sink is a child run in data/_state/runs.jsonl (START, one COMPLETE
-// or FAIL per sink naming it, then the parent's COMPLETE or FAIL), and one failing sink
-// fails the load without stopping the others.
+// A load is for one venue (`load --venue MIC`). The sinks that carry it: clickhouse-normal
+// (every venue; it replaces only this venue's rows in the day's tables), the postgres-plugin
+// sink whose market is the venue, and mdf-tokenmap for a Databento venue in its markets (or
+// any, when markets is empty). Without --sink every such sink in sinks_dir runs, and none
+// at all is an error; naming one that does not carry the venue is an error saying why. Only
+// the chosen sinks are validated -- a plugin sink pushes exactly one market, under the
+// venue_id config.ini gives it, and only while that venue is enabled -- so a sink file for a
+// disabled venue no longer stops every other venue's load.
+//
+// A run reads and validates every chosen sink before it pushes anything, so a typo in the
+// second sink costs nothing in the first; it needs the state head; a dry run connects to
+// nothing and logs nothing. Each sink is a child run in data/_state/runs.jsonl (START with the
+// venue, one COMPLETE or FAIL per sink naming it, then the parent's COMPLETE or FAIL), and one
+// failing sink fails the load without stopping the others.
 //
 // An older day never becomes what a live reader takes as current: delivering a token map
-// into MDF's directory (dir = ...) for a day older than the newest live day is refused,
-// while the same day's map may always be written into its own tree (no dir), for the
-// enabled Databento venues only.
+// into MDF's directory (dir = ...) for a day older than the venue's newest live day is
+// refused, while the same day's map may always be written into its own tree (no dir).

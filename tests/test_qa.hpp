@@ -10,6 +10,8 @@
 //     the moves were recorded as exceptions, and the fill-only checks ("never releases",
 //     "fill provenance", "filled from") run
 //   - two tokens swapped in a normalized file with no recorded exception fail "stable"
+//   - check-tokens runs for one venue, and still holds it against every other venue's
+//     normalized file of the day: "venues disjoint" fails on both sides of a shared token
 //
 // check-state reads the head and the run log:
 //   - it passes after normal runs

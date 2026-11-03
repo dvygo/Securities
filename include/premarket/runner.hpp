@@ -14,11 +14,11 @@ namespace premarket::runner {
 struct Opts {
     std::string as_of;
     std::string date_dir;
+    std::string venue;
     bool dry_run = false;
     std::optional<std::string> basket;
     std::optional<std::string> csv_dir;
     std::optional<std::string> symbols_file;
-    std::vector<std::string> venues;
     numbering_session::Session* numbering = nullptr;
 };
 
@@ -28,10 +28,11 @@ struct Step {
 };
 
 bool venue_selected(const Opts& opts, const std::string& mic);
-std::vector<Step> expand_only(const std::vector<std::string>& only, const std::vector<Step>& all_steps);
+std::vector<Step> select_steps(const std::string& venue, const std::vector<std::string>& only,
+                               const std::vector<Step>& steps);
 int run(const std::vector<Step>& steps, Opts& opts);
 
-std::vector<Step> build_normalizer_steps(const std::vector<std::string>& only);
+std::vector<Step> build_normalizer_steps(const std::string& venue, const std::vector<std::string>& only);
 std::vector<Step> build_download_steps(const std::string& venue);
 
 }  // namespace premarket::runner

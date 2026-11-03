@@ -48,7 +48,11 @@ void same_tokens(const Entries& a, const Entries& b) {
 }
 
 int normalize(const fixture::Tree& tree, const std::string& date) {
-    return cli::run({"--config=" + tree.config_path.string(), "normalize", "--date-dir", date, "--only", "normalize-fyers"});
+    for (const char* mic : {"XNSE", "XBOM", "XIMC"})
+        if (int rc = cli::run({"--config=" + tree.config_path.string(), "normalize", "--venue", mic, "--date-dir", date,
+                               "--only", "normalize-fyers"}))
+            return rc;
+    return 0;
 }
 
 }  // namespace

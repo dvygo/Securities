@@ -1,11 +1,15 @@
 #pragma once
-// premarket/runner.hpp -- the steps a command runs, and --only.
+// premarket/runner.hpp -- the steps a run is made of, for its one venue.
 //
-// normalize runs normalize-fyers, normalize-nse-contract, normalize-mcx-contract,
-// normalize-databento and baskets, in that order, then csv-export (which does nothing
-// without --csv). --only picks steps by name, in the pipeline's order whatever order they
-// are given in; the aliases `fyers`, `databento` and `normalize` (every normalize step, which
-// in 7.x left out normalize-mcx-contract) stand for their steps, and `all` for every step.
-// A name that is no step is a usage error listing the ones that are: 7.x dropped it
-// silently, so `--only baskets --only normalise-fyers` ran the baskets alone and exited 0.
-// --venue limits the per-venue steps to the MICs named.
+// normalize --venue MIC runs the venue's own normalize step, chosen by its feed
+// (fyers -> normalize-fyers, nse -> normalize-nse-contract, mcx -> normalize-mcx-contract,
+// databento -> normalize-databento), then baskets if the venue has any (basket names start
+// with their MIC: XNSE_NIFTYFNO_*) and [baskets] enabled = 1, then csv-export (which does
+// nothing without --csv). --only picks among those, in that order whatever order it is
+// given in. There are no aliases and no `all`: a name that is not one of the venue's steps
+// is a usage error listing the ones that are, so a typo cannot run nothing and exit 0 (7.x
+// dropped unknown names silently).
+//
+// download --venue MIC is one step: the Databento live replay or the venue's Fyers
+// segments. A feed = nse or mcx venue has nothing to download; its file is placed by the BOD
+// process, and asking to download it is an error that says where the file goes.
