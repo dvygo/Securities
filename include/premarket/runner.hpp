@@ -18,6 +18,7 @@ struct Opts {
     bool dry_run = false;
     std::optional<std::string> input_path;
     std::optional<std::string> basket;
+    std::optional<std::string> csv_dir;
     bool include_csv_header = false;
     bool all_symbols = false;
     std::optional<std::string> symbols_file;

@@ -288,6 +288,63 @@ std::string quoted(std::string_view s) {
     return out;
 }
 
+std::string utf8_replace_invalid(std::string_view s) {
+    static const char* kReplacement = "\xEF\xBF\xBD";
+    std::string out;
+    out.reserve(s.size());
+    std::size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) {
+            out.push_back(static_cast<char>(c));
+            ++i;
+            continue;
+        }
+        std::size_t need = 0;
+        unsigned char lo = 0x80, hi = 0xBF;
+        if (c >= 0xC2 && c <= 0xDF) need = 1;
+        else if (c == 0xE0) need = 2, lo = 0xA0;
+        else if ((c >= 0xE1 && c <= 0xEC) || c == 0xEE || c == 0xEF) need = 2;
+        else if (c == 0xED) need = 2, hi = 0x9F;
+        else if (c == 0xF0) need = 3, lo = 0x90;
+        else if (c >= 0xF1 && c <= 0xF3) need = 3;
+        else if (c == 0xF4) need = 3, hi = 0x8F;
+        else {
+            out += kReplacement;
+            ++i;
+            continue;
+        }
+        std::size_t j = 1;
+        for (; j <= need && i + j < s.size(); ++j) {
+            unsigned char cc = static_cast<unsigned char>(s[i + j]);
+            unsigned char l = j == 1 ? lo : 0x80, h = j == 1 ? hi : 0xBF;
+            if (cc < l || cc > h) break;
+        }
+        if (j == need + 1) {
+            out.append(s.substr(i, need + 1));
+            i += need + 1;
+        } else {
+            out += kReplacement;
+            i += j;
+        }
+    }
+    return out;
+}
+
+std::string latin1_to_utf8(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if (c < 0x80) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back(static_cast<char>(0xC0 | (c >> 6)));
+            out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+        }
+    }
+    return out;
+}
+
 std::string read_file(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {

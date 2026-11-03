@@ -161,7 +161,10 @@ int run_normalize(const args::Parsed& p) {
     opts.dry_run = p.flag("dry-run");
     opts.basket = p.value("basket");
     opts.venues = venue_selection(p.all("venue"));
-    if (auto c = p.value("csv")) opts.input_path = *c;
+    if (auto c = p.value("csv")) {
+        if (!std::filesystem::path(*c).is_absolute()) throw SystemExit{1, "--csv must be an absolute directory, got `" + *c + "`"};
+        opts.csv_dir = *c;
+    }
     auto steps = runner::build_normalizer_steps(only);
     return numbered_run("normalize", steps, opts, opts.dry_run, p.value("reason").value_or(""));
 }

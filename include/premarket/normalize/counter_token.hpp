@@ -98,7 +98,7 @@ struct VenueEntry {
     std::vector<std::int64_t> free;
     TokenMap retained;
 };
-std::optional<VenueEntry> venue_entry(const std::string& as_of, const std::string& mic);
+std::optional<VenueEntry> venue_entry(const std::string& as_of, const std::string& mic, bool any_version = false);
 std::set<std::string> venues_with_manifest(const std::string& as_of);
 Json venue_run(const std::string& as_of, const std::string& mic);
 

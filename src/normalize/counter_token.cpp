@@ -265,12 +265,12 @@ void require_current(const Json& doc, const fs::path& path) {
                           std::to_string(MANIFEST_VERSION));
 }
 
-std::optional<VenueEntry> venue_entry(const std::string& as_of, const std::string& mic_in) {
+std::optional<VenueEntry> venue_entry(const std::string& as_of, const std::string& mic_in, bool any_version) {
     std::string mic = util::upper(mic_in);
     auto header_path = venue_manifest_path(as_of, mic);
     Json doc = read_json(header_path);
     if (!truthy(doc)) return std::nullopt;
-    require_current(doc, header_path);
+    if (!any_version) require_current(doc, header_path);
     const Json& block_raw = jget(doc, "allocation");
     Json block = truthy(block_raw) ? block_raw : Json::object();
     auto path = alloc_path(as_of, mic);

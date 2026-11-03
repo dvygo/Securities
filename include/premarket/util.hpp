@@ -56,6 +56,8 @@ std::string commas(std::int64_t n);
 std::string fixed(double x, int digits);
 std::string zero_pad(std::int64_t n, int width);
 std::string quoted(std::string_view s);
+std::string utf8_replace_invalid(std::string_view s);
+std::string latin1_to_utf8(std::string_view s);
 
 std::string read_file(const fs::path& path);
 std::string read_text_utf8_sig(const fs::path& path);
