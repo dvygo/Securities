@@ -23,7 +23,7 @@ Install it with `sudo`, always: `install.sh` refuses to run any other way. Run p
 
 ## 2. Install
 
-Download `securities_8.1.0_ubuntu22.04_amd64.tar.gz` and `SHA256SUMS` from the release page: [GitHub](https://github.com/deshik-ux/securities/releases/tag/v8.1.0), or the LAN GitLab, http://192.168.1.15:8929/deshik-ux/securities/-/releases/v8.1.0. With `gh`:
+Download `securities_8.1.0_ubuntu22.04_amd64.tar.gz` and `SHA256SUMS` from the [release page](https://github.com/deshik-ux/securities/releases/tag/v8.1.0). With `gh`:
 
 ```sh
 gh release download v8.1.0 -R deshik-ux/securities -p 'securities_8.1.0_ubuntu22.04_amd64.tar.gz' -p SHA256SUMS
