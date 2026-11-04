@@ -107,7 +107,7 @@ TEST_CASE("a load delivers one venue, through the sinks that carry it") {
 TEST_CASE("every shipped template is a valid sink against the shipped config") {
     fixture::Tree tree;
     auto example = util::read_file(fixture::source_dir() + "/conf/config.ini.example");
-    util::write_file(tree.config_path, util::replace_all(example, "/opt/securities", tree.root.string()));
+    util::write_file(tree.config_path, util::replace_all(example, "@DIR@", tree.root.string()));
     config::init(tree.config_path, fixture::source_dir() + "/conf/keys.ini.example");
     fs::create_directories(paths::sinks_dir());
     std::vector<std::string> names;

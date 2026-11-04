@@ -1,6 +1,7 @@
-# premarket 8 configuration. Copy to config.ini and edit, then pass it on every command:
+# premarket 8 configuration. install.sh seeds DIR/conf/config.ini from this file once, with the
+# directory it installs into in place of @DIR@. Pass it on every command:
 #
-#   premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini <command>
+#   @DIR@/bin/premarket --config=@DIR@/conf/config.ini --keys=@DIR@/conf/keys.ini <command>
 #
 # Every path is absolute. A key this file does not list is an error, so a typo cannot
 # turn into a setting that is silently ignored. Comments start with # or ; at the start of
@@ -10,12 +11,12 @@
 config_version = 8
 
 [paths]
-data_dir      = /opt/securities/state/data        # day trees YYYYMMDD/ and the numbering state _state/
-contracts_dir = /opt/securities/state/contracts   # basket contracts, one folder per day
-logs_dir      = /opt/securities/state/logs        # one log per run
-reports_dir   = /opt/securities/state/reports     # check-tokens / check-lineage / check-state reports
-baskets_dir   = /opt/securities/current/share/baskets   # basket definitions shipped with the release
-sinks_dir     = /opt/securities/conf/sinks        # one <name>.ini per load destination
+data_dir      = @DIR@/state/data        # day trees YYYYMMDD/ and the numbering state _state/
+contracts_dir = @DIR@/state/contracts   # basket contracts, one folder per day
+logs_dir      = @DIR@/state/logs        # one log per run
+reports_dir   = @DIR@/state/reports     # check-tokens / check-lineage / check-state reports
+baskets_dir   = @DIR@/share/baskets     # basket definitions shipped with the release
+sinks_dir     = @DIR@/conf/sinks        # one <name>.ini per load destination
 
 [run]
 # What "today" means when --date-dir is not given. The download of a Databento definition
@@ -57,7 +58,7 @@ enabled  = 1
 venue_id = 14
 dataset  = EQUS.MINI
 stype_in = raw_symbol
-symbols  = /opt/securities/conf/symbols/XNAS.txt
+symbols  = @DIR@/conf/symbols/XNAS.txt
 
 [venue.XCBO]
 feed     = databento
@@ -65,7 +66,7 @@ enabled  = 1
 venue_id = 10
 dataset  = OPRA.PILLAR
 stype_in = parent
-symbols  = /opt/securities/conf/symbols/XCBO.txt
+symbols  = @DIR@/conf/symbols/XCBO.txt
 
 [venue.XCME]
 feed     = databento
@@ -73,7 +74,7 @@ enabled  = 1
 venue_id = 12
 dataset  = GLBX.MDP3
 stype_in = parent
-symbols  = /opt/securities/conf/symbols/XCME.txt
+symbols  = @DIR@/conf/symbols/XCME.txt
 
 [venue.XNSE]
 # fyers = Fyers CDN (NSE_CM/FO/CD) -> XNSE-FYERS.parquet

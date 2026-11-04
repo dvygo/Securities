@@ -7,9 +7,13 @@
 
 using namespace premarket;
 
-TEST_CASE("the shipped example loads") {
-    auto cfg = config::load(std::string(PREMARKET_SOURCE_DIR) + "/conf/config.ini.example");
-    CHECK(cfg.paths.data_dir == "/opt/securities/state/data");
+TEST_CASE("the shipped example loads once install.sh has written the directory in") {
+    fixture::Tree tree;
+    auto example = util::read_file(std::string(PREMARKET_SOURCE_DIR) + "/conf/config.ini.example");
+    util::write_file(tree.config_path, util::replace_all(example, "@DIR@", "/srv/securities"));
+    auto cfg = config::load(tree.config_path);
+    CHECK(cfg.paths.data_dir == "/srv/securities/state/data");
+    CHECK(cfg.paths.baskets_dir == "/srv/securities/share/baskets");
     CHECK(cfg.timezone == "Asia/Kolkata");
     CHECK(cfg.baskets_enabled);
     REQUIRE(cfg.venues.size() == 6);
@@ -21,7 +25,7 @@ TEST_CASE("the shipped example loads") {
     CHECK(cfg.venues.at("XBOM").venue_id == 18);
     CHECK(cfg.venues.at("XIMC").venue_id == 20);
     CHECK(cfg.venues.at("XCBO").stype_in == "parent");
-    CHECK(cfg.venues.at("XNAS").symbols == "/opt/securities/conf/symbols/XNAS.txt");
+    CHECK(cfg.venues.at("XNAS").symbols == "/srv/securities/conf/symbols/XNAS.txt");
     CHECK(cfg.fyers.user_agent.find("Win64; x64") != std::string::npos);
 }
 

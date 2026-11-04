@@ -3,7 +3,8 @@
 Every trading day, before the US open. One-time setup: [SETUP.md](SETUP.md).
 
 ```sh
-PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini"
+DIR=/srv/securities                     # the directory install.sh installed into
+PM="$DIR/bin/premarket --config=$DIR/conf/config.ini --keys=$DIR/conf/keys.ini"
 ```
 
 Every run is for one exchange, named with `--venue`: XNAS, XCME, XCBO, XNSE, XBOM, XIMC. There is no run for "all of them".
@@ -34,7 +35,7 @@ v=XNAS
 $PM download  --venue $v
 $PM normalize --venue $v --reason "daily $v"
 $PM check-state
-$PM load      --venue $v          # every sink in /opt/securities/conf/sinks/ that delivers $v
+$PM load      --venue $v          # every sink in $DIR/conf/sinks/ that delivers $v
 ```
 
 Do it for each venue, one at a time, in this order: **XNAS, XCME, XCBO, XNSE, XBOM, XIMC**. New contracts get token numbers in the order the venues are normalized, so keep it. A venue that fails stops only its own day; the next venue runs as usual.
@@ -51,11 +52,11 @@ flowchart LR
     Q -->|"WARNING: OPRA.PILLAR lists new contracts at ~13:00Z (08:00 New York)"| L["XCBO only: too early for today's listings. Run it again later"]
 ```
 
-To download a venue again, delete its file in `/opt/securities/state/data/YYYYMMDD/<MIC>/` first. Re-running `normalize` is always safe: it keeps every token it has given out. To push an older day again, add `--date-dir YYYYMMDD` to `load`.
+To download a venue again, delete its file in `$DIR/state/data/YYYYMMDD/<MIC>/` first. Re-running `normalize` is always safe: it keeps every token it has given out. To push an older day again, add `--date-dir YYYYMMDD` to `load`.
 
 ## Older days
 
-A day before the first one, or a missed day. Downloads are today only (a live replay), so put the day's definition file, with live instrument ids, in `/opt/securities/state/data/YYYYMMDD/<MIC>/` by hand first. Then preview, and fill:
+A day before the first one, or a missed day. Downloads are today only (a live replay), so put the day's definition file, with live instrument ids, in `$DIR/state/data/YYYYMMDD/<MIC>/` by hand first. Then preview, and fill:
 
 ```sh
 $PM normalize --venue XCME --dates=20261030 --reason "missed day" --dry-run
@@ -79,7 +80,7 @@ flowchart LR
 ```
 
 ```sh
-ls -t /opt/securities/state/logs | head      # download-XNAS_..., normalize-XNAS_..., load-XNAS_...
+ls -t $DIR/state/logs | head      # download-XNAS_..., normalize-XNAS_..., load-XNAS_...
 $PM check-state
 $PM check-tokens --venue XNAS
 ```
@@ -92,14 +93,15 @@ Every command is a single process that finishes, so any scheduler runs it. The n
 
 ### cron
 
-A venue's day as one script, which stops at the first step that fails (save it as `/opt/securities/conf/day.sh`, `chmod 755`):
+A venue's day as one script, which stops at the first step that fails (save it as `$DIR/conf/day.sh`, `chmod 755`):
 
 ```sh
 #!/bin/sh
 # day.sh MIC: one exchange's day
 set -eu
 v=$1
-PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini"
+DIR=/srv/securities
+PM="$DIR/bin/premarket --config=$DIR/conf/config.ini --keys=$DIR/conf/keys.ini"
 $PM download  --venue $v
 $PM normalize --venue $v --reason "daily $v"
 $PM check-state
@@ -107,26 +109,27 @@ $PM load      --venue $v
 ```
 
 ```cron
-# m  h  dom mon dow   the host's time zone; this is 13:05 UTC, US standard time
-05 13 * * 1-5  for v in XNAS XCME XCBO XNSE XBOM XIMC; do /opt/securities/conf/day.sh $v >> /opt/securities/state/logs/cron-$v.log 2>&1; done
+# m  h  dom mon dow   the host's time zone; this is 13:05 UTC, US standard time. /srv/securities = your DIR
+05 13 * * 1-5  for v in XNAS XCME XCBO XNSE XBOM XIMC; do /srv/securities/conf/day.sh $v >> /srv/securities/state/logs/cron-$v.log 2>&1; done
 ```
 
 One hour earlier in US summer time. The venues run one after another, so no two hold the state at once, and one that fails does not stop the rest.
 
 ### HTCondor
 
-Vanilla universe, pinned to the machine that holds the state. One submit file per command, each taking the venue as `$(venue)`:
+Vanilla universe, pinned to the machine that holds the state, running the installed `bin/premarket` in place (`transfer_executable = false`). One submit file per command, each taking the venue as `$(venue)`; `/srv/securities` stands for your DIR:
 
 ```text
 # normalize.sub (download.sub and load.sub are the same with `download --venue $(venue)` and `load --venue $(venue)`;
 # check-state.sub runs `check-state`)
 universe     = vanilla
-executable   = /opt/securities/current/bin/premarket
-arguments    = "--config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini normalize --venue $(venue) --reason 'daily htcondor'"
+executable   = /srv/securities/bin/premarket
+transfer_executable = false
+arguments    = "--config=/srv/securities/conf/config.ini --keys=/srv/securities/conf/keys.ini normalize --venue $(venue) --reason 'daily htcondor'"
 requirements = (Machine == "securities-host.example")
-output       = /opt/securities/state/logs/condor-normalize-$(venue)-$(Cluster).out
-error        = /opt/securities/state/logs/condor-normalize-$(venue)-$(Cluster).err
-log          = /opt/securities/state/logs/condor.log
+output       = /srv/securities/state/logs/condor-normalize-$(venue)-$(Cluster).out
+error        = /srv/securities/state/logs/condor-normalize-$(venue)-$(Cluster).err
+log          = /srv/securities/state/logs/condor.log
 queue
 ```
 

@@ -78,12 +78,13 @@ writing the old one, which nothing reads.
 
 ```bash
 tmux new -s premarket            # or: tmux attach -t premarket
-PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini"
-$PM --version                    # premarket 8.0.0 (...)
+DIR=/srv/securities              # the --prefix premarket was installed with on this box
+PM="$DIR/bin/premarket --config=$DIR/conf/config.ini --keys=$DIR/conf/keys.ini"
+$PM --version                    # premarket 8.1.0 (...)
 ```
 
-Since 8.0.0, premarket is one binary installed from the release under
-`/opt/securities/` (no venv, no Docker), and its `config.ini` points at the data
+Since 8.0.0, premarket is one program installed from the release into `$DIR`
+(no venv, no Docker), and its `config.ini` points at the data
 tree this box has always used,
 `/home/ubuntu/Production_Shailendra_Sir/Securities/premarket/data/`. Every
 command below takes the config and keys by full path through `$PM`.
@@ -120,7 +121,7 @@ $PM download --venue XCBO
 ```
 
 Every run is for one exchange, named with `--venue`. What each asks for is the venue's `symbols =` file in `config.ini`
-(`/opt/securities/conf/symbols/<MIC>.txt`). Each prints a line like
+(`$DIR/conf/symbols/<MIC>.txt`). Each prints a line like
 `kept 50,244 for 20261005 ... newest 2026-10-05 12:00:01Z`.
 
 - "re-send has not happened yet": too early. Wait and run it again.
@@ -373,35 +374,39 @@ systemctl --user start mdf-vendorv9xnas mdf-vendorv9xcme mdf-vendorv9xcbo
 
 ## Updating premarket
 
-A new release is installed beside the old one, and `current` moves only after it
-runs. `conf/` and the data tree are not touched:
+A new release is installed over the old one, always through sudo, as `ubuntu`
+(the account that ran sudo keeps owning `conf/` and the state). It replaces
+`bin/`, `libexec/`, `libs/` and `share/` and does not touch `conf/` or the data
+tree. It refuses while a premarket run holds the numbering lock:
 
 ```bash
 cd /home/ubuntu/Production_Shailendra_Sir/tmp
 gh release download vX.Y.Z -R deshik-ux/securities -p 'securities_X.Y.Z_ubuntu22.04_amd64.tar.gz' -p SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
 tar -xzf securities_X.Y.Z_ubuntu22.04_amd64.tar.gz
-sudo securities_X.Y.Z_ubuntu22.04_amd64/install.sh --prefix /opt/securities --owner ubuntu
+sudo securities_X.Y.Z_ubuntu22.04_amd64/install.sh --prefix "$DIR"
 $PM --version
 ```
 
-Do it after the day's run, never between steps 1 and 8. To go back, point
-`current` at the previous version:
+Do it after the day's run, never between steps 1 and 8. To go back, run the
+previous release's `install.sh` the same way.
 
-```bash
-sudo ln -sfn 8.0.0 /opt/securities/.current.new && sudo mv -T /opt/securities/.current.new /opt/securities/current
-```
+If this box still runs 8.0.0 (`/opt/securities/current/bin/premarket`), install
+with `--prefix /opt/securities`, use `DIR=/opt/securities` from then on, and
+change the cron lines from `current/bin/premarket` to `bin/premarket`:
+`deploy/SETUP.md`, "Upgrade from 8.0.0".
 
-## Upgrading to 8.0.0
+## Upgrading from 7.x
 
 Once, coming from 7.x, after the day's run and never between steps 1 and 8.
-8.0.0 keeps this box's tokens: it continues from the same data tree, after a
+8.x keeps this box's tokens: it continues from the same data tree, after a
 one-time `migrate-state`. The general steps, and what every 7.x setting became,
 are in `deploy/SETUP.md`, "Upgrade from 7.x". On this box:
 
-1. Install 8.0.0 as in "Updating premarket" (`X.Y.Z` = `8.0.0`).
+1. Install 8.1.0 as in "Updating premarket" (`X.Y.Z` = `8.1.0`).
 
-2. In `/opt/securities/conf/config.ini`, point `[paths]` at what 7.x used:
+2. In `$DIR/conf/config.ini`, point `[paths]` at what 7.x used (install.sh has
+   already written `$DIR` into the last two):
 
    ```ini
    [paths]
@@ -409,8 +414,8 @@ are in `deploy/SETUP.md`, "Upgrade from 7.x". On this box:
    contracts_dir = /home/ubuntu/Production_Shailendra_Sir/Securities/constituents/contracts
    logs_dir      = /home/ubuntu/Production_Shailendra_Sir/Securities/bin/LOGS
    reports_dir   = /home/ubuntu/Production_Shailendra_Sir/Securities/docs/QAT_GENERATED
-   baskets_dir   = /opt/securities/current/share/baskets
-   sinks_dir     = /opt/securities/conf/sinks
+   baskets_dir   = /srv/securities/share/baskets
+   sinks_dir     = /srv/securities/conf/sinks
    ```
 
    and copy each `[EXCHANGE:<MIC>]` of the old `conf/config.ini` into its
@@ -420,21 +425,21 @@ are in `deploy/SETUP.md`, "Upgrade from 7.x". On this box:
 
    ```bash
    O=/home/ubuntu/Production_Shailendra_Sir/Securities/conf
-   { echo '[databento]'; sed -n '/^\[production\]/,/^\[/s/^key_\(X[A-Z]*\) *= */\1 = /p' $O/keys.ini; } > /opt/securities/conf/keys.ini
-   grep -c '^X... = db-' /opt/securities/conf/keys.ini        # must print 3; the keys are not shown
-   cp $O/sinks/postgres-plugin-*.ini $O/sinks/mdf-tokenmap.ini /opt/securities/conf/sinks/
-   chmod 600 /opt/securities/conf/keys.ini /opt/securities/conf/sinks/*.ini
+   { echo '[databento]'; sed -n '/^\[production\]/,/^\[/s/^key_\(X[A-Z]*\) *= */\1 = /p' $O/keys.ini; } > $DIR/conf/keys.ini
+   grep -c '^X... = db-' $DIR/conf/keys.ini        # must print 3; the keys are not shown
+   cp $O/sinks/postgres-plugin-*.ini $O/sinks/mdf-tokenmap.ini $DIR/conf/sinks/
+   chmod 600 $DIR/conf/keys.ini $DIR/conf/sinks/*.ini
    ```
 
-   This turns 7.x's `[production]` `key_XNAS=db-...` into 8.0.0's
+   This turns 7.x's `[production]` `key_XNAS=db-...` into 8.x's
    `[databento]` `XNAS = db-...`. In each copied sink, delete a `tcp_port` line
    if there is one and write `secure` as `0` or `1`.
 
 4. Migrate and check. It takes a backup first and verifies that no token moved:
 
    ```bash
-   $PM migrate-state --dry-run --reason "upgrade to 8.0.0"
-   $PM migrate-state --reason "upgrade to 8.0.0"
+   $PM migrate-state --dry-run --reason "upgrade to 8.x"
+   $PM migrate-state --reason "upgrade to 8.x"
    $PM check-state
    for v in XNAS XCME XCBO; do $PM load --venue $v --dry-run; done
    ```
@@ -446,7 +451,7 @@ are in `deploy/SETUP.md`, "Upgrade from 7.x". On this box:
 From now on, step 0 defines `$PM` and every command is `$PM ...`. The old
 checkout under `/home/ubuntu/Production_Shailendra_Sir/Securities` is no
 longer run, but its `premarket/data/`, `constituents/contracts/`, `bin/LOGS/` and
-`docs/QAT_GENERATED/` are where 8.0.0 now writes: keep them.
+`docs/QAT_GENERATED/` are where 8.x now writes: keep them.
 
 More detail on why things are the way they are:
 `/home/ubuntu/Production_Shailendra_Sir/Securities/docs/DESIGN/LIVE-DEFINITIONS.md`

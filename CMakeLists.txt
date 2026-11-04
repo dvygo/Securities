@@ -84,7 +84,7 @@ target_link_libraries(premarket_core
 
 add_executable(premarket apps/premarket.cpp)
 target_link_libraries(premarket PRIVATE premarket_core premarket_flags)
-target_link_options(premarket PRIVATE -static-libstdc++ -fuse-ld=lld "-Wl,-rpath,\$ORIGIN/../lib")
+target_link_options(premarket PRIVATE -static-libstdc++ -fuse-ld=lld)
 set_target_properties(premarket PROPERTIES SKIP_BUILD_RPATH TRUE)
 
 if(PREMARKET_BUILD_TESTS)

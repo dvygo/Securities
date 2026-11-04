@@ -6,6 +6,9 @@
 // search for a repo root: the files named on the command line are the whole configuration,
 // which is what makes a run reproducible from its command line alone.
 //
+// conf/config.ini.example writes every path as @DIR@/...: install.sh seeds DIR/conf/config.ini
+// from it with the directory it installs into in place of @DIR@, and the test does the same.
+//
 // config.ini sections (anything else is an error):
 //   [premarket] config_version = 8   a 7.x file has no such section and is refused with a
 //                                    pointer to the example, never half-read

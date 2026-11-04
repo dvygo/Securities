@@ -20,7 +20,7 @@ Since 8.0.0 `premarket` is a single C++20 binary for Ubuntu 22.04. Docker is
 used to build it and never to run it: a host needs only the release tarball and
 `tzdata`. 8.0.0 reads the numbering state and the manifests of 7.x after a
 one-time `premarket migrate-state`, and numbers every venue exactly as 7.0.0
-did (see [RUNBOOK.md, "Upgrading to 8.0.0"](RUNBOOK.md#upgrading-to-800)).
+did (see [RUNBOOK.md, "Upgrading from 7.x"](RUNBOOK.md#upgrading-from-7x)).
 
 Design decisions and their reasons are in
 [`docs/DESIGN/OLD-DATE-PROCESSING.md`](docs/DESIGN/OLD-DATE-PROCESSING.md).
@@ -54,8 +54,10 @@ The first run builds `securities-build:22.04` from `docker/build.Dockerfile`
 (Ubuntu 22.04, clang 18, libc++, CMake 3.30.5, databento-cpp 0.69.0, DuckDB
 1.5.5, cpp-httplib 0.62.0, nlohmann/json 3.12.0, HH date 3.0.5, doctest 2.4.12,
 and libpq from PostgreSQL 18.6, linked statically). The binary links libc++
-statically and loads `libduckdb.so` from `../lib` beside it; everything else it
-needs (glibc, OpenSSL 3, zlib, zstd) is in a stock Ubuntu 22.04.
+statically and has no built-in library path: a release ships every library it
+loads beyond glibc (DuckDB, OpenSSL 3, zlib, zstd, libstdc++, libgcc_s) in
+`libs/`, and the installed `bin/premarket` launcher sets `LD_LIBRARY_PATH` to
+that directory before starting `libexec/premarket`.
 
 ## Running
 
@@ -148,7 +150,9 @@ run picks up whatever has landed without disturbing what is already numbered.
 Install a release (see [deploy/SETUP.md](deploy/SETUP.md)), or build one, then:
 
 ```bash
-PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini"
+sudo securities_8.1.0_ubuntu22.04_amd64/install.sh --prefix /srv/securities   # any directory; always with sudo
+DIR=/srv/securities
+PM="$DIR/bin/premarket --config=$DIR/conf/config.ini --keys=$DIR/conf/keys.ini"
 $PM init-state --reason "first run on this host"      # once per host; 7.x hosts run migrate-state instead
 ```
 

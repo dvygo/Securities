@@ -5,7 +5,9 @@ writes files; everything that reaches a database or MDF goes through `load`.
 
 Every command is the one program, with the config and the keys by full path:
 
-```PM="/opt/securities/current/bin/premarket --config=/opt/securities/conf/config.ini --keys=/opt/securities/conf/keys.ini"```
+```DIR=/srv/securities``` (the directory install.sh installed into; install.sh is always run with sudo)
+
+```PM="$DIR/bin/premarket --config=$DIR/conf/config.ini --keys=$DIR/conf/keys.ini"```
 
 Every run is for one exchange, named with `--venue`: XNAS, XCME, XCBO, XNSE, XBOM,
 XIMC. There is no run for all of them at once.
@@ -13,7 +15,7 @@ XIMC. There is no run for all of them at once.
 ## Once per host (8.0.0 and later)
 
 1. Install the release: deploy/SETUP.md, steps 1-2.
-2. Create the sink files: copy each `/opt/securities/conf/sinks/*.ini.example`
+2. Create the sink files: copy each `$DIR/conf/sinks/*.ini.example`
    to the same name without `.example` and fill in the credentials. One file per
    destination: `clickhouse-normal`, `postgres-plugin-xcme`,
    `postgres-plugin-xcbo`, `postgres-plugin-xnas`, `mdf-tokenmap`.
@@ -47,7 +49,7 @@ For each venue, one at a time, in the order XNAS, XCME, XCBO, XNSE, XBOM, XIMC:
 
 5. ```$PM load --venue XNAS```
 
-   Every sink in `/opt/securities/conf/sinks/` that carries the venue, or name
+   Every sink in `$DIR/conf/sinks/` that carries the venue, or name
    them with `--sink NAME`.
    `--dry-run` checks every sink file and connects to nothing. A failed sink
    does not stop the others, but the command exits non-zero -- read the

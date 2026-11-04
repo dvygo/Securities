@@ -23,10 +23,12 @@ You need Docker; everything else is in the build image.
 ./build.sh shell        # a shell in the image: cmake -S /src -B /build -G Ninja, ninja -C /build
 ```
 
-The binary is `build/premarket`. It looks for `libduckdb.so` in `../lib` beside
-itself, as a release lays it out, and otherwise finds it only in the image: run
-it through `./build.sh shell`, or build a release with `packaging/release.sh`
-and run that on the host.
+The binary is `build/premarket`. It has no built-in library path and finds
+`libduckdb.so` only in the image: run it through `./build.sh shell`, or build a
+release with `packaging/release.sh` and install that on a host with
+`sudo dist/<v>/.../install.sh --prefix DIR`, whose `DIR/bin/premarket` sets
+`LD_LIBRARY_PATH=DIR/libs`. `packaging/smoke.sh` is what every release is
+tested with on a bare ubuntu:22.04.
 
 ### Shared Postgres
 
@@ -36,7 +38,7 @@ docker compose -f docker/contract-postgres/docker-compose.yml up -d
 
 ## Making a change
 
-1. Fork, branch off the release branch you are changing (`releases/8.0.0`).
+1. Fork, branch off the release branch you are changing (`releases/8.1.0`).
 2. Keep the diff scoped to one thing — a bug fix, one new feature, one
    refactor. Don't bundle unrelated cleanup into the same PR.
 3. Match the existing style: one header in `include/premarket/` and one source
